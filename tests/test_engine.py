@@ -7,7 +7,7 @@ from unittest import mock
 from audiorouter.channels import Channel
 from audiorouter.config import Config, ConfigError
 from audiorouter.effects import Effect, EffectError
-from audiorouter.engine import AutoRouter, Engine, EngineError
+from audiorouter.engine import AutoRouter, DaemonRecord, Engine, EngineError, daemon_pid
 from audiorouter.pwgraph import Graph
 from audiorouter.routing import Rule, RuleSet
 
@@ -215,12 +215,95 @@ class ReconcileTest(EngineTestCase):
         metadata.assert_not_called()
         self.assertEqual(report.actions[0].detail, "dry run")
 
+    def test_a_running_channel_whose_sink_has_gone_is_restarted(self):
+        # A PipeWire restart leaves the host process alive, its conf unchanged,
+        # and no sink: skipping it would route every app into nothing.
+        channel = self.engine.channel("speakers")
+        channel.config_path.write_text(channel.render_config_text())
+        no_sink = Graph([fakes.sink(50, "alsa_output.a", serial=500)])
+        with mock.patch.object(Graph, "snapshot", return_value=no_sink), \
+             mock.patch.object(Channel, "is_running", return_value=True), \
+             mock.patch.object(Channel, "start", return_value=1) as start:
+            report = self.engine.apply()
+        start.assert_called_once()
+        self.assertIn("sink had gone", report.actions[0].detail)
+
+    def test_an_unreadable_graph_does_not_restart_healthy_channels(self):
+        from audiorouter.pwgraph import PwError
+
+        channel = self.engine.channel("speakers")
+        channel.config_path.write_text(channel.render_config_text())
+        with mock.patch.object(Graph, "snapshot", side_effect=PwError("down")), \
+             mock.patch.object(Channel, "is_running", return_value=True), \
+             mock.patch.object(Channel, "start") as start:
+            self.engine.apply()
+        start.assert_not_called()
+
     def test_a_dead_pid_file_is_cleaned_up_rather_than_reported(self):
         directory = Path(self.tmp.name) / "audiorouter"
         directory.mkdir(exist_ok=True)
         (directory / "ghost.pid").write_text("999999")
         self.assertEqual(self.engine.orphan_slugs(), [])
         self.assertFalse((directory / "ghost.pid").exists())
+
+
+class ReloadTest(EngineTestCase):
+    def test_settings_saved_by_another_process_are_picked_up(self):
+        self.engine.save()
+        other = Engine.load(self.path)
+        other.add_rule("app", "firefox", "speakers")
+        os.utime(self.path, ns=(1, 1))  # a same-size rewrite within one mtime tick
+        self.assertTrue(self.engine.reload_if_changed())
+        self.assertEqual(len(self.engine.config.rules.rules), 1)
+        self.assertFalse(self.engine.reload_if_changed())
+
+    def test_our_own_save_is_not_mistaken_for_someone_elses(self):
+        self.engine.add_rule("app", "firefox", "speakers")
+        self.assertFalse(self.engine.reload_if_changed())
+
+    def test_a_broken_file_keeps_the_last_good_settings(self):
+        self.engine.add_rule("app", "firefox", "speakers")
+        self.path.write_text("{ not json")
+        self.assertFalse(self.engine.reload_if_changed())
+        self.assertEqual(len(self.engine.config.rules.rules), 1)
+
+    def test_the_daemon_router_reloads_before_routing(self):
+        self.engine.save()
+        other = Engine.load(self.path)
+        other.add_rule("app", "firefox", "speakers")
+        os.utime(self.path, ns=(1, 1))
+        auto = AutoRouter(self.engine, follow_config=True)
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            auto._changed(live_graph())
+        metadata.assert_called_once_with(60, 510)
+
+    def test_the_window_router_never_reloads(self):
+        with mock.patch.object(Engine, "reload_if_changed") as reload:
+            AutoRouter(self.engine)._changed(live_graph())
+        reload.assert_not_called()
+
+
+class DaemonRecordTest(EngineTestCase):
+    def test_a_running_daemon_is_found(self):
+        with mock.patch("audiorouter.engine._cmdline",
+                        return_value=["/usr/bin/python3", "-m", "audiorouter", "watch"]):
+            self.assertIsNone(daemon_pid())
+            with DaemonRecord():
+                self.assertEqual(daemon_pid(), os.getpid())
+            self.assertIsNone(daemon_pid())
+
+    def test_cleaning_up_orphaned_channels_leaves_the_daemon_record_alone(self):
+        with mock.patch("audiorouter.engine._cmdline",
+                        return_value=["/usr/bin/python3", "-m", "audiorouter", "watch"]), \
+             DaemonRecord():
+            self.engine.orphan_slugs()
+            self.engine.status(refresh=False)
+            self.assertEqual(daemon_pid(), os.getpid())
+
+    def test_a_reused_pid_is_not_mistaken_for_the_daemon(self):
+        with mock.patch("audiorouter.engine._cmdline", return_value=["/usr/bin/kate"]), \
+             DaemonRecord():
+            self.assertIsNone(daemon_pid())
 
 
 class RoutingTest(EngineTestCase):
@@ -244,6 +327,26 @@ class RoutingTest(EngineTestCase):
             with self.assertRaises(EngineError) as caught:
                 self.engine.send(60, "phones")
         self.assertIn("not running", str(caught.exception))
+
+    def test_the_first_manual_send_remembers_the_app(self):
+        with mock.patch("audiorouter.routing.Router._set_metadata"):
+            result = self.engine.send(60, "speakers", remember_new=True)
+        self.assertEqual(result.reason, "manual, remembered")
+        rules = Config.load(self.path).rules.rules
+        self.assertEqual([(r.field, r.pattern, r.channel) for r in rules],
+                         [("app", "firefox", "speakers")])
+
+    def test_a_later_manual_send_is_a_one_off(self):
+        self.engine.create_channel("phones", "Phones", "alsa_output.b")
+        self.engine.add_rule("app", "firefox", "phones")
+        with mock.patch("audiorouter.routing.Router._set_metadata"):
+            self.engine.send(60, "speakers", remember_new=True)
+        self.assertEqual([r.channel for r in self.engine.config.rules.rules], ["phones"])
+
+    def test_a_plain_send_remembers_nothing(self):
+        with mock.patch("audiorouter.routing.Router._set_metadata"):
+            self.engine.send(60, "speakers")
+        self.assertEqual(self.engine.config.rules.rules, [])
 
     def test_status_reports_where_each_stream_actually_is(self):
         self.engine.add_rule("app", "firefox", "speakers")

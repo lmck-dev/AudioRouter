@@ -18,9 +18,10 @@ needed, no dependencies).
 | `routing.py`  | rules, planning, and the actual move                       |
 | `config.py`   | atomic JSON persistence                                    |
 | `engine.py`   | **policy**: reconcile config against reality; auto-router  |
+| `install.py`  | menu launcher (.desktop) and login service (systemd user unit) |
 | `cli.py`      | argument parsing and printing only - no logic              |
 
-The GUI (not written yet) drives `Engine` directly. Anything that needs thinking
+The GUI drives `Engine` directly. Anything that needs thinking
 belongs in the engine, never in the CLI.
 
 ## Traps that have already cost time
@@ -113,9 +114,46 @@ asks `Engine` to make reality match; it decides nothing about audio itself.
 - The monitor thread must never touch a widget: `gui/monitor.py` turns each
   graph callback into a Qt signal and coalesces bursts into one refresh.
 
+## Launcher and login service
+
+`python -m audiorouter launcher` writes `~/.local/share/applications/audiorouter.desktop`;
+`python -m audiorouter login on|off|status` (or the window's "Keep routing with
+this window closed" box) writes `~/.config/systemd/user/audiorouter.service`,
+which runs `watch`. **Nothing is pip-installed**, so both files pin
+`sys.executable` and `PYTHONPATH=<checkout>` - moving the checkout means
+re-running `launcher` and toggling login off/on.
+
+- **The daemon's record is `routing.daemon`, NOT `daemon.pid`.** Every `*.pid`
+  in the runtime dir is taken to be a channel's, so `orphan_slugs()` (called by
+  every `status()`) deleted `daemon.pid` within a second of the GUI refreshing.
+  Found only by enabling the real service with the real GUI open.
+- **`KillMode=process`** - channels are children of whoever started them and
+  must survive a daemon restart. Verified: `systemctl --user restart` left both
+  channel pids unchanged.
+- **The daemon reloads the config on each graph event** (`follow_config=True`),
+  because the GUI edits it from another process. The GUI's own router never
+  reloads - its panels hold the objects a reload would replace. The GUI does
+  not start its own router while `daemon_pid()` finds one.
+- **`watch` exits 1 when `pw-dump` dies** (`GraphMonitor.ended`) so systemd
+  restarts it. Before this it sat forever routing nothing. Verified by killing
+  only the daemon's own `pw-dump` child: restart in 3s, channels untouched.
+- **`apply()` restarts a running channel whose sink is missing from the graph.**
+  A host process can outlive the PipeWire it was attached to; conf unchanged
+  plus pid alive used to count as healthy. Unit-tested only - verifying it live
+  means restarting the user's PipeWire.
+
+## Remembering apps (owner ruling 2026-09-12)
+
+**The first "Send to" for an app that no rule covers remembers it** on that
+channel (`Engine.send(..., remember_new=True)`). A later "Send to" for an app
+that already has a rule is a one-off and changes nothing saved. "Always send
+this app here" (`Engine.remember_app`) UPDATES the app's existing rule rather
+than appending one - rules are first-match-wins, so a second rule for the same
+app would be listed and never take effect.
+
 ## State
 
-Engine, CLI, GUI, routing and the auto-router are built and verified against
-live PipeWire - including a real offscreen GUI run that started a real channel,
-edited it, and restarted it. Nothing is installed as a service or has a desktop
-entry; `watch` is the headless daemon and runs in the foreground.
+Engine, CLI, GUI, routing, auto-router, launcher and login service are built and
+verified against live PipeWire. The login service was verified routing a
+stream from a rule saved by a different process, with no window involved.
+Not yet verified: an actual logout/login cycle.

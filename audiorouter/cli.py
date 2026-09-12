@@ -18,11 +18,15 @@ from typing import Any
 from .channels import ChannelError
 from .config import ConfigError, config_path
 from .effects import EffectError, all_specs
-from .engine import AutoRouter, Engine, EngineError, MoveResult
+from . import install
+from .engine import AutoRouter, DaemonRecord, Engine, EngineError, MoveResult, daemon_pid
 from .pwgraph import PwError
 from .routing import MATCH_FIELDS, RoutingError
 
-USER_ERRORS = (EngineError, ChannelError, ConfigError, EffectError, RoutingError, PwError)
+USER_ERRORS = (
+    EngineError, ChannelError, ConfigError, EffectError, RoutingError, PwError,
+    install.InstallError,
+)
 
 
 def _parse_params(pairs: list[str]) -> dict[str, float]:
@@ -275,12 +279,39 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGINT, _signal)
     signal.signal(signal.SIGTERM, _signal)
-    with AutoRouter(engine, on_move=_report):
+    code = 0
+    with DaemonRecord(), AutoRouter(engine, on_move=_report, follow_config=True) as auto:
         print("watching for new streams; Ctrl-C to stop", flush=True)
-        stop.wait()
+        while not stop.wait(1.0):
+            if auto.ended:
+                # Exit non-zero so a service manager starts us again, which
+                # re-applies the channels PipeWire just lost.
+                print("lost the PipeWire graph; exiting", file=sys.stderr, flush=True)
+                code = 1
+                break
     if args.stop_channels:
         engine.stop_all()
     print("stopped")
+    return code
+
+
+def cmd_launcher(engine: Engine, args: argparse.Namespace) -> int:
+    if args.remove:
+        print("removed" if install.remove_launcher() else "no launcher was installed")
+        return 0
+    print(f"installed {install.install_launcher()}")
+    return 0
+
+
+def cmd_login(engine: Engine, args: argparse.Namespace) -> int:
+    if args.state == "on":
+        print(f"enabled {install.enable_login_service()}")
+    elif args.state == "off":
+        print("disabled" if install.disable_login_service() else "was not enabled")
+    else:
+        pid = daemon_pid()
+        print(f"start at login: {'on' if install.login_service_enabled() else 'off'}")
+        print(f"routing daemon: {f'running (pid {pid})' if pid else 'not running'}")
     return 0
 
 
@@ -395,6 +426,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--stop-channels", action="store_true", help="also stop channels when interrupted"
     )
     watch.set_defaults(func=cmd_watch)
+
+    launcher = sub.add_parser("launcher", help="add the window to the application menu")
+    launcher.add_argument("--remove", action="store_true", help="take it out again")
+    launcher.set_defaults(func=cmd_launcher)
+
+    login = sub.add_parser("login", help="keep routing in the background, from login")
+    login.add_argument("state", nargs="?", choices=("on", "off", "status"), default="status")
+    login.set_defaults(func=cmd_login)
     return parser
 
 

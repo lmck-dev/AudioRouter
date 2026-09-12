@@ -26,6 +26,11 @@ from audiorouter.pwgraph import Graph
 
 from .test_engine import live_graph
 
+if QApplication is not None:
+    from audiorouter.gui.main import MainWindow as _MainWindow
+
+    REAL_START_AUTO_ROUTER = _MainWindow._start_auto_router
+
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class GuiTestCase(unittest.TestCase):
@@ -45,6 +50,7 @@ class GuiTestCase(unittest.TestCase):
             mock.patch.object(Graph, "snapshot", staticmethod(live_graph)),
             mock.patch("audiorouter.gui.monitor.GraphBridge.start", lambda self: False),
             mock.patch("audiorouter.gui.main.MainWindow._start_auto_router", lambda self: None),
+            mock.patch("audiorouter.install.login_service_enabled", return_value=False),
         ):
             target.start()
             self.addCleanup(target.stop)
@@ -186,7 +192,7 @@ class StreamsTest(GuiTestCase):
             combo = self.window.streams_panel.table.cellWidget(0, 2)
             combo.setCurrentIndex(1)
             combo.activated.emit(1)
-        send.assert_called_once_with(60, "speakers")
+        send.assert_called_once_with(60, "speakers", remember_new=True)
 
     def test_a_hand_placed_stream_is_not_dragged_back_by_the_rules(self):
         self.window.auto = mock.Mock()
@@ -201,11 +207,72 @@ class StreamsTest(GuiTestCase):
                          [("app", "firefox", "speakers")])
         self.assertEqual(self.window.rules_list.count(), 1)
 
+    def test_remembering_again_changes_the_channel_instead_of_adding_a_rule(self):
+        self.window._remember_stream(60, "speakers")
+        self.window._remember_stream(60, "phones")
+        rules = Config.load(self.engine.path).rules.rules
+        self.assertEqual([(r.pattern, r.channel) for r in rules], [("firefox", "phones")])
+
     def test_forgetting_removes_the_rule(self):
         self.window._remember_stream(60, "speakers")
         self.window.rules_list.setCurrentRow(0)
         self.window._forget_rule()
         self.assertEqual(Config.load(self.engine.path).rules.rules, [])
+
+
+class BackgroundServiceTest(GuiTestCase):
+    def test_switching_it_on_hands_routing_to_the_service(self):
+        own = mock.Mock()
+        self.window.auto = own
+        with mock.patch("audiorouter.install.enable_login_service") as enable:
+            self.window.background.setChecked(True)
+        enable.assert_called_once()
+        own.stop.assert_called_once()
+        self.assertIsNone(self.window.auto)
+
+    def test_switching_it_off_takes_routing_back(self):
+        with mock.patch("audiorouter.install.enable_login_service"):
+            self.window.background.setChecked(True)
+        with mock.patch("audiorouter.install.disable_login_service") as disable, \
+             mock.patch("audiorouter.gui.main.MainWindow._start_auto_router") as start:
+            self.window.background.setChecked(False)
+        disable.assert_called_once()
+        start.assert_called_once()
+
+    def test_a_failure_puts_the_box_back_and_says_why(self):
+        from PyQt6.QtWidgets import QMessageBox
+
+        from audiorouter.install import InstallError
+
+        with mock.patch("audiorouter.install.enable_login_service",
+                        side_effect=InstallError("no systemd")), \
+             mock.patch.object(QMessageBox, "warning") as warning:
+            self.window.background.setChecked(True)
+        self.assertFalse(self.window.background.isChecked())
+        warning.assert_called_once()
+
+
+class OwnRouterTest(GuiTestCase):
+    # setUp patches _start_auto_router out, so these call the real one.
+    def real_start(self):
+        from audiorouter.gui import main
+
+        REAL_START_AUTO_ROUTER(self.window)
+        return main
+
+    def test_the_window_does_not_route_while_a_daemon_already_is(self):
+        with mock.patch("audiorouter.gui.main.daemon_pid", return_value=4321), \
+             mock.patch("audiorouter.gui.main.AutoRouter") as router:
+            self.real_start()
+        router.assert_not_called()
+        self.assertIsNone(self.window.auto)
+
+    def test_the_window_routes_by_itself_when_no_daemon_is_running(self):
+        with mock.patch("audiorouter.gui.main.daemon_pid", return_value=None), \
+             mock.patch("audiorouter.gui.main.AutoRouter") as router:
+            self.real_start()
+        router.return_value.start.assert_called_once()
+        self.window.auto = None  # the mock has nothing to stop
 
 
 class NamingTest(unittest.TestCase):

@@ -32,10 +32,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .. import install
 from ..channels import ChannelError, validate_slug
 from ..config import ConfigError
 from ..effects import EffectError
-from ..engine import AutoRouter, Engine, EngineError
+from ..engine import AutoRouter, Engine, EngineError, daemon_pid
 from ..pwgraph import PwError
 from ..routing import RoutingError
 from .channel_panel import ChannelPanel
@@ -91,11 +92,18 @@ class MainWindow(QMainWindow):
     def _build(self) -> None:
         self.auto_route = QCheckBox("Send new apps to their usual channel", self)
         self.auto_route.setChecked(self.engine.config.auto_route)
+        self.background = QCheckBox("Keep routing with this window closed, and from login", self)
+        self.background.setToolTip(
+            "Runs a small background service that starts your channels when you log in "
+            "and sends each app to its channel, without this window open."
+        )
+        self.background.setChecked(install.login_service_enabled())
         self.status_label = QLabel(self)
         self.status_label.setWordWrap(True)
 
         top = QHBoxLayout()
         top.addWidget(self.auto_route)
+        top.addWidget(self.background)
         top.addStretch(1)
         top.addWidget(self.status_label)
 
@@ -159,6 +167,7 @@ class MainWindow(QMainWindow):
         self.channel_panel.renamed.connect(self._refresh_channel_list)
         self.effects_panel.changed.connect(self._config_edited)
         self.auto_route.toggled.connect(self._auto_route_toggled)
+        self.background.toggled.connect(self._background_toggled)
         self.streams_panel.send_requested.connect(self._send_stream)
         self.streams_panel.remember_requested.connect(self._remember_stream)
         self.forget_button.clicked.connect(self._forget_rule)
@@ -322,9 +331,31 @@ class MainWindow(QMainWindow):
         self.engine.config.auto_route = on
         self.engine.save()
 
+    def _background_toggled(self, on: bool) -> None:
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        try:
+            if on:
+                install.enable_login_service()
+            else:
+                install.disable_login_service()
+        except (install.InstallError, OSError) as exc:
+            self.background.blockSignals(True)
+            self.background.setChecked(not on)
+            self.background.blockSignals(False)
+            self._error("Could not change the background service", str(exc))
+            return
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+        if on:
+            # The service routes from now on; two routers would both place
+            # every new stream.
+            self._stop_auto_router()
+        else:
+            self._start_auto_router()
+
     def _send_stream(self, stream_id: int, slug: str) -> None:
         try:
-            self.engine.send(stream_id, slug)
+            self.engine.send(stream_id, slug, remember_new=True)
         except USER_ERRORS as exc:
             self._error("Could not move that app", str(exc))
         if self.auto is not None:
@@ -337,7 +368,7 @@ class MainWindow(QMainWindow):
         if node is None:
             return
         try:
-            self.engine.add_rule("app", node.app_name, slug)
+            self.engine.remember_app(node.app_name, slug)
         except USER_ERRORS as exc:
             self._error("Could not remember that app", str(exc))
             return
@@ -379,12 +410,17 @@ class MainWindow(QMainWindow):
         self.apply_now()
 
     def _start_auto_router(self) -> None:
-        if self.auto is not None:
+        if self.auto is not None or daemon_pid() is not None:
             return
         try:
             self.auto = AutoRouter(self.engine)
             self.auto.start()
         except PwError:
+            self.auto = None
+
+    def _stop_auto_router(self) -> None:
+        if self.auto is not None:
+            self.auto.stop()
             self.auto = None
 
     def _monitor_failed(self, message: str) -> None:
@@ -395,8 +431,7 @@ class MainWindow(QMainWindow):
         self._set_status(detail, warn=True)
 
     def closeEvent(self, event) -> None:
-        if self.auto is not None:
-            self.auto.stop()
+        self._stop_auto_router()
         self.bridge.stop()
         super().closeEvent(event)
 
@@ -404,6 +439,7 @@ class MainWindow(QMainWindow):
 def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Audio Router")
+    app.setDesktopFileName(install.APP_ID)
     try:
         engine = Engine.load()
     except ConfigError as exc:
@@ -416,3 +452,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _entry():  # pragma: no cover - console-script shim
     raise SystemExit(main())
+
+
+if __name__ == "__main__":  # pragma: no cover - `python -m audiorouter.gui.main`
+    _entry()

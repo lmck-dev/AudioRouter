@@ -18,6 +18,7 @@ Two rules shape the whole file:
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ from .channels import (
     runtime_dir,
     validate_slug,
 )
-from .config import Config, ConfigError, default_config
+from .config import Config, ConfigError, config_path, default_config
 from .effects import Effect, EffectError, spec_for
 from .pwgraph import Graph, GraphMonitor, Node, PwError
 from .routing import Placement, Router, Rule, RuleSet, plan
@@ -97,6 +98,7 @@ class Engine:
         self.dry_run = dry_run
         self.router = Router(dry_run=dry_run)
         self._graph: Graph | None = None
+        self._loaded_stamp = self._config_stamp()
 
     # -- construction and persistence -------------------------------------
 
@@ -107,7 +109,36 @@ class Engine:
     def save(self) -> Path | None:
         if self.dry_run:
             return None
-        return self.config.save(self.path)
+        saved = self.config.save(self.path)
+        self._loaded_stamp = self._config_stamp()
+        return saved
+
+    def _config_stamp(self) -> tuple[int, int] | None:
+        try:
+            info = (self.path or config_path()).stat()
+        except OSError:
+            return None
+        return (info.st_mtime_ns, info.st_size)
+
+    def reload_if_changed(self) -> bool:
+        """Adopt settings another process saved since we last read or wrote them.
+
+        The login daemon runs for the whole session while the GUI comes and
+        goes; without this, an app remembered in the window would not be routed
+        until the next login. A file that cannot be read is ignored and the last
+        good settings kept - half-understood rules are worse than stale ones.
+        Only a process that never edits the config itself should call this.
+        """
+        stamp = self._config_stamp()
+        if stamp is None or stamp == self._loaded_stamp:
+            return False
+        try:
+            config = Config.load(self.path)
+        except ConfigError:
+            return False
+        self.config = config
+        self._loaded_stamp = stamp
+        return True
 
     # -- the graph ---------------------------------------------------------
 
@@ -267,6 +298,21 @@ class Engine:
         self.save()
         return rule
 
+    def remember_app(self, app_name: str, slug: str) -> Rule:
+        """Always send this app to `slug`: update its own rule, or add one.
+
+        Updating matters because rules are first-match-wins: appending a second
+        rule for the same app would be saved, listed, and never take effect.
+        """
+        if not self.config.has_channel(slug):
+            raise ConfigError(f"no channel {slug!r} to route to")
+        for rule in self.config.rules.rules:
+            if rule.field == "app" and rule.pattern.casefold() == app_name.casefold():
+                rule.channel = slug
+                self.save()
+                return rule
+        return self.add_rule("app", app_name, slug)
+
     def remove_rule(self, index: int) -> Rule:
         rules = self.config.rules.rules
         if not 0 <= index < len(rules):
@@ -335,14 +381,16 @@ class Engine:
         stopped = channel.stop()
         return Action("stop", slug, "" if stopped else "was not running")
 
-    def _occupants(self) -> dict[int, str]:
-        """Which channel each playing stream is sitting on right now."""
+    def _live_graph(self) -> Graph | None:
         try:
-            graph = self.graph(refresh=True)
+            return self.graph(refresh=True)
         except PwError:
-            # Knowing where streams were is a courtesy; not knowing must never
-            # stop the channels themselves from being brought up.
-            return {}
+            # Knowing the graph is a courtesy here; not knowing must never stop
+            # the channels themselves from being brought up.
+            return None
+
+    def _occupants(self, graph: Graph) -> dict[int, str]:
+        """Which channel each playing stream is sitting on right now."""
         sinks = self.sink_map(graph)
         by_id = {node.id: slug for slug, node in sinks.items()}
         placed: dict[int, str] = {}
@@ -392,7 +440,12 @@ class Engine:
         because a restart takes the sink out from under them.
         """
         report = ApplyReport()
-        occupants = self._occupants() if restore and not self.dry_run else {}
+        live = None if self.dry_run else self._live_graph()
+        occupants = self._occupants(live) if restore and live is not None else {}
+        # Channels whose sink is in the graph. A host process can outlive the
+        # PipeWire daemon it was attached to (a PipeWire restart, a login race):
+        # alive, config unchanged, and no sink. Unknown when the graph is.
+        present = set(self.sink_map(live)) if live is not None else None
         for slug in self.orphan_slugs():
             probe = Channel(slug=slug, name=slug, device="")
             if not self.dry_run:
@@ -412,11 +465,13 @@ class Engine:
                     channel.stop()
                 report.failures.append(Action("skip", channel.slug, "; ".join(missing)))
                 continue
-            if running and not self.needs_restart(channel):
+            lost_sink = present is not None and channel.slug not in present
+            if running and not self.needs_restart(channel) and not lost_sink:
                 continue
             try:
                 action = self.start_channel(channel.slug)
-                action.detail = action.detail or ("restart" if running else "")
+                if running and not action.detail:
+                    action.detail = "restart: its sink had gone" if lost_sink else "restart"
                 report.actions.append(action)
             except (ChannelError, PwError) as exc:
                 report.failures.append(Action("start", channel.slug, str(exc)))
@@ -475,8 +530,14 @@ class Engine:
                 )
         return results
 
-    def send(self, stream_id: int, slug: str) -> MoveResult:
-        """Move one stream to one channel, ignoring the rules. The manual override."""
+    def send(self, stream_id: int, slug: str, remember_new: bool = False) -> MoveResult:
+        """Move one stream to one channel, ignoring the rules. The manual override.
+
+        With `remember_new`, an app no rule covers yet is remembered on this
+        channel - the first choice someone makes for an app is almost always
+        where they want it next time. An app that already has a rule is left
+        alone: moving it again is a one-off, not a change of mind about it.
+        """
         graph = self.graph(refresh=True)
         stream = graph.node(stream_id)
         if stream is None:
@@ -485,6 +546,9 @@ class Engine:
         if sink is None:
             raise EngineError(f"channel {slug!r} is not running; start it first")
         self.router.move(stream, sink)
+        if remember_new and stream.app_name and self.config.rules.resolve(stream) is None:
+            self.add_rule("app", stream.app_name, slug)
+            return MoveResult(stream.app_name, slug, True, "manual, remembered")
         return MoveResult(stream.app_name, slug, True, "manual")
 
     # -- status ------------------------------------------------------------
@@ -533,9 +597,18 @@ class AutoRouter:
     choice every time they made one, with no way to win.
     """
 
-    def __init__(self, engine: Engine, on_move: Callable[[MoveResult], None] | None = None) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        on_move: Callable[[MoveResult], None] | None = None,
+        follow_config: bool = False,
+    ) -> None:
         self.engine = engine
         self.on_move = on_move
+        #: Re-read the config file on each graph event. For the daemon, whose
+        #: settings are edited by the GUI in another process; never for the GUI,
+        #: whose panels hold the very objects a reload would replace.
+        self.follow_config = follow_config
         self._placed: set[int] = set()
         self._lock = threading.Lock()
         self._monitor = GraphMonitor(self._changed)
@@ -548,6 +621,11 @@ class AutoRouter:
 
     def stop(self) -> None:
         self._monitor.stop()
+
+    @property
+    def ended(self) -> bool:
+        """The graph feed died on its own, e.g. PipeWire restarted. Nothing routes now."""
+        return self._monitor.ended.is_set()
 
     def forget(self, stream_id: int) -> None:
         """Allow a stream to be auto-placed again, e.g. after its rules changed."""
@@ -565,6 +643,8 @@ class AutoRouter:
             self._placed.add(int(stream_id))
 
     def _changed(self, graph: Graph) -> None:
+        if self.follow_config:
+            self.engine.reload_if_changed()
         if not self.engine.config.auto_route:
             return
         with self._lock:
@@ -585,3 +665,54 @@ class AutoRouter:
 
     def __exit__(self, *exc: object) -> None:
         self.stop()
+
+
+# -- the background daemon -------------------------------------------------
+
+
+def daemon_pid_path() -> Path:
+    # Not `*.pid`: every pid file in this directory is taken to be a channel's,
+    # so `daemon.pid` was deleted as an orphan by the next status refresh - and
+    # would have collided with a channel the user named "daemon".
+    return runtime_dir() / "routing.daemon"
+
+
+def _cmdline(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode(errors="ignore") for part in raw.split(b"\0") if part]
+
+
+def daemon_pid() -> int | None:
+    """The routing daemon's pid if one is running, whoever started it.
+
+    The GUI asks this before routing by itself: two routers would both place
+    every new stream, and the GUI's would stop the moment its window closed.
+    The pid file alone is not trusted - pids are reused.
+    """
+    try:
+        pid = int(daemon_pid_path().read_text().strip())
+    except (OSError, ValueError):
+        return None
+    args = _cmdline(pid)
+    if "watch" in args and any("audiorouter" in part for part in args):
+        return pid
+    return None
+
+
+class DaemonRecord:
+    """Marks this process as the routing daemon for as long as the block runs."""
+
+    def __enter__(self) -> DaemonRecord:
+        daemon_pid_path().write_text(str(os.getpid()))
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        path = daemon_pid_path()
+        try:
+            if path.read_text().strip() == str(os.getpid()):
+                path.unlink()
+        except OSError:
+            pass

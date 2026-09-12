@@ -316,11 +316,14 @@ class GraphMonitor:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._ready = threading.Event()
+        #: Set when pw-dump exits without being asked to - PipeWire went away.
+        self.ended = threading.Event()
 
     def start(self, wait: float = 10.0) -> None:
         require_tools("pw-dump")
         self._stop.clear()
         self._ready.clear()
+        self.ended.clear()
         self._proc = subprocess.Popen(
             ["pw-dump", "-m", "-N"],
             stdout=subprocess.PIPE,
@@ -346,6 +349,8 @@ class GraphMonitor:
                     self._on_change(self.graph)
                 except Exception:  # noqa: BLE001 - a bad callback must not kill the monitor
                     pass
+        if not self._stop.is_set():
+            self.ended.set()
 
     def stop(self) -> None:
         self._stop.set()
