@@ -24,7 +24,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .channels import Channel, ChannelError, runtime_dir, validate_slug
+from .channels import (
+    SLUG_RE,
+    Channel,
+    ChannelError,
+    running_hosts,
+    runtime_dir,
+    validate_slug,
+)
 from .config import Config, ConfigError, default_config
 from .effects import Effect, EffectError, spec_for
 from .pwgraph import Graph, GraphMonitor, Node, PwError
@@ -295,18 +302,23 @@ class Engine:
             return True
 
     def orphan_slugs(self) -> list[str]:
-        """Channel processes still running for channels no longer configured."""
+        """Channel processes still running for channels no longer configured.
+
+        Both records are consulted: the pid files we wrote, and the processes
+        actually running. A process whose pid file was lost is exactly the one
+        that would otherwise hold a sink forever with nothing able to stop it.
+        """
         known = set(self.config.channel_slugs)
+        candidates = {p.stem for p in runtime_dir().glob("*.pid")}
+        candidates |= set(running_hosts())
         found: list[str] = []
-        for pid_file in sorted(runtime_dir().glob("*.pid")):
-            slug = pid_file.stem
-            if slug in known:
+        for slug in sorted(candidates - known):
+            if not SLUG_RE.match(slug):
                 continue
-            probe = Channel(slug=slug, name=slug, device="")
-            if probe.is_running():
+            if Channel(slug=slug, name=slug, device="").is_running():
                 found.append(slug)
             else:
-                pid_file.unlink(missing_ok=True)
+                (runtime_dir() / f"{slug}.pid").unlink(missing_ok=True)
         return found
 
     def start_channel(self, slug: str) -> Action:
@@ -323,15 +335,64 @@ class Engine:
         stopped = channel.stop()
         return Action("stop", slug, "" if stopped else "was not running")
 
-    def apply(self) -> ApplyReport:
+    def _occupants(self) -> dict[int, str]:
+        """Which channel each playing stream is sitting on right now."""
+        try:
+            graph = self.graph(refresh=True)
+        except PwError:
+            # Knowing where streams were is a courtesy; not knowing must never
+            # stop the channels themselves from being brought up.
+            return {}
+        sinks = self.sink_map(graph)
+        by_id = {node.id: slug for slug, node in sinks.items()}
+        placed: dict[int, str] = {}
+        for stream in graph.app_streams():
+            current = graph.sink_of_stream(stream.id)
+            if current is not None and current.id in by_id:
+                placed[stream.id] = by_id[current.id]
+        return placed
+
+    def _restore(self, occupants: dict[int, str]) -> list[Action]:
+        """Put streams back on the channels they were on before a restart.
+
+        Restarting a channel destroys its sink, and every stream pointed at it
+        falls back to the default output and stays there. Without this, changing
+        one setting would scatter everything the user had arranged - including
+        streams they placed by hand, which no rule would ever bring back.
+        """
+        if not occupants:
+            return []
+        graph = self.graph(refresh=True)
+        sinks = self.sink_map(graph)
+        done: list[Action] = []
+        for stream_id, slug in occupants.items():
+            stream = graph.node(stream_id)
+            sink = sinks.get(slug)
+            if stream is None or sink is None or not stream.is_app_stream:
+                continue
+            current = graph.sink_of_stream(stream_id)
+            if current is not None and current.id == sink.id:
+                continue
+            try:
+                self.router.move(stream, sink)
+                done.append(Action("restore", slug, stream.app_name))
+            except Exception:  # noqa: BLE001 - a stream that went away is fine
+                continue
+        return done
+
+    def apply(self, restore: bool = True) -> ApplyReport:
         """Make the running processes match the configuration.
 
         Enabled channels are started or restarted, disabled ones stopped, and
         processes left behind by deleted channels are killed. Failures are
         collected rather than raised: one broken channel must not stop the rest
         of the system from coming up.
+
+        `restore` puts streams back on the channels they were playing through,
+        because a restart takes the sink out from under them.
         """
         report = ApplyReport()
+        occupants = self._occupants() if restore and not self.dry_run else {}
         for slug in self.orphan_slugs():
             probe = Channel(slug=slug, name=slug, device="")
             if not self.dry_run:
@@ -359,6 +420,9 @@ class Engine:
                 report.actions.append(action)
             except (ChannelError, PwError) as exc:
                 report.failures.append(Action("start", channel.slug, str(exc)))
+        self._graph = None
+        if occupants and report.changed:
+            report.actions.extend(self._restore(occupants))
         self._graph = None
         return report
 
@@ -489,6 +553,16 @@ class AutoRouter:
         """Allow a stream to be auto-placed again, e.g. after its rules changed."""
         with self._lock:
             self._placed.discard(int(stream_id))
+
+    def remember(self, stream_id: int) -> None:
+        """Treat a stream as already placed, so the rules leave it alone.
+
+        Called when the user moves something by hand. Without it, a stream the
+        watcher had not yet seen would be dragged back to its rule the moment
+        the next graph event arrived.
+        """
+        with self._lock:
+            self._placed.add(int(stream_id))
 
     def _changed(self, graph: Graph) -> None:
         if not self.engine.config.auto_route:

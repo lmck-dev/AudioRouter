@@ -27,6 +27,20 @@ source before this design was chosen.
   compressor and limiter. Everything else is built into PipeWire. Run
   `audiorouter effects` to see what this machine can actually load.
 
+## The window
+
+```sh
+python -m audiorouter.gui.main        # or: audiorouter-gui
+```
+
+Channels are on the left with their effect chain on the right, and everything
+currently making sound is listed underneath with a menu to send it elsewhere.
+Moving something takes effect immediately; **Always send this app here**
+remembers it, and the remembered apps can be forgotten again in the same window.
+
+Edits apply themselves. Changing an effect restarts that channel behind the
+scenes, and anything playing through it is put back afterwards.
+
 ## Quick start
 
 ```sh

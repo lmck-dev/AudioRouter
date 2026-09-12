@@ -276,7 +276,13 @@ def spec_for(kind: str) -> EffectSpec:
 
 
 def all_specs() -> list[EffectSpec]:
-    return [_SPECS[k] for k in sorted(_SPECS)]
+    """Every effect, in the order they are worth offering.
+
+    Registration order, not alphabetical: the first thing a menu shows should be
+    the thing most people want (a volume trim), not whichever name happens to
+    sort first (a compressor that needs a plugin installed).
+    """
+    return list(_SPECS.values())
 
 
 @dataclass

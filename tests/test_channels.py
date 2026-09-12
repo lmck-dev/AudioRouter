@@ -110,6 +110,22 @@ class ProcessTest(unittest.TestCase):
         self.channel.pid_path.write_text("not a pid")
         self.assertIsNone(self.channel.pid())
 
+    def test_a_channel_is_found_again_when_its_pid_file_is_lost(self):
+        # A lost pid file used to mean a process nothing could ever stop,
+        # holding a sink the user could not get rid of.
+        with mock.patch("audiorouter.channels.running_hosts", return_value={"x": 4321}):
+            self.assertEqual(self.channel.pid(), 4321)
+        self.assertEqual(self.channel.pid_path.read_text(), "4321")
+
+    def test_a_stale_pid_file_is_replaced_by_what_is_really_running(self):
+        self.channel.pid_path.write_text("999999")
+        with mock.patch("audiorouter.channels.running_hosts", return_value={"x": 4321}):
+            self.assertEqual(self.channel.pid(), 4321)
+
+    def test_nothing_is_adopted_when_nothing_is_running(self):
+        with mock.patch("audiorouter.channels.running_hosts", return_value={}):
+            self.assertIsNone(self.channel.pid())
+
     def test_stopping_something_that_is_not_running_says_so(self):
         self.assertFalse(self.channel.stop())
 
@@ -119,6 +135,48 @@ class ProcessTest(unittest.TestCase):
             self.assertTrue(channel.missing_plugins())
             with self.assertRaises(ChannelError):
                 channel.start()
+
+
+class ProcessDiscoveryTest(unittest.TestCase):
+    """running_hosts() reads /proc, so it is tested against a fake one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.proc = Path(self.tmp.name) / "proc"
+        self.proc.mkdir()
+        self.conf_dir = runtime_dir()
+
+    def add_process(self, pid: int, *argv: str) -> None:
+        entry = self.proc / str(pid)
+        entry.mkdir()
+        (entry / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+
+    def hosts(self):
+        with mock.patch("audiorouter.channels.Path", side_effect=lambda p:
+                        self.proc if str(p) == "/proc" else Path(p)):
+            from audiorouter.channels import running_hosts
+            return running_hosts()
+
+    def test_our_host_processes_are_recognised_by_their_conf_path(self):
+        self.add_process(101, "pipewire", "-c", str(self.conf_dir / "speakers.conf"))
+        self.assertEqual(self.hosts(), {"speakers": 101})
+
+    def test_the_users_own_pipewire_daemon_is_not_ours(self):
+        self.add_process(102, "/usr/bin/pipewire")
+        self.assertEqual(self.hosts(), {})
+
+    def test_another_programs_pipewire_config_is_not_ours(self):
+        self.add_process(103, "pipewire", "-c", "/etc/pipewire/pipewire.conf")
+        self.assertEqual(self.hosts(), {})
+
+    def test_a_process_that_exits_mid_scan_is_skipped(self):
+        entry = self.proc / "104"
+        entry.mkdir()  # no cmdline file at all
+        self.assertEqual(self.hosts(), {})
 
 
 class StatusTest(unittest.TestCase):

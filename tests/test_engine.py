@@ -45,6 +45,11 @@ class EngineTestCase(unittest.TestCase):
             path=self.path,
         )
         self.engine.use_graph(live_graph())
+        # XDG_RUNTIME_DIR is redirected above, so a real pw-dump could not reach
+        # PipeWire anyway; make that explicit rather than accidental.
+        snapshot = mock.patch.object(Graph, "snapshot", staticmethod(live_graph))
+        snapshot.start()
+        self.addCleanup(snapshot.stop)
 
 
 class EditingTest(EngineTestCase):
@@ -164,6 +169,52 @@ class ReconcileTest(EngineTestCase):
         with mock.patch.object(Channel, "is_running", side_effect=lambda self=None: True):
             self.assertEqual(self.engine.orphan_slugs(), ["ghost"])
 
+    def test_streams_are_put_back_on_a_channel_that_restarted(self):
+        # A restart destroys the sink; every stream pointed at it falls back to
+        # the default output and stays there unless it is moved back.
+        before = Graph(
+            [
+                fakes.sink(51, "ar_speakers", serial=510, hardware=False,
+                           **{"audiorouter.channel": "speakers"}),
+                fakes.stream(60, "firefox", serial=600),
+                fakes.port(80, 60, "out"),
+                fakes.port(81, 51, "in"),
+                fakes.link(90, 80, 81),
+            ]
+        )
+        after = Graph(
+            [
+                fakes.sink(52, "ar_speakers", serial=520, hardware=False,
+                           **{"audiorouter.channel": "speakers"}),
+                fakes.stream(60, "firefox", serial=600),
+            ]
+        )
+        with mock.patch.object(Graph, "snapshot", side_effect=[before, after]), \
+             mock.patch.object(Channel, "is_running", return_value=False), \
+             mock.patch.object(Channel, "start", return_value=1), \
+             mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            report = self.engine.apply()
+        metadata.assert_called_once_with(60, 520)
+        self.assertIn("restore", [a.kind for a in report.actions])
+
+    def test_nothing_is_restored_when_no_channel_changed(self):
+        channel = self.engine.channel("speakers")
+        channel.config_path.write_text(channel.render_config_text())
+        with mock.patch.object(Graph, "snapshot", return_value=live_graph()), \
+             mock.patch.object(Channel, "is_running", return_value=True), \
+             mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            self.engine.apply()
+        metadata.assert_not_called()
+
+    def test_a_dry_run_never_moves_anything(self):
+        engine = Engine(self.engine.config, path=self.path, dry_run=True)
+        with mock.patch.object(Graph, "snapshot", return_value=live_graph()), \
+             mock.patch.object(Channel, "is_running", return_value=False), \
+             mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            report = engine.apply()
+        metadata.assert_not_called()
+        self.assertEqual(report.actions[0].detail, "dry run")
+
     def test_a_dead_pid_file_is_cleaned_up_rather_than_reported(self):
         directory = Path(self.tmp.name) / "audiorouter"
         directory.mkdir(exist_ok=True)
@@ -232,6 +283,12 @@ class AutoRouterTest(EngineTestCase):
                                       **{"application.name": "firefox"})])
             self.auto._changed(graph)
         self.assertEqual(metadata.call_count, 2)
+
+    def test_a_stream_moved_by_hand_is_left_where_the_user_put_it(self):
+        self.auto.remember(60)
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            self.auto._changed(live_graph())
+        metadata.assert_not_called()
 
     def test_nothing_moves_while_auto_routing_is_off(self):
         self.engine.config.auto_route = False

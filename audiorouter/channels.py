@@ -64,6 +64,38 @@ def runtime_dir() -> Path:
     return path
 
 
+def running_hosts() -> dict[str, int]:
+    """Channel slug -> pid, read from what is actually running.
+
+    Pid files are the fast path, not the truth. One can be deleted, lost with a
+    wiped runtime directory, or never written if we die between spawning and
+    recording - and a channel whose pid file has gone is a process nothing can
+    ever stop, holding a sink the user cannot get rid of. The conf path we
+    launch with carries the slug, so the process itself is the record of last
+    resort.
+    """
+    directory = runtime_dir()
+    found: dict[str, int] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            parts = [
+                part.decode(errors="ignore")
+                for part in (entry / "cmdline").read_bytes().split(b"\0")
+                if part
+            ]
+        except OSError:  # the process went away between listing and reading
+            continue
+        if not parts or Path(parts[0]).name != "pipewire":
+            continue
+        for part in parts[1:]:
+            candidate = Path(part)
+            if candidate.suffix == ".conf" and candidate.parent == directory:
+                found[candidate.stem] = int(entry.name)
+    return found
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -190,15 +222,31 @@ class Channel:
         try:
             pid = int(self.pid_path.read_text().strip())
         except (OSError, ValueError):
-            return None
+            return self._adopt()
         if not _pid_alive(pid):
-            return None
+            return self._adopt()
         # Guard against pid reuse: the process must still be ours.
         try:
             cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
         except OSError:
+            return self._adopt()
+        return pid if str(self.config_path) in cmdline else self._adopt()
+
+    def _adopt(self) -> int | None:
+        """Find our host process without a usable pid file, and record it again.
+
+        Scanning /proc is far more expensive than reading a file, so it only
+        happens when the cheap answer failed - which is also the only time a
+        channel would otherwise be lost.
+        """
+        pid = running_hosts().get(self.slug)
+        if pid is None:
             return None
-        return pid if str(self.config_path) in cmdline else None
+        try:
+            self.pid_path.write_text(str(pid))
+        except OSError:
+            pass
+        return pid
 
     def is_running(self) -> bool:
         return self.pid() is not None

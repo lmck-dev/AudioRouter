@@ -85,8 +85,37 @@ Measure the RMS of the capture against a reference played straight into
 `ar_testdev`. That is how `-6 dB` gain and a 3-stage 1 kHz highpass were both
 confirmed to within 0.05 dB.
 
+## The GUI
+
+`audiorouter/gui/` - PyQt6, entered at `gui/main.py`. It edits the config and
+asks `Engine` to make reality match; it decides nothing about audio itself.
+
+- **Colours come from the palette** (`gui/theme.py`), never hardcoded. A
+  hardcoded dark scheme in JoyCal made every label invisible on a light Plasma
+  theme. The two derived colours (warn, good) are the exception, and each has a
+  light and a dark value.
+- **Render it and look at it.** `QWidget.grab().save(path)` under
+  `QT_QPA_PLATFORM=offscreen`; `spectacle` is broken on this box. Doing that is
+  what caught the form bug below - the tests were all passing.
+- **`QFormLayout.removeRow()`, never `takeAt()` + `deleteLater()`.** deleteLater
+  only schedules destruction, so the previous effect's labels stay painted
+  underneath the new ones and the text overlaps into gibberish.
+- **One debounce, in the window.** The panels report every edit immediately (so
+  nothing typed is lost) and `MainWindow._pending_apply` decides when to restart
+  audio. An earlier version also debounced inside the effects panel, which made
+  every change take 1.3s to be heard.
+- **`Engine.apply()` blocks the GUI thread** while it starts processes and waits
+  for each sink (up to 8s in the worst case, ~0.4s in practice). It runs under a
+  busy cursor. Moving it to a worker thread is the obvious next robustness step.
+- **The device list is hardware only.** `Graph.devices()` filters on `device.id`,
+  so a virtual sink a channel targets is not in the list; the panel still shows
+  it and asks `device_present` before calling anything "not connected".
+- The monitor thread must never touch a widget: `gui/monitor.py` turns each
+  graph callback into a Qt signal and coalesces bursts into one refresh.
+
 ## State
 
-Engine, CLI, routing and the auto-router are built and verified against live
-PipeWire. **No GUI yet, and no toolkit chosen.** Nothing is installed as a
-service; `watch` is the daemon and runs in the foreground.
+Engine, CLI, GUI, routing and the auto-router are built and verified against
+live PipeWire - including a real offscreen GUI run that started a real channel,
+edited it, and restarted it. Nothing is installed as a service or has a desktop
+entry; `watch` is the headless daemon and runs in the foreground.
