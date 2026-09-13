@@ -232,3 +232,40 @@ class CatalogueTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CategoryTest(unittest.TestCase):
+    def cat(self, name, *classes):
+        return lv2.categorise(name, classes)
+
+    def test_declared_classes_decide(self):
+        self.assertEqual(self.cat("Whatever", "Compressor"), "Dynamics")
+        self.assertEqual(self.cat("Whatever", "Flanger"), "Modulation")
+        self.assertEqual(self.cat("Whatever", "ParaEQ"), "EQ & filters")
+        self.assertEqual(self.cat("Whatever", "Pitch"), "Pitch & voice")
+
+    def test_plugins_without_a_class_are_sorted_by_name(self):
+        self.assertEqual(self.cat("RNNoise suppression for voice"), "Noise & gates")
+        self.assertEqual(self.cat("GxWah"), "Modulation")
+
+    def test_a_gate_is_a_gate_before_it_is_dynamics_and_a_noise_generator_is_not_noise_removal(self):
+        self.assertEqual(self.cat("Calf Multiband Gate", "Gate", "Dynamics"), "Noise & gates")
+        self.assertEqual(self.cat("LSP Noise Generator x1", "Generator"), "Utility")
+
+    def test_anything_unrecognised_is_utility(self):
+        self.assertEqual(self.cat("Mystery box"), "Utility")
+
+
+class VendorTest(unittest.TestCase):
+    def vendor(self, uri):
+        return lv2.Plugin(uri=uri, name="x", bundle="/x").vendor
+
+    def test_makers_are_named_as_people_know_them(self):
+        self.assertEqual(self.vendor("http://plugin.org.uk/swh-plugins/flanger"), "SWH")
+        self.assertEqual(self.vendor("http://gareus.org/oss/lv2/fat1"), "x42")
+        self.assertEqual(self.vendor("http://breakfastquay.com/rdf/lv2-rubberband#livestereo"), "Rubber Band")
+        self.assertEqual(self.vendor("https://github.com/werman/noise-suppression-for-voice#stereo"), "RNNoise")
+
+    def test_a_short_needle_does_not_match_inside_another_word(self):
+        # Regression: "tap" matched SWH's tapeDelay.
+        self.assertEqual(self.vendor("http://plugin.org.uk/swh-plugins/tapeDelay"), "SWH")

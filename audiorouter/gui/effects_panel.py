@@ -295,7 +295,7 @@ class EffectBrowser(QDialog):
         self.show_unusable = QCheckBox("Also show plugins that cannot be used here", self)
         self.tree = QTreeWidget(self)
         self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels(["Effect", "Type"])
+        self.tree.setHeaderLabels(["Effect", "Maker"])
         self.tree.setRootIsDecorated(True)
         self.tree.setUniformRowHeights(True)
         # Sized by the header, not by contents: the plugin groups start
@@ -329,24 +329,33 @@ class EffectBrowser(QDialog):
         self.search.setFocus()
 
     def _populate(self) -> None:
+        """One group per kind of effect; built-in effects first within each."""
+        from collections import Counter
+
+        from ..lv2 import CATEGORIES
+
         self.tree.clear()
-        groups: dict[str, QTreeWidgetItem] = {}
         specs: list[EffectSpec] = list(all_specs())
         try:
             specs += plugin_specs(include_unusable=self.show_unusable.isChecked())
         except Exception as exc:  # noqa: BLE001 - a broken catalogue must not hide the built-ins
             self.detail.setText(f"Could not read the installed plugins: {exc}")
+        # Mono and stereo builds often share a name (RNNoise does); say which.
+        repeated = Counter(spec.label for spec in specs)
+        groups: dict[str, QTreeWidgetItem] = {}
+        for category in CATEGORIES:
+            group = QTreeWidgetItem(self.tree, [category])
+            group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            group.setFirstColumnSpanned(True)
+            groups[category] = group
         dim = Theme(self).dim
         for spec in specs:
-            group = groups.get(spec.group)
-            if group is None:
-                title = "Built in" if spec.group == "Built in" else f"{spec.group} plugins"
-                group = QTreeWidgetItem(self.tree, [title])
-                group.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                group.setFirstColumnSpanned(True)
-                groups[spec.group] = group
-            kind = spec.summary.split(" (")[0] if spec.plugin else "Simple"
-            item = QTreeWidgetItem(group, [spec.label, kind.replace(f"{spec.group} ", "", 1)])
+            group = groups.get(spec.category, groups["Utility"])
+            label = spec.label
+            if repeated[label] > 1 and spec.plugin:
+                layout = "stereo" if "(stereo)" in spec.summary else "mono"
+                label = f"{label} ({layout})"
+            item = QTreeWidgetItem(group, [label, spec.group])
             item.setData(0, Qt.ItemDataRole.UserRole, (spec.kind, spec.plugin))
             problems = spec.unsatisfied()
             item.setData(0, Qt.ItemDataRole.UserRole + 1, spec.summary)
@@ -359,9 +368,8 @@ class EffectBrowser(QDialog):
                 item.setData(0, Qt.ItemDataRole.UserRole + 2, False)
             else:
                 item.setData(0, Qt.ItemDataRole.UserRole + 2, True)
-        builtin = groups.get("Built in")
-        if builtin is not None:
-            builtin.setExpanded(True)
+        for group in groups.values():
+            group.setText(0, f"{group.text(0)}  ({group.childCount()})")
         self._filter(self.search.text())
 
     def _items(self):
@@ -371,14 +379,31 @@ class EffectBrowser(QDialog):
                 yield group, group.child(i)
 
     def _filter(self, text: str) -> None:
+        """Show effects matching every word typed.
+
+        An effect's own name, maker and description are searched first; the
+        kind of effect only counts when nothing matches by itself. Otherwise
+        "noise" matched the whole "Noise & gates" group and buried RNNoise
+        among 44 gates and expanders.
+        """
         words = text.lower().split()
+        items = list(self._items())
+
+        def own(item: QTreeWidgetItem) -> str:
+            return " ".join(
+                [item.text(0), item.text(1), str(item.data(0, Qt.ItemDataRole.UserRole + 1))]
+            ).lower()
+
+        hits = {id(item) for _, item in items if all(w in own(item) for w in words)}
+        if words and not hits:
+            hits = {
+                id(item) for group, item in items
+                if all(w in f"{own(item)} {group.text(0).lower()}" for w in words)
+            }
         visible_groups: set[int] = set()
         first: QTreeWidgetItem | None = None
-        for group, item in self._items():
-            haystack = " ".join(
-                [item.text(0), item.text(1), group.text(0), str(item.data(0, Qt.ItemDataRole.UserRole + 1))]
-            ).lower()
-            hit = all(word in haystack for word in words)
+        for group, item in items:
+            hit = not words or id(item) in hits
             item.setHidden(not hit)
             if hit:
                 visible_groups.add(id(group))
@@ -387,8 +412,7 @@ class EffectBrowser(QDialog):
         for g in range(self.tree.topLevelItemCount()):
             group = self.tree.topLevelItem(g)
             group.setHidden(id(group) not in visible_groups)
-            if words:
-                group.setExpanded(True)
+            group.setExpanded(bool(words))
         if words and first is not None:
             self.tree.setCurrentItem(first)
 

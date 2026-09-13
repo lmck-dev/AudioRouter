@@ -74,6 +74,66 @@ _UI_ONLY = re.compile(
 )
 
 
+_VENDORS = (
+    ("lsp-plug.in", "LSP"), ("calf", "Calf"), ("zamaudio", "ZAM"),
+    ("drobilla.net/plugins/mda", "MDA"), ("gareus.org", "x42"), ("x42", "x42"),
+    ("plugin.org.uk/swh", "SWH"), ("guitarix", "Guitarix"), ("breakfastquay", "Rubber Band"),
+    ("noise-suppression-for-voice", "RNNoise"), ("eq10q", "EQ10Q"), ("hippie.lt", "abGate"),
+    ("dragonfly", "Dragonfly"), ("invada", "Invada"), ("tap-plugins", "TAP"),
+    ("tomszilagyi", "TAP"),
+)
+
+#: What an effect does, in the order the browser offers them.
+CATEGORIES = (
+    "Noise & gates",
+    "Dynamics",
+    "EQ & filters",
+    "Pitch & voice",
+    "Modulation",
+    "Reverb & delay",
+    "Distortion & amps",
+    "Stereo & space",
+    "Utility",
+)
+
+
+def categorise(name: str, classes: tuple[str, ...] | list[str]) -> str:
+    """Sort an effect into one of CATEGORIES from its LV2 classes and name.
+
+    Plugins declare classes (Compressor, Flanger, ParaEQ...), but some declare
+    none - RNNoise among them - and a few declare something too general to
+    help, so the name is consulted too. Order matters: a multiband gate is a
+    gate before it is dynamics, and a noise *generator* is not noise removal.
+    """
+    text = name.lower()
+    kinds = set(classes)
+    if kinds & {"Generator", "Oscillator", "Instrument"} or "generator" in text:
+        return "Utility"
+    if kinds & {"Gate", "Expander"} or re.search(r"noise|denois|\bgate\b", text):
+        return "Noise & gates"
+    if kinds & {"Pitch"} or re.search(r"pitch|tune|vocoder|formant|shifter|detune", text):
+        return "Pitch & voice"
+    if kinds & {"Compressor", "Limiter", "Dynamics", "Envelope"} or re.search(r"compress|limit|de-?ess", text):
+        return "Dynamics"
+    if kinds & {"Chorus", "Flanger", "Phaser", "Modulator"} or re.search(
+        r"chorus|flang|phaser|wah|tremolo|vibrato|rotary|ring ?mod|leslie", text
+    ):
+        return "Modulation"
+    if kinds & {"Reverb", "Delay"} or re.search(r"reverb|delay|echo|room|ambience", text):
+        return "Reverb & delay"
+    if kinds & {"Distortion", "Waveshaper", "Simulator", "Amplifier"} or re.search(
+        r"distort|overdrive|fuzz|saturat|crush|tube|\bamp\b|clipper|bandisto", text
+    ):
+        return "Distortion & amps"
+    if kinds & {"EQ", "ParaEQ", "MultiEQ", "Filter", "Highpass", "Lowpass", "Bandpass", "Allpass", "Comb"} or re.search(
+        r"equali[sz]|\beq\b|filter", text
+    ):
+        return "EQ & filters"
+    if kinds & {"Spatial"} or re.search(r"stereo (tools|width|enhanc)|haas|crossfeed|binaural|panner", text):
+        return "Stereo & space"
+    return "Utility"
+
+
 def search_path() -> list[Path]:
     """Where LV2 bundles live, honouring LV2_PATH the way hosts do."""
     configured = os.environ.get("LV2_PATH")
@@ -147,17 +207,18 @@ class Plugin:
 
     @property
     def vendor(self) -> str:
-        """A grouping name for the browser, from the plugin's URI."""
+        """Who makes it, as a person would say it, from the plugin's URI."""
         uri = self.uri.lower()
-        for needle, label in (
-            ("lsp-plug.in", "LSP"), ("calf", "Calf"), ("zamaudio", "ZAM"),
-            ("drobilla.net/plugins/mda", "MDA"), ("x42", "x42"), ("dragonfly", "Dragonfly"),
-            ("guitarix", "Guitarix"), ("invada", "Invada"), ("tap", "TAP"),
-        ):
+        # Specific needles only: a bare "tap" matched SWH's tapeDelay.
+        for needle, label in _VENDORS:
             if needle in uri:
                 return label
         match = re.match(r"^(?:https?://|urn:)(?:www\.)?([^/:#]+)", self.uri)
         return match.group(1) if match else "Other"
+
+    @property
+    def category(self) -> str:
+        return categorise(self.name, self.classes)
 
     def control(self, symbol: str) -> Control:
         for control in self.controls:

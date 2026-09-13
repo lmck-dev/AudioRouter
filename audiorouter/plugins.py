@@ -20,13 +20,6 @@ _LOADER_DIRS = (
     Path("/usr/lib/x86_64-linux-gnu/spa-0.2/filter-graph"),
 )
 
-_LV2_DIRS = (
-    Path("/usr/lib64/lv2"),
-    Path("/usr/lib/lv2"),
-    Path("/usr/lib/x86_64-linux-gnu/lv2"),
-    Path.home() / ".lv2",
-)
-
 _LADSPA_DIRS = (
     Path("/usr/lib64/ladspa"),
     Path("/usr/lib/ladspa"),
@@ -89,24 +82,17 @@ def backend_available(backend: str) -> bool:
     return backend in available_loaders()
 
 
-@functools.lru_cache(maxsize=256)
 def lv2_installed(uri: str) -> bool:
-    """Is this LV2 URI present? Manifests are read directly; lv2ls is often absent."""
-    tail = uri.rstrip("/").rsplit("/", 1)[-1]
-    for root in _LV2_DIRS:
-        if not root.is_dir():
-            continue
-        for manifest in root.glob("*.lv2/manifest.ttl"):
-            try:
-                text = manifest.read_text(errors="ignore")
-            except OSError:
-                continue
-            if uri in text:
-                return True
-            # Manifests usually abbreviate the URI against a prefix.
-            if f":{tail}" in text and "lv2:Plugin" in text:
-                return True
-    return False
+    """Is this LV2 plugin installed? Answered by the parsed plugin catalogue.
+
+    This used to search manifest text for the URI or its last path segment,
+    which missed every bundle that abbreviates URIs with a prefix ending in '#'
+    (Rubber Band) or lists plugins only in secondary files (SWH): both were
+    reported "not installed" and their channels refused to start.
+    """
+    from . import lv2  # imported late: lv2 has no dependency on this module
+
+    return lv2.catalogue().get(uri) is not None
 
 
 @functools.lru_cache(maxsize=256)
@@ -129,5 +115,4 @@ def plugin_installed(backend: str, identifier: str) -> bool:
 def reset_cache() -> None:
     """Forget probe results, for tests and after the user installs something."""
     available_loaders.cache_clear()
-    lv2_installed.cache_clear()
     ladspa_installed.cache_clear()

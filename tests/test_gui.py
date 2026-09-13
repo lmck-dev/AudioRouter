@@ -356,12 +356,30 @@ class PluginGuiTest(GuiTestCase):
     def names(self, browser):
         return [item.text(0) for _, item in browser._items() if not item.isHidden()]
 
-    def test_built_in_effects_come_first_then_plugins_by_maker(self):
+    def test_effects_are_grouped_by_what_they_do_with_the_maker_alongside(self):
+        from audiorouter.lv2 import CATEGORIES
+
         browser = self.browser()
-        groups = [browser.tree.topLevelItem(i).text(0) for i in range(browser.tree.topLevelItemCount())]
-        self.assertEqual(groups[0], "Built in")
-        self.assertIn("example.org plugins", groups)
+        groups = [browser.tree.topLevelItem(i).text(0).split("  (")[0]
+                  for i in range(browser.tree.topLevelItemCount())]
+        self.assertEqual(groups, list(CATEGORIES))
+        dynamics = browser.tree.topLevelItem(groups.index("Dynamics"))
+        rows = [(dynamics.child(i).text(0), dynamics.child(i).text(1)) for i in range(dynamics.childCount())]
+        self.assertEqual(rows[0], ("Compressor", "Built in"))  # built-ins first
+        self.assertIn(("Example Compressor", "example.org"), rows)
+
+    def test_search_matches_the_maker_and_the_kind_of_effect(self):
+        browser = self.browser()
+        browser.search.setText("example.org")
         self.assertIn("Example Compressor", self.names(browser))
+        browser.search.setText("dynamics")
+        self.assertIn("Limiter", self.names(browser))
+
+    def test_a_word_in_an_effects_own_name_beats_the_name_of_its_group(self):
+        # Regression: "noise" showed every effect in "Noise & gates".
+        browser = self.browser()
+        browser.search.setText("trim")  # only Volume trim, not all of Utility
+        self.assertEqual(self.names(browser), ["Volume trim"])
 
     def test_search_filters_and_selects_the_first_usable_match(self):
         browser = self.browser()

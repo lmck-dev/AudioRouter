@@ -137,8 +137,10 @@ class EffectSpec:
     plugin: str = ""
     #: Reasons this effect can never run here, beyond missing packages.
     problems: tuple[Unusable, ...] = ()
-    #: Grouping for the browser ("Built in", "LSP", "Calf", ...).
+    #: Who makes it ("Built in", "LSP", "Calf", ...).
     group: str = "Built in"
+    #: What it does - one of lv2.CATEGORIES - for the browser's grouping.
+    category: str = "Utility"
 
     def unsatisfied(self) -> list[Requirement | Unusable]:
         missing: list[Requirement | Unusable] = [r for r in self.requires if not r.satisfied()]
@@ -254,6 +256,7 @@ GAIN = register(
         label="Volume trim",
         summary="Level offset for this channel, so channels can be matched by ear.",
         params=(ParamSpec("gain_db", "Gain", 0.0, -40.0, 20.0, "dB", 0.5),),
+        category="Utility",
     )
 )
 
@@ -267,6 +270,7 @@ LOWPASS = register(
             ParamSpec("q", "Resonance", 0.707, 0.1, 4.0, "Q", 0.05),
             ParamSpec("poles", "Steepness", 2, 1, 4, "x12dB/oct", 1.0, integer=True),
         ),
+    category="EQ & filters",
     )
 )
 
@@ -280,6 +284,7 @@ HIGHPASS = register(
             ParamSpec("q", "Resonance", 0.707, 0.1, 4.0, "Q", 0.05),
             ParamSpec("poles", "Steepness", 2, 1, 4, "x12dB/oct", 1.0, integer=True),
         ),
+    category="EQ & filters",
     )
 )
 
@@ -293,6 +298,7 @@ PEAKING = register(
             ParamSpec("gain_db", "Gain", 0.0, -24.0, 24.0, "dB", 0.5),
             ParamSpec("q", "Width", 1.0, 0.1, 10.0, "Q", 0.05),
         ),
+    category="EQ & filters",
     )
 )
 
@@ -306,6 +312,7 @@ LOWSHELF = register(
             ParamSpec("gain_db", "Gain", 0.0, -24.0, 24.0, "dB", 0.5),
             ParamSpec("q", "Width", 0.707, 0.1, 4.0, "Q", 0.05),
         ),
+    category="EQ & filters",
     )
 )
 
@@ -319,6 +326,7 @@ HIGHSHELF = register(
             ParamSpec("gain_db", "Gain", 0.0, -24.0, 24.0, "dB", 0.5),
             ParamSpec("q", "Width", 0.707, 0.1, 4.0, "Q", 0.05),
         ),
+    category="EQ & filters",
     )
 )
 
@@ -328,6 +336,7 @@ DELAY = register(
         label="Delay",
         summary="Delays this channel, for aligning speakers in a room.",
         params=(ParamSpec("delay_ms", "Delay", 0.0, 0.0, 500.0, "ms", 1.0),),
+        category="Reverb & delay",
     )
 )
 
@@ -344,6 +353,7 @@ COMPRESSOR = register(
             ParamSpec("makeup_db", "Makeup", 0.0, -24.0, 24.0, "dB", 0.5),
         ),
         requires=(Requirement("lv2", f"{LSP}compressor_stereo", LV2_PACKAGE),),
+        category="Dynamics",
     )
 )
 
@@ -358,6 +368,7 @@ LIMITER = register(
             ParamSpec("release_ms", "Release", 5.0, 0.25, 20.0, "ms", 0.25),
         ),
         requires=(Requirement("lv2", f"{LSP}limiter_stereo", LV2_PACKAGE),),
+        category="Dynamics",
     )
 )
 
@@ -414,6 +425,7 @@ def plugin_spec(uri: str) -> EffectSpec:
         plugin=uri,
         problems=tuple(Unusable(plugin.name, reason) for reason in plugin.problems),
         group=plugin.vendor,
+        category=plugin.category,
     )
 
 

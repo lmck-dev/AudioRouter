@@ -40,14 +40,26 @@ class PluginProbeTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
 
-    def test_an_lv2_uri_is_found_in_a_manifest(self):
-        bundle = self.dir / "lsp-plugins.lv2"
+    def test_an_lv2_plugin_is_found_even_when_its_uri_is_abbreviated_with_a_hash_prefix(self):
+        # Regression: a text search of manifests missed Rubber Band's
+        # `rubberband:livestereo` against a prefix ending in '#', so its
+        # channels refused to start with "not installed".
+        import os
+
+        from audiorouter import lv2
+
+        bundle = self.dir / "rubberband.lv2"
         bundle.mkdir()
         (bundle / "manifest.ttl").write_text(
-            "<http://lsp-plug.in/plugins/lv2/limiter_mono> a lv2:Plugin ."
+            "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+            "@prefix rubberband: <http://breakfastquay.com/rdf/lv2-rubberband#> .\n"
+            "rubberband:livestereo a lv2:Plugin .\n"
         )
-        with mock.patch.object(plugins, "_LV2_DIRS", (self.dir,)):
-            self.assertTrue(plugins.lv2_installed("http://lsp-plug.in/plugins/lv2/limiter_mono"))
+        with mock.patch.dict(os.environ, {"LV2_PATH": str(self.dir),
+                                          "XDG_CACHE_HOME": str(self.dir / "cache")}):
+            lv2.reset_cache()
+            self.addCleanup(lv2.reset_cache)
+            self.assertTrue(plugins.lv2_installed("http://breakfastquay.com/rdf/lv2-rubberband#livestereo"))
             self.assertFalse(plugins.lv2_installed("http://example.org/nothing"))
 
     def test_a_ladspa_object_is_found_by_name(self):

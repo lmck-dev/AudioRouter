@@ -116,6 +116,18 @@ belongs in the engine, never in the CLI.
 - **LSP "link" controls do nothing here** (they need shared memory between
   plugin instances); they are hidden with the UI-only toggles in `lv2._UI_ONLY`.
   LSP impulse-response plugins load but need a sample file we cannot pass yet.
+- **"Is this LV2 plugin installed" is answered by the parsed catalogue**
+  (`plugins.lv2_installed`). A text search of manifests missed Rubber Band
+  (`rubberband:livestereo` against a prefix ending in `#`) and SWH plugins, and
+  their channels refused to start as "not installed".
+- **The effects toolbox** (installed 13/09/2026): `lv2-noise-suppression-for-voice
+  lv2-rubberband-plugins lv2-swh-plugins lv2-x42-plugins lv2-guitarix-plugins
+  lv2-vocoder-plugins lv2-abGate lv2-eq10q` -> 489 usable plugins. Measured live:
+  RNNoise, GxWah, GxTremolo, x42-Autotune, SWH Flanger all process; Rubber Band
+  +12 semitones turned 440 Hz into 880 Hz. Vocoders are unusable (they need a
+  second carrier input). The browser groups by `lv2.categorise()` (LV2 class,
+  then name) with the maker in a column; search prefers an effect's own name
+  over its group's name.
 - `~/.lv2/LV2` on this box is an empty directory; lilv logs a harmless
   "failed to open .../manifest.ttl" for it in every channel log.
 - **A test `Engine.apply()` in the real runtime dir STOPS the user's channels**:
