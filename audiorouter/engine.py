@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -411,12 +412,51 @@ class Engine:
                 (runtime_dir() / f"{slug}.pid").unlink(missing_ok=True)
         return found
 
-    def start_channel(self, slug: str) -> Action:
+    def start_channel(self, slug: str, occupants: dict[int, str] | None = None) -> Action:
+        """Start a channel, or restart it without dropping what plays through it.
+
+        `occupants` (stream id -> channel slug, from `_occupants`) names the
+        streams to carry across a restart; they are moved onto the new host's
+        sink while the old host is still playing.
+        """
         channel = self.config.channel(slug)
         if self.dry_run:
             return Action("start", slug, "dry run")
-        channel.start()
+        handover = None
+        if occupants and slug in occupants.values():
+            handover = lambda sink: self._hand_over(slug, occupants, sink)  # noqa: E731
+        channel.start(handover=handover)
         return Action("start", slug)
+
+    def _hand_over(self, slug: str, occupants: dict[int, str], sink: Node,
+                   timeout: float = 1.0) -> None:
+        """Move a restarting channel's streams onto its new sink, and wait.
+
+        Waiting until each stream is linked to the new sink matters: stopping
+        the old host while a move is still in flight takes the old sink away
+        first, and the stream falls back to the default output after all.
+        """
+        graph = Graph.snapshot()
+        pending: list[int] = []
+        for stream_id, where in occupants.items():
+            stream = graph.node(stream_id)
+            if where != slug or stream is None or not stream.is_app_stream:
+                continue
+            try:
+                self.router.move(stream, sink)
+                pending.append(stream_id)
+            except Exception:  # noqa: BLE001 - one stream must not strand the rest
+                continue
+        deadline = time.monotonic() + timeout
+        while pending and time.monotonic() < deadline:
+            time.sleep(0.02)
+            graph = Graph.snapshot()
+            pending = [
+                stream_id for stream_id in pending
+                if graph.node(stream_id) is not None
+                and (graph.sink_of_stream(stream_id) is None
+                     or graph.sink_of_stream(stream_id).id != sink.id)
+            ]
 
     def stop_channel(self, slug: str) -> Action:
         channel = self.config.channel(slug)
@@ -518,7 +558,7 @@ class Engine:
                     report.actions.append(tuned)
                     continue
             try:
-                action = self.start_channel(channel.slug)
+                action = self.start_channel(channel.slug, occupants if running else None)
                 if running and not action.detail:
                     action.detail = "restart: its sink had gone" if lost_sink else "restart"
                 report.actions.append(action)

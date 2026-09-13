@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from audiorouter.effects import (
     Effect,
@@ -45,7 +46,7 @@ class ParameterTest(unittest.TestCase):
 
 class RenderTest(unittest.TestCase):
     def test_gain_becomes_a_mixer_with_linear_gain(self):
-        chain = render_chain([Effect("gain", {"gain_db": -6.0206})])
+        chain = Effect("gain", {"gain_db": -6.0206}).render(0)
         for node in chain.nodes:
             self.assertEqual(node["label"], "mixer")
             self.assertAlmostEqual(node["control"]["Gain 1"], 0.5, places=4)
@@ -55,12 +56,12 @@ class RenderTest(unittest.TestCase):
         # Regression: a mixer has eight inputs. Leaving the graph's ports
         # implicit makes PipeWire see an 8-in 1-out filter, refuse to start it,
         # and leave a silent channel that still looks healthy in the graph.
-        chain = render_chain([Effect("gain")])
+        chain = Effect("gain").render(0)
         self.assertEqual(chain.inputs, ("gain0_l:In 1", "gain0_r:In 1"))
         self.assertEqual(chain.outputs, ("gain0_l:Out", "gain0_r:Out"))
 
     def test_biquad_poles_become_stages_in_series(self):
-        chain = render_chain([Effect("highpass", {"frequency": 1000, "poles": 3})])
+        chain = Effect("highpass", {"frequency": 1000, "poles": 3}).render(0)
         self.assertEqual(len(chain.nodes), 6)  # three stages on each side
         self.assertEqual(len(chain.links), 4)
         self.assertIn({"output": "highpass0_1_r:Out", "input": "highpass0_2_r:In"}, chain.links)
@@ -74,44 +75,66 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(chain.inputs, ("passthrough_l:In", "passthrough_r:In"))
         self.assertEqual(chain.outputs, ("passthrough_l:Out", "passthrough_r:Out"))
 
-    def test_disabled_effects_are_dropped(self):
-        chain = render_chain([Effect("gain", enabled=False)])
+    def test_every_effect_sits_behind_a_switch_that_feeds_it_and_the_dry_path(self):
+        chain = render_chain([Effect("gain")])
+        self.assertEqual(chain.inputs, ("sw0_in_l:In", "sw0_in_r:In"))
+        self.assertEqual(chain.outputs, ("sw0_switch_l:Out", "sw0_switch_r:Out"))
+        for side in "lr":
+            self.assertIn({"output": f"sw0_in_{side}:Out", "input": f"gain0_{side}:In 1"}, chain.links)
+            self.assertIn({"output": f"sw0_in_{side}:Out", "input": f"sw0_switch_{side}:In 2"}, chain.links)
+            self.assertIn({"output": f"gain0_{side}:Out", "input": f"sw0_switch_{side}:In 1"}, chain.links)
+
+    def test_an_effect_that_is_on_passes_only_the_processed_sound(self):
+        controls = render_chain([Effect("gain")]).controls()
+        self.assertEqual((controls["sw0_switch_l:Gain 1"], controls["sw0_switch_l:Gain 2"]), (1.0, 0.0))
+
+    def test_a_switched_off_effect_stays_in_the_graph_passing_only_the_dry_sound(self):
+        on = render_chain([Effect("gain")])
+        off = render_chain([Effect("gain", enabled=False)])
+        self.assertEqual([n["name"] for n in on.nodes], [n["name"] for n in off.nodes])
+        controls = off.controls()
+        self.assertEqual((controls["sw0_switch_r:Gain 1"], controls["sw0_switch_r:Gain 2"]), (0.0, 1.0))
+
+    def test_a_switched_off_effect_that_cannot_run_is_left_out(self):
+        with mock.patch("audiorouter.plugins.available_loaders", return_value=frozenset({"builtin"})):
+            chain = render_chain([Effect("limiter", enabled=False)])
         self.assertEqual(chain.nodes[0]["label"], "copy")
 
     def test_effects_are_chained_in_order(self):
         chain = render_chain([Effect("highpass", {"poles": 1}), Effect("gain")])
-        self.assertIn({"output": "highpass0_0_l:Out", "input": "gain1_l:In 1"}, chain.links)
-        self.assertIn({"output": "highpass0_0_r:Out", "input": "gain1_r:In 1"}, chain.links)
-        self.assertEqual(chain.inputs, ("highpass0_0_l:In", "highpass0_0_r:In"))
-        self.assertEqual(chain.outputs, ("gain1_l:Out", "gain1_r:Out"))
+        self.assertIn({"output": "sw0_switch_l:Out", "input": "sw1_in_l:In"}, chain.links)
+        self.assertIn({"output": "sw0_switch_r:Out", "input": "sw1_in_r:In"}, chain.links)
+        self.assertIn({"output": "sw1_in_l:Out", "input": "gain1_l:In 1"}, chain.links)
+        self.assertEqual(chain.inputs, ("sw0_in_l:In", "sw0_in_r:In"))
+        self.assertEqual(chain.outputs, ("sw1_switch_l:Out", "sw1_switch_r:Out"))
 
     def test_delay_declares_enough_buffer_for_its_setting(self):
-        for node in render_chain([Effect("delay", {"delay_ms": 200})]).nodes:
+        for node in Effect("delay", {"delay_ms": 200}).render(0).nodes:
             self.assertGreaterEqual(node["config"]["max-delay"], 0.2)
 
     def test_delay_buffer_covers_the_whole_knob_so_moving_it_stays_live(self):
-        short, long = (render_chain([Effect("delay", {"delay_ms": ms})]).nodes[0] for ms in (10, 400))
+        short, long = (Effect("delay", {"delay_ms": ms}).render(0).nodes[0] for ms in (10, 400))
         self.assertEqual(short["config"], long["config"])
 
     def test_lsp_thresholds_are_sent_as_linear_gain(self):
-        (node,) = render_chain([Effect("compressor", {"threshold_db": -6.0206})]).nodes
+        (node,) = Effect("compressor", {"threshold_db": -6.0206}).render(0).nodes
         self.assertEqual(node["type"], "lv2")
         self.assertTrue(node["plugin"].endswith("compressor_stereo"))
         self.assertAlmostEqual(node["control"]["al"], 0.5, places=4)
 
     def test_the_compressor_is_one_stereo_instance_so_both_sides_are_linked(self):
-        chain = render_chain([Effect("compressor")])
+        chain = Effect("compressor").render(0)
         self.assertEqual(len(chain.nodes), 1)
         self.assertEqual(chain.inputs, ("compressor0:in_l", "compressor0:in_r"))
         self.assertEqual(chain.outputs, ("compressor0:out_l", "compressor0:out_r"))
 
     def test_the_limiter_switches_off_lsp_gain_boost(self):
         # With boost on, a -20 dB ceiling changed the measured level by 0.5 dB.
-        (node,) = render_chain([Effect("limiter")]).nodes
+        (node,) = Effect("limiter").render(0).nodes
         self.assertEqual(node["control"]["boost"], 0.0)
 
     def test_peaking_keeps_gain_in_decibels(self):
-        for node in render_chain([Effect("peaking", {"gain_db": 6})]).nodes:
+        for node in Effect("peaking", {"gain_db": 6}).render(0).nodes:
             self.assertEqual(node["control"]["Gain"], 6.0)
 
 

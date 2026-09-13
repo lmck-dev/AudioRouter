@@ -120,7 +120,7 @@ class PluginSpecTest(PluginTestCase):
 
 class PluginRenderTest(PluginTestCase):
     def test_a_stereo_plugin_is_one_node_fed_both_sides(self):
-        chain = render_chain([make_effect("lv2", {"al": 0.1}, plugin=STEREO)])
+        chain = make_effect("lv2", {"al": 0.1}, plugin=STEREO).render(0)
         (node,) = chain.nodes
         self.assertEqual(node["plugin"], STEREO)
         self.assertEqual(chain.inputs, ("fx0:in_l", "fx0:in_r"))
@@ -130,7 +130,7 @@ class PluginRenderTest(PluginTestCase):
         self.assertNotIn("igv", node["control"])
 
     def test_a_mono_plugin_runs_once_per_side_and_its_sidechain_is_never_a_graph_port(self):
-        chain = render_chain([make_effect("lv2", {"thr": -20}, plugin=MONO)])
+        chain = make_effect("lv2", {"thr": -20}, plugin=MONO).render(0)
         self.assertEqual([n["name"] for n in chain.nodes], ["fx0_l", "fx0_r"])
         self.assertEqual(chain.inputs, ("fx0_l:in", "fx0_r:in"))
         self.assertTrue(all(n["control"]["thr"] == -20 for n in chain.nodes))
@@ -138,8 +138,8 @@ class PluginRenderTest(PluginTestCase):
 
     def test_plugins_and_curated_effects_chain_side_by_side(self):
         chain = render_chain([make_effect("gain"), make_effect("lv2", plugin=STEREO)])
-        self.assertIn({"output": "gain0_l:Out", "input": "fx1:in_l"}, chain.links)
-        self.assertIn({"output": "gain0_r:Out", "input": "fx1:in_r"}, chain.links)
+        self.assertIn({"output": "sw1_in_l:Out", "input": "fx1:in_l"}, chain.links)
+        self.assertIn({"output": "fx1:out_r", "input": "sw1_switch_r:In 1"}, chain.links)
 
     def test_rendering_an_unusable_plugin_fails_loudly(self):
         with self.assertRaises(EffectError):
@@ -169,15 +169,19 @@ class ControlChangeTest(PluginTestCase):
         self.assertEqual(set(changes), {"gain0_l:Gain 1", "gain0_r:Gain 1"})
         self.assertAlmostEqual(changes["gain0_l:Gain 1"], 0.5, places=4)
 
-    def test_adding_moving_or_switching_off_an_effect_needs_a_restart(self):
+    def test_adding_or_moving_an_effect_needs_a_restart(self):
         self.channel.effects.reverse()
         self.assertIsNone(self.channel.control_changes())
         self.channel.effects.reverse()
-        self.channel.effects[1].enabled = False
-        self.assertIsNone(self.channel.control_changes())
-        self.channel.effects[1].enabled = True
         self.channel.effects.append(make_effect("peaking"))
         self.assertIsNone(self.channel.control_changes())
+
+    def test_switching_an_effect_off_or_on_is_a_live_change(self):
+        self.channel.effects[1].enabled = False
+        self.assertEqual(self.channel.control_changes(), {
+            "sw1_switch_l:Gain 1": 0.0, "sw1_switch_l:Gain 2": 1.0,
+            "sw1_switch_r:Gain 1": 0.0, "sw1_switch_r:Gain 2": 1.0,
+        })
 
     def test_a_setting_that_reshapes_the_graph_needs_a_restart(self):
         channel = Channel("y", "Y", "dev", effects=[make_effect("highpass", {"poles": 2})])
@@ -206,6 +210,21 @@ class ControlChangeTest(PluginTestCase):
         self.assertEqual(argv[:4], ["pw-cli", "set-param", "51", "Props"])
         params = json.loads(argv[4])["params"]
         self.assertEqual(params[0::2], ["gain0_l:Gain 1", "gain0_r:Gain 1"])
+        self.assertEqual(channel.control_changes(), {})
+
+    def test_switching_an_effect_off_fades_rather_than_jumps(self):
+        from .test_engine import live_graph
+
+        channel = Channel("speakers", "Speakers", "alsa_output.a", effects=[make_effect("gain")])
+        channel.config_path.write_text(channel.render_config_text())
+        channel.effects[0].enabled = False
+        with mock.patch("audiorouter.channels.require_tools"), \
+             mock.patch("audiorouter.channels.time.sleep"), \
+             mock.patch("audiorouter.channels.subprocess.run") as run:
+            channel.set_controls(channel.control_changes(), live_graph())
+        wet = [dict(zip(p[0::2], p[1::2]))["sw0_switch_l:Gain 1"]
+               for p in (json.loads(c.args[0][4])["params"] for c in run.call_args_list)]
+        self.assertEqual(wet, [0.8, 0.6, 0.4, 0.2, 0.0])
         self.assertEqual(channel.control_changes(), {})
 
     def test_set_controls_without_a_sink_refuses(self):

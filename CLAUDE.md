@@ -65,7 +65,7 @@ belongs in the engine, never in the CLI.
   turn.** Kill by pid from `pgrep -x`, after checking `/proc/<pid>/cmdline`.
   `pgrep -x pipewire` also matches the user's main daemon - always check the
   cmdline before killing.
-- **Knob changes are live; shape changes restart.** `Channel.control_changes()`
+- **Knob changes and on/off are live; shape changes restart.** `Channel.control_changes()`
   compares the rendered conf with the one beside the pid file *with every
   `control` block removed*. Same shape -> `Channel.set_controls()` sends one
   `pw-cli set-param <sink id> Props '{"params":["node:control",v,...]}'` and
@@ -73,6 +73,29 @@ belongs in the engine, never in the CLI.
   a filter's steepness) -> restart. Measured: a live change lands in ~28 ms with
   the same pid. Anything that changes a node's `config` is a shape change, which
   is why the delay's `max-delay` is sized for the knob's whole range.
+- **Every effect sits behind a bypass switch** (`effects._with_bypass`): per
+  side, a `copy` fans the input out to the effect and to a `mixer`'s `In 2`;
+  the effect feeds `In 1`. On/off is then only `Gain 1`/`Gain 2` - a live
+  change - and is faded over ~50 ms (`SWITCH_FADE_*`). The fade is coarse:
+  each step is a `pw-cli` process, and only 2-3 steps land (measured
+  -29 -> -16 -> -13 -> -9 dB). A switched-off effect still uses CPU. An
+  interactive `pw-cli` fed over stdin does NOT exit when stdin closes - it hung
+  a test for two minutes.
+- **Restarts are make-before-break** (`Channel.start(handover=...)`). The old
+  way stopped the host first: measured, a stream fell back to the DEFAULT
+  OUTPUT for ~110 ms - unprocessed sound on the speakers, even from the
+  headphones channel. Now the new host starts beside the old one, its sink is
+  found by process id (both sinks share the name for a moment, and
+  `Channel.sink_node` lets the pid file decide), `Engine._hand_over` moves the
+  streams and waits until each is linked to the new sink (~43 ms), and only
+  then is the old host stopped. A new host that fails leaves the old one
+  running. Measured: no silent 5 ms slice and no level jump across a restart.
+- **`kill(pid, 0)` succeeds on a zombie.** Channel hosts are our children, so
+  every stop waited its full 4 s and then SIGKILLed a process that had already
+  exited; the login service also collected zombie hosts. `_pid_alive` reaps
+  our own children and reads `/proc/<pid>/stat` for anyone else's.
+- **`node.dont-reconnect=true` on a test stream blocks moves entirely**, so a
+  handover measured with it proves nothing (the stream never moved).
 - **Every chain is an explicit stereo graph.** Mono nodes are placed per side
   (`name_l`/`name_r`); a stereo plugin is one node fed both sides, which is what
   makes its dynamics linked. PipeWire's own per-channel replication of a mono

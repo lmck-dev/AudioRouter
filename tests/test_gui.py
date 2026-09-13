@@ -131,6 +131,16 @@ class WindowTest(GuiTestCase):
             Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 120
         )
 
+    def test_switching_an_effect_off_is_a_quick_live_change(self):
+        from PyQt6.QtCore import Qt
+
+        from audiorouter.gui.main import TUNE_DELAY_MS
+
+        self.window.channel_list.setCurrentRow(0)
+        with mock.patch.object(Engine, "apply"):
+            self.window.effects_panel.list.item(0).setCheckState(Qt.CheckState.Unchecked)
+            self.assertEqual(self.window._pending_apply.interval(), TUNE_DELAY_MS)
+
     def test_switching_an_effect_off_keeps_it_in_the_chain(self):
         from PyQt6.QtCore import Qt
 

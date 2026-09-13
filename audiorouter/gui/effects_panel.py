@@ -1,10 +1,10 @@
 """The effect chain for one channel: what is in it, in what order, set how.
 
 Every edit is reported the moment it happens, so nothing typed can be lost, and
-in two kinds. `changed` means the chain itself changed (an effect added, removed,
-moved or switched off), which restarts the channel. `tuned` means only a knob
-moved, which the engine applies to the running channel with no gap in the
-sound. The window owns the waiting for both.
+in two kinds. `changed` means the chain itself changed (an effect added, removed or
+moved), which restarts the channel - seamlessly, the new host taking over
+before the old one stops. `tuned` means a knob moved or an effect was switched
+on or off, which the engine applies to the running channel in place. The window owns the waiting for both.
 """
 
 from __future__ import annotations
@@ -634,5 +634,12 @@ class EffectsPanel(QGroupBox):
             return
         row = self.list.row(item)
         if 0 <= row < len(self.channel.effects):
-            self.channel.effects[row].enabled = item.checkState() == Qt.CheckState.Checked
-            self.changed.emit()
+            effect = self.channel.effects[row]
+            effect.enabled = item.checkState() == Qt.CheckState.Checked
+            # Every effect sits behind a bypass switch, so on/off is a live
+            # change - unless the effect cannot run here, in which case it is
+            # left out of the graph and switching it changes the graph's shape.
+            if effect.spec.unsatisfied():
+                self.changed.emit()
+            else:
+                self.tuned.emit()

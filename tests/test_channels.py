@@ -60,8 +60,8 @@ class RenderTest(unittest.TestCase):
         # unstartable; the channel then runs, links up, and is silent.
         channel = Channel("x", "X", "dev", effects=[Effect("gain", {"gain_db": -3})])
         graph = self.args(channel)["filter.graph"]
-        self.assertEqual(graph["inputs"], ["gain0_l:In 1", "gain0_r:In 1"])
-        self.assertEqual(graph["outputs"], ["gain0_l:Out", "gain0_r:Out"])
+        self.assertEqual(graph["inputs"], ["sw0_in_l:In", "sw0_in_r:In"])
+        self.assertEqual(graph["outputs"], ["sw0_switch_l:Out", "sw0_switch_r:Out"])
 
     def test_the_rendered_config_is_valid_json(self):
         self.assertEqual(
@@ -192,3 +192,82 @@ class StatusTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProcessLifetimeTest(unittest.TestCase):
+    def test_a_stopped_child_is_not_alive_even_before_anyone_reaps_it(self):
+        # Regression: kill(pid, 0) succeeds on a zombie, so every stop waited
+        # four seconds and then SIGKILLed a process that had already exited.
+        import subprocess
+        import time as _time
+
+        from audiorouter.channels import _pid_alive, _terminate
+
+        proc = subprocess.Popen(["sleep", "30"])
+        self.assertTrue(_pid_alive(proc.pid))
+        started = _time.monotonic()
+        self.assertTrue(_terminate(proc.pid))
+        self.assertLess(_time.monotonic() - started, 1.0)
+        self.assertFalse(_pid_alive(proc.pid))
+
+
+class SeamlessRestartTest(unittest.TestCase):
+    """A restart starts the new host before stopping the old one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": self.tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.channel = Channel("x", "X", "dev")
+        self.channel.config_path.write_text("old conf")
+        self.events = []
+        for target in (
+            mock.patch("audiorouter.channels.require_tools"),
+            mock.patch.object(Channel, "pid", return_value=111),
+            mock.patch("audiorouter.channels.subprocess.Popen",
+                       side_effect=lambda *a, **k: mock.Mock(pid=222)),
+            mock.patch("audiorouter.channels._terminate",
+                       side_effect=lambda pid, *a: self.events.append(("stop", pid))),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def test_streams_are_handed_over_before_the_old_host_stops(self):
+        sink = mock.Mock(name="new sink")
+        with mock.patch.object(Channel, "_await_sink", return_value=sink):
+            pid = self.channel.start(handover=lambda s: self.events.append(("handover", s)))
+        self.assertEqual(pid, 222)
+        self.assertEqual(self.events, [("handover", sink), ("stop", 111)])
+        self.assertEqual(self.channel.pid_path.read_text(), "222")
+
+    def test_a_new_host_that_fails_leaves_the_old_one_playing(self):
+        with mock.patch.object(Channel, "_await_sink", side_effect=ChannelError("died")):
+            with self.assertRaises(ChannelError):
+                self.channel.start(handover=lambda s: self.events.append(("handover", s)))
+        self.assertEqual(self.events, [("stop", 222)])  # only the new one
+        self.assertEqual(self.channel.pid_path.read_text(), "111")
+        self.assertEqual(self.channel.config_path.read_text(), "old conf")
+
+    def test_a_failed_handover_still_stops_the_old_host(self):
+        def broken(sink):
+            raise RuntimeError("move failed")
+
+        with mock.patch.object(Channel, "_await_sink", return_value=mock.Mock()):
+            self.channel.start(handover=broken)
+        self.assertEqual(self.events, [("stop", 111)])
+
+    def test_while_two_hosts_share_the_sink_name_the_pid_file_decides(self):
+        from audiorouter.pwgraph import Graph
+
+        from . import fakes
+
+        graph = Graph([
+            fakes.sink(70, "ar_x", hardware=False, client_id=7),
+            fakes.sink(71, "ar_x", hardware=False, client_id=8),
+            fakes.client(7, 111),
+            fakes.client(8, 222),
+        ])
+        with mock.patch.object(Channel, "pid", return_value=222):
+            self.assertEqual(self.channel.sink_node(graph).id, 71)

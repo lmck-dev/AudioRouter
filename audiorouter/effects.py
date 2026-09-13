@@ -582,13 +582,50 @@ def make_effect(kind: str, params: Mapping[str, Any] | None = None, plugin: str 
     return Effect(kind=kind, params=spec.normalise(params), plugin=plugin if kind == PLUGIN_KIND else "")
 
 
+def _with_bypass(fragment: Fragment, name: str, enabled: bool) -> Fragment:
+    """Wrap an effect in a switch that can be flipped on the running channel.
+
+    Each side's input is fanned out to the effect and to a mixer's second
+    input; the effect's output feeds the mixer's first. Switching the effect on
+    or off is then only a change of the two mixer gains - a live control
+    change - instead of a new graph and a restarted channel. Measured: a -20 dB
+    effect read -29.03 dB on and -9.03 dB bypassed, in the same process.
+    """
+    nodes = list(fragment.nodes)
+    links = list(fragment.links)
+    inputs: list[str] = []
+    outputs: list[str] = []
+    for side, effect_in, effect_out in zip(SIDES, fragment.inputs, fragment.outputs):
+        entry = f"{name}_in_{side}"
+        switch = f"{name}_switch_{side}"
+        nodes.append({"type": "builtin", "name": entry, "label": "copy"})
+        nodes.append(
+            {
+                "type": "builtin",
+                "name": switch,
+                "label": "mixer",
+                "control": {"Gain 1": 1.0 if enabled else 0.0, "Gain 2": 0.0 if enabled else 1.0},
+            }
+        )
+        links.append({"output": f"{entry}:Out", "input": effect_in})
+        links.append({"output": f"{entry}:Out", "input": f"{switch}:In 2"})
+        links.append({"output": effect_out, "input": f"{switch}:In 1"})
+        inputs.append(f"{entry}:In")
+        outputs.append(f"{switch}:Out")
+    return Fragment(nodes, links, (inputs[0], inputs[1]), (outputs[0], outputs[1]))
+
+
 def render_chain(effects: list[Effect]) -> Chain:
     """Render effects into one series stereo graph.
 
-    Disabled effects are dropped. An empty chain yields a `copy` node per side
-    so the channel still exists and passes audio through untouched.
+    Every effect sits behind a bypass switch (see `_with_bypass`), so a
+    switched-off effect stays in the graph and switching it back on is heard
+    at once. The one exception is a switched-off effect that cannot run here
+    (its plugin was uninstalled): it is left out rather than breaking the
+    channel. An empty chain yields a `copy` node per side so the channel still
+    exists and passes audio through untouched.
     """
-    active = [e for e in effects if e.enabled]
+    active = [e for e in effects if e.enabled or not e.spec.unsatisfied()]
     if not active:
         return Chain(
             [
@@ -605,7 +642,7 @@ def render_chain(effects: list[Effect]) -> Chain:
     first_in: tuple[str, str] | None = None
     previous_out: tuple[str, str] | None = None
     for index, effect in enumerate(active):
-        fragment = effect.render(index)
+        fragment = _with_bypass(effect.render(index), f"sw{index}", effect.enabled)
         nodes.extend(fragment.nodes)
         links.extend(fragment.links)
         if previous_out is None:

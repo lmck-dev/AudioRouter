@@ -19,13 +19,13 @@ import re
 import signal
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .effects import Effect, render_chain, unsatisfied_requirements
-from .pwgraph import Graph, PwError, require_tools
+from .pwgraph import Graph, Node, PwError, require_tools
 
 #: Prefix on every node we create, so our nodes are recognisable in the graph
 #: and cannot collide with sinks belonging to anything else.
@@ -34,6 +34,11 @@ NODE_PREFIX = "ar_"
 #: Highest channel volume offered: 150%, as desktop sound settings allow when
 #: "raise maximum volume" is on. Above 100% the signal can clip.
 MAX_VOLUME = 1.5
+
+#: Marks the mixer controls of an effect's bypass switch (see effects._with_bypass).
+SWITCH_MARK = "_switch_"
+SWITCH_FADE_S = 0.05
+SWITCH_FADE_STEPS = 5
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
@@ -123,12 +128,53 @@ def _without_controls(conf: Mapping[str, Any]) -> Any:
     return stripped
 
 
+def _terminate(pid: int, timeout: float = 4.0) -> bool:
+    """SIGTERM, then SIGKILL if it will not go. True if it was running."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    return True
+
+
 def _pid_alive(pid: int) -> bool:
+    """Is this process still running? A zombie is not.
+
+    A channel host is a child of whoever started it (the window, the CLI or the
+    login service). Once it exits it stays a zombie until reaped, and
+    `kill(pid, 0)` still succeeds on a zombie - so every stop waited out its
+    whole timeout and then sent SIGKILL, and the login service accumulated
+    zombie hosts. Our own children are reaped here; anyone else's zombie is
+    recognised from /proc.
+    """
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            return False
+    except ChildProcessError:
+        pass  # not our child: fall through to the generic check
+    except OSError:
+        pass
     try:
         os.kill(pid, 0)
     except OSError as exc:
-        return exc.errno == errno.EPERM
-    return True
+        if exc.errno != errno.EPERM:
+            return False
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    # The state letter follows the parenthesised command name.
+    return stat.rsplit(")", 1)[-1].split()[0] != "Z"
 
 
 @dataclass
@@ -266,6 +312,10 @@ class Channel:
         so this is heard at once and nothing playing is interrupted. The conf
         beside the pid file is rewritten afterwards, because it is the record of
         what the host is running that `control_changes` compares against.
+
+        Bypass switches are faded over ~50 ms rather than flipped: an instant
+        jump from the processed to the dry sound (20 dB, for a -20 dB trim) can
+        click on anything sustained.
         """
         if not values:
             return
@@ -274,18 +324,35 @@ class Channel:
         node = self.sink_node(graph)
         if node is None:
             raise ChannelError(f"channel {self.slug!r} has no sink in the graph to update")
+        switches = {k: v for k, v in values.items() if SWITCH_MARK in k}
+        others = {k: v for k, v in values.items() if SWITCH_MARK not in k}
+        if others:
+            self._send_props(node.id, others)
+        if switches:
+            running = self.running_config()
+            before = _graph_controls(running) if running is not None else {}
+            for step in range(1, SWITCH_FADE_STEPS + 1):
+                fraction = step / SWITCH_FADE_STEPS
+                self._send_props(node.id, {
+                    key: before.get(key, target) + (target - before.get(key, target)) * fraction
+                    for key, target in switches.items()
+                })
+                if step < SWITCH_FADE_STEPS:
+                    time.sleep(SWITCH_FADE_S / SWITCH_FADE_STEPS)
+        self.config_path.write_text(self.render_config_text())
+
+    def _send_props(self, node_id: int, values: Mapping[str, float]) -> None:
         params: list[Any] = []
         for key, value in values.items():
-            params.extend([key, float(value)])
+            params.extend([key, round(float(value), 6)])
         pod = json.dumps({"params": params})
         try:
             subprocess.run(
-                ["pw-cli", "set-param", str(node.id), "Props", pod],
+                ["pw-cli", "set-param", str(node_id), "Props", pod],
                 check=True, capture_output=True, text=True, timeout=5,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             raise ChannelError(f"could not update channel {self.slug!r} live: {exc}") from exc
-        self.config_path.write_text(self.render_config_text())
 
     # -- process lifecycle ------------------------------------------------
 
@@ -339,15 +406,29 @@ class Channel:
         """Human-readable reasons this channel's effects cannot run here."""
         return [r.explain() for r in unsatisfied_requirements(self.effects)]
 
-    def start(self, graph_timeout: float = 8.0) -> int:
-        """Start (or restart) this channel's host process and wait for its sink."""
+    def start(
+        self,
+        graph_timeout: float = 8.0,
+        handover: Callable[[Node], None] | None = None,
+    ) -> int:
+        """Start or restart this channel's host process and wait for its sink.
+
+        A restart is make-before-break. The new host starts while the old one
+        is still playing; once its sink exists, `handover` is given that sink to
+        move the streams onto, and only then is the old host stopped. Stopping
+        first took the sink away and every stream fell back to the default
+        output - measured, ~110 ms of unprocessed sound on the speakers, even
+        from the headphones channel. If the new host fails, the old one is left
+        running and nothing is lost.
+        """
         require_tools("pipewire")
         missing = self.missing_plugins()
         if missing:
             raise ChannelError(
                 f"channel {self.slug!r} cannot start: " + "; ".join(missing)
             )
-        self.stop()
+        old_pid = self.pid()
+        previous_conf = self.config_path.read_text() if old_pid and self.config_path.exists() else None
         self.config_path.write_text(self.render_config_text())
         with self.log_path.open("w") as log:
             proc = subprocess.Popen(
@@ -358,13 +439,28 @@ class Channel:
             )
         self.pid_path.write_text(str(proc.pid))
         try:
-            self._await_sink(proc, graph_timeout)
+            sink = self._await_sink(proc, graph_timeout)
         except Exception:
-            self.stop()
+            _terminate(proc.pid)
+            if old_pid is not None:
+                # The old host is still running: it stays the channel.
+                self.pid_path.write_text(str(old_pid))
+                if previous_conf is not None:
+                    self.config_path.write_text(previous_conf)
+            else:
+                self.pid_path.unlink(missing_ok=True)
             raise
+        if old_pid is not None:
+            if handover is not None:
+                try:
+                    handover(sink)
+                except Exception:  # noqa: BLE001 - a failed move must not leave two hosts
+                    pass
+            _terminate(old_pid)
         return proc.pid
 
-    def _await_sink(self, proc: subprocess.Popen[Any], timeout: float) -> None:
+    def _await_sink(self, proc: subprocess.Popen[Any], timeout: float) -> Node:
+        """The new host's own sink - by process, as the old one shares its name."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -373,11 +469,12 @@ class Channel:
                     f"(code {proc.returncode}); see {self.log_path}"
                 )
             try:
-                if Graph.snapshot().unique_node_named(self.sink_name) is not None:
-                    return
+                sink = Graph.snapshot().sink_owned_by_pid(proc.pid)
+                if sink is not None and sink.name == self.sink_name:
+                    return sink
             except PwError:
                 pass
-            time.sleep(0.2)
+            time.sleep(0.05)
         raise ChannelError(
             f"channel {self.slug!r} did not appear in the graph within {timeout:g}s; "
             f"see {self.log_path}"
@@ -389,20 +486,7 @@ class Channel:
         self.pid_path.unlink(missing_ok=True)
         if pid is None:
             return False
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            return False
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not _pid_alive(pid):
-                return True
-            time.sleep(0.1)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-        return True
+        return _terminate(pid, timeout)
 
     # -- volume -----------------------------------------------------------
 
@@ -437,7 +521,14 @@ class Channel:
     # -- status -----------------------------------------------------------
 
     def sink_node(self, graph: Graph):
-        return graph.unique_node_named(self.sink_name)
+        found = graph.nodes_named(self.sink_name)
+        if len(found) <= 1:
+            return found[0] if found else None
+        # Two sinks share the name only while a restart hands over from the old
+        # host to the new; the pid file already names the new one.
+        pid = self.pid()
+        owned = graph.sink_owned_by_pid(pid) if pid is not None else None
+        return owned if owned is not None and owned.name == self.sink_name else None
 
     def device_present(self, graph: Graph) -> bool:
         """Is this channel's output target currently in the graph?
