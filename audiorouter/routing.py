@@ -174,6 +174,19 @@ class Router:
                     f"could not move {stream.app_name!r} to {sink.name!r}: {exc}"
                 ) from exc
 
+    def retarget(self, stream: Node, target: Node) -> None:
+        """Point one of our own streams at a node - only during a handover.
+
+        `move` refuses our own streams, because routing one by accident builds
+        a feedback loop. A restart handover is the one deliberate exception: a
+        listen-through loopback must follow the output channel it plays into.
+        """
+        if target.serial is None:
+            raise RoutingError(f"{target.name!r} has no object.serial; cannot target it")
+        if self.dry_run:
+            return
+        self._set_metadata(stream.id, target.serial)
+
     def clear(self, stream: Node) -> None:
         """Forget a pinned target so the stream follows the default sink again."""
         if self.dry_run:

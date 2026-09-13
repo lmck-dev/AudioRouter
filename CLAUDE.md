@@ -150,6 +150,32 @@ belongs in the engine, never in the CLI.
   -18.06 dB, 25% = -36.13 dB). WirePlumber restores it by node name when a
   channel restarts, and the desktop's sound settings change the same value, so
   storing a copy would only fight them.
+- **Input channels and virtual cables** (13/09/2026). `Channel.kind` is
+  `output` or `input`. An input's filter-chain captures the mic (`ar_<slug>_in`,
+  `node.passive` so the real mic stays suspended until something records) and
+  plays into a virtual mic `ar_<slug>` (`media.class = Audio/Source`); `listen`
+  adds a `libpipewire-module-loopback` in the same conf into an output channel.
+  A `recordable` output plays into `ar_<slug>_rec` (Audio/Source) and, unless
+  its device is `NOWHERE`, a loopback plays that to the device. Measured: -6.00
+  and -12.00 dB exactly, recorded as an app would. **Filter controls live on the
+  capture-side node** (`control_name`): the sink for outputs, `ar_<slug>_in`
+  for inputs. Apps pick inputs from their own list - there is no input-side
+  routing, and `sink_map` holds outputs only.
+- **Internal streams carry `node.dont-fallback`.** Measured without it: when
+  the output a loopback played into vanished, WirePlumber relinked it onto the
+  REAL SPEAKERS - for a listen-through, a live mic on the speakers.
+- **A restart hands over three kinds of stream** (`Engine._hand_over`): apps
+  AND other channels' own streams feeding the sink (an input's listen-through
+  was missed at first), recorders of the virtual source, and the new host's own
+  loopbacks, which find their source by name and may attach to the old host's
+  copy. The "is the node present" check must cover every channel, not
+  `sink_map` - inputs restarted on every apply, knob changes included.
+- **Never mute a stream to hide a handover blip.** WirePlumber's restore-stream
+  saves mute per stream (keyed by `media.name`) and restored it onto the next
+  listen stream: listen-through went permanently silent. A stale test entry for
+  "Lab mic (listening) output" is left in `~/.local/state/wireplumber/
+  stream-properties`. The remaining blip: a listen-through doubles (+6 dB) for
+  ~90 ms when the input channel restarts (adding/removing/moving an effect).
 - **The login service runs this checkout.** Whatever branch is checked out is
   what `audiorouter.service` loads the next time it restarts.
 

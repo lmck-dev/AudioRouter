@@ -410,3 +410,23 @@ class AutoRouterTest(EngineTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InputChannelApplyTest(EngineTestCase):
+    def test_a_running_input_channel_whose_mic_node_is_present_is_not_restarted(self):
+        # Regression: the "has its node gone" check used the routing map, which
+        # holds outputs only, so every input channel restarted on every apply -
+        # including plain knob changes that should have been live.
+        from audiorouter.channels import INPUT
+
+        mic = Channel("mic", "Mic", "", kind=INPUT)
+        self.engine.config.add_channel(mic)
+        mic.config_path.write_text(mic.render_config_text())
+        graph = live_graph()
+        graph.apply([fakes.node(70, "ar_mic", "Audio/Source", serial=700, **{"audiorouter.channel": "mic"})])
+        self.engine.use_graph(graph)
+        with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)), \
+             mock.patch.object(Channel, "is_running", return_value=True), \
+             mock.patch.object(Channel, "start") as start:
+            self.engine.apply()
+        self.assertEqual(start.call_count, 1)  # only "speakers", whose conf was never written

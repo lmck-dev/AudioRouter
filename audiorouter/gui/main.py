@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .. import install
-from ..channels import ChannelError, validate_slug
+from ..channels import INPUT, ChannelError, validate_slug
 from ..config import ConfigError
 from ..effects import EffectError
 from ..engine import AutoRouter, Engine, EngineError, daemon_pid
@@ -46,6 +46,9 @@ from .streams_panel import StreamsPanel
 from .theme import Theme
 
 #: Collecting edits for this long turns a burst of typing into one restart.
+NEW_OUTPUT = "Output - apps play into it"
+NEW_INPUT = "Input - a microphone or line-in"
+
 APPLY_DELAY_MS = 700
 #: A knob change is applied to the running channel, so it can be heard almost
 #: at once; this only batches the flood of values a slider drag produces.
@@ -220,8 +223,9 @@ class MainWindow(QMainWindow):
             None,
         )
         self.channel_panel.show_status(entry)
+        self.channel_panel.set_outputs(self._output_choices())
         self.channel_panel.set_devices(
-            [(d["name"], d["label"]) for d in status["devices"]],
+            self._device_choices(status, self.selected_channel),
             present=entry["device_present"] if entry else True,
         )
         if not status["devices"]:
@@ -241,6 +245,10 @@ class MainWindow(QMainWindow):
         self.channel_list.clear()
         for channel in self.engine.config.channels:
             label = channel.name
+            if channel.is_input:
+                label += "  (input)"
+            elif channel.recordable:
+                label += "  (cable)"
             if not channel.enabled:
                 label += "  (off)"
             elif channel.slug not in running:
@@ -280,10 +288,19 @@ class MainWindow(QMainWindow):
             f"color: {(theme.warn if warn else theme.dim).name()};"
         )
 
+    def _output_choices(self) -> list[tuple[str, str]]:
+        return [(c.slug, c.name) for c in self.engine.config.channels if not c.is_input]
+
+    @staticmethod
+    def _device_choices(status: dict, channel) -> list[tuple[str, str]]:
+        key = "input_devices" if channel is not None and channel.is_input else "devices"
+        return [(d["name"], d["label"]) for d in status.get(key, [])]
+
     def _channel_selected(self, row: int) -> None:
         channel = self.selected_channel
         status = getattr(self, "_status", {})
-        devices = [(d["name"], d["label"]) for d in status.get("devices", [])]
+        devices = self._device_choices(status, channel)
+        self.channel_panel.set_outputs(self._output_choices())
         entry = next(
             (c for c in status.get("channels", [])
              if channel is not None and c["slug"] == channel.slug),
@@ -374,15 +391,28 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def _add_channel(self) -> None:
-        name, ok = QInputDialog.getText(self, "New channel", "What is this channel for?")
+        kinds = [NEW_OUTPUT, NEW_INPUT]
+        kind_label, ok = QInputDialog.getItem(self, "New channel", "What kind of channel?", kinds, 0, False)
+        if not ok:
+            return
+        is_input = kind_label == NEW_INPUT
+        name, ok = QInputDialog.getText(
+            self, "New channel",
+            "What is this microphone or input for?" if is_input else "What is this channel for?",
+        )
         if not ok or not name.strip():
             return
         slug = slug_for(name.strip(), set(self.engine.config.channel_slugs))
-        devices = getattr(self, "_status", {}).get("devices", [])
         try:
             validate_slug(slug)
-            self.engine.create_channel(slug, name.strip(),
-                                       devices[0]["name"] if devices else "")
+            if is_input:
+                # Start on the default input: the right mic for most people,
+                # and it follows the desktop's choice.
+                self.engine.create_channel(slug, name.strip(), "", kind=INPUT)
+            else:
+                devices = getattr(self, "_status", {}).get("devices", [])
+                self.engine.create_channel(slug, name.strip(),
+                                           devices[0]["name"] if devices else "")
         except USER_ERRORS as exc:
             self._error("Could not create that channel", str(exc))
             return

@@ -1,4 +1,10 @@
-"""The settings for one channel: what it is called and where it comes out."""
+"""The settings for one channel: what it is called and where its sound goes.
+
+An output channel plays through a device (or nowhere) and may also be offered
+to recording apps as a virtual cable. An input channel records from a
+microphone or line-in, always appears in apps' input lists, and may be heard
+through one of the output channels.
+"""
 
 from __future__ import annotations
 
@@ -17,10 +23,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..channels import Channel
+from ..channels import NOWHERE, Channel
 from .theme import Theme
 
 FOLLOW_DEFAULT = ""
+NOT_LISTENING = ""
 
 #: After the user moves the volume, readings from the graph are ignored for
 #: this long: a refresh can carry the value from just *before* the change, and
@@ -29,7 +36,7 @@ VOLUME_SETTLE_S = 0.8
 
 
 class ChannelPanel(QGroupBox):
-    """Name, output device and on/off for the selected channel."""
+    """Name, device, volume and on/off for the selected channel."""
 
     changed = pyqtSignal()
     renamed = pyqtSignal()
@@ -41,11 +48,22 @@ class ChannelPanel(QGroupBox):
         super().__init__("Channel", parent)
         self.channel: Channel | None = None
         self._loading = False
+        self._outputs: list[tuple[str, str]] = []
 
         self.name = QLineEdit(self)
         self.name.editingFinished.connect(self._name_edited)
         self.device = QComboBox(self)
         self.device.activated.connect(self._device_chosen)
+        self.recordable = QCheckBox("Apps can record this channel (virtual cable)", self)
+        self.recordable.setToolTip(
+            "Offers this channel's sound, after its effects, in every app's list of "
+            "microphones - so OBS, Discord or a recorder can capture it."
+        )
+        self.recordable.toggled.connect(self._recordable_toggled)
+        self.listen = QComboBox(self)
+        self.listen.activated.connect(self._listen_chosen)
+        self.hint = QLabel(self)
+        self.hint.setWordWrap(True)
         self.enabled = QCheckBox("Switched on", self)
         self.enabled.toggled.connect(self._enabled_toggled)
         self.status = QLabel(self)
@@ -66,31 +84,60 @@ class ChannelPanel(QGroupBox):
         volume_row.addWidget(self.volume_label)
         volume_row.addWidget(self.mute)
 
-        layout = QFormLayout(self)
-        layout.addRow("Name", self.name)
-        layout.addRow("Volume", volume_row)
-        layout.addRow("Plays through", self.device)
-        layout.addRow("", self.enabled)
-        layout.addRow("", self.status)
+        self.form = QFormLayout(self)
+        self.form.addRow("Name", self.name)
+        self.form.addRow("Volume", volume_row)
+        self.form.addRow("Plays through", self.device)
+        self.form.addRow("", self.recordable)
+        self.form.addRow("Listen through", self.listen)
+        self.form.addRow("", self.hint)
+        self.form.addRow("", self.enabled)
+        self.form.addRow("", self.status)
+        self._show_kind(None)
 
     # -- population --------------------------------------------------------
 
+    def _show_kind(self, channel: Channel | None) -> None:
+        is_input = channel is not None and channel.is_input
+        label = self.form.labelForField(self.device)
+        if label is not None:
+            label.setText("Records from" if is_input else "Plays through")
+        self.form.setRowVisible(self.recordable, channel is not None and not is_input)
+        self.form.setRowVisible(self.listen, is_input)
+
+    def set_outputs(self, outputs: list[tuple[str, str]]) -> None:
+        """The output channels an input can be listened through: (slug, name)."""
+        self._outputs = outputs
+        self.listen.blockSignals(True)
+        self.listen.clear()
+        self.listen.addItem("Don't listen", NOT_LISTENING)
+        for slug, name in outputs:
+            self.listen.addItem(name, slug)
+        target = self.channel.listen if self.channel is not None else NOT_LISTENING
+        if target and self.listen.findData(target) < 0:
+            self.listen.addItem(f"{target} (missing)", target)
+        self.listen.setCurrentIndex(max(0, self.listen.findData(target)))
+        self.listen.blockSignals(False)
+
     def set_devices(self, devices: list[tuple[str, str]], present: bool = True) -> None:
-        """Rebuild the output list, keeping whatever the channel points at.
+        """Rebuild the device list, keeping whatever the channel points at.
 
         A device the channel uses but which is not plugged in right now still
         has to appear, or opening the window with headphones unplugged would
         silently repoint the channel at something else. `present` says whether
         that target is actually in the graph - a channel may legitimately target
-        a virtual sink, which is not hardware and so is not in `devices`, but is
-        perfectly connected.
+        a virtual device, which is not hardware and so is not in `devices`, but
+        is perfectly connected.
         """
+        is_input = self.channel is not None and self.channel.is_input
         chosen = self.device.currentData()
         self.device.blockSignals(True)
         self.device.clear()
-        self.device.addItem("Default output", FOLLOW_DEFAULT)
+        self.device.addItem("Default input" if is_input else "Default output", FOLLOW_DEFAULT)
         for name, label in devices:
             self.device.addItem(label, name)
+        if not is_input:
+            self.device.addItem("Nowhere (recording only)", NOWHERE)
         if self.channel is not None and self.channel.device:
             if self.device.findData(self.channel.device) < 0:
                 suffix = "" if present else " (not connected)"
@@ -115,11 +162,39 @@ class ChannelPanel(QGroupBox):
         self.setEnabled(channel is not None)
         self.name.setText(channel.name if channel else "")
         self.enabled.setChecked(channel.enabled if channel else False)
+        self._show_kind(channel)
         self.set_devices(devices, present)
+        self.set_outputs(self._outputs)
+        self._sync_options()
         self._loading = False
 
+    def _sync_options(self) -> None:
+        """The cable box and the hint follow the channel's current settings."""
+        channel = self.channel
+        theme = Theme(self)
+        self.recordable.blockSignals(True)
+        if channel is None or channel.is_input:
+            self.recordable.setChecked(False)
+        else:
+            self.recordable.setChecked(channel.recordable)
+            # Playing nowhere is only useful as a cable, so it cannot be unticked.
+            self.recordable.setEnabled(channel.device != NOWHERE)
+        self.recordable.blockSignals(False)
+
+        text, colour = "", theme.dim
+        if channel is not None and channel.is_input:
+            text = f'Apps list it as a microphone called "{channel.name}".'
+            if channel.listen:
+                text += " Listening: use headphones - through speakers a mic can feed back into itself."
+                colour = theme.warn
+        elif channel is not None and channel.recordable:
+            text = f'Apps list it as a microphone called "{channel.name} (recording)".'
+        self.hint.setText(text)
+        self.hint.setStyleSheet(f"color: {colour.name()};")
+        self.form.setRowVisible(self.hint, bool(text))
+
     def show_volume(self, volume: float | None, muted: bool | None) -> None:
-        """Reflect the sink's volume, wherever it was changed from.
+        """Reflect the channel's volume, wherever it was changed from.
 
         None means the channel is not running, so there is nothing to set.
         """
@@ -151,12 +226,14 @@ class ChannelPanel(QGroupBox):
             self.status.setText("")
             return
         theme = Theme(self)
+        is_input = entry.get("kind") == "input"
         if entry["problems"]:
             text, colour = "; ".join(entry["problems"]), theme.warn
         elif not entry["enabled"]:
             text, colour = "Switched off.", theme.dim
         elif not entry["device_present"]:
-            text, colour = "Its output is not connected.", theme.warn
+            text = "Its microphone is not connected." if is_input else "Its output is not connected."
+            colour = theme.warn
         elif entry["running"]:
             text, colour = "Running.", theme.good
         else:
@@ -172,6 +249,7 @@ class ChannelPanel(QGroupBox):
         text = self.name.text().strip()
         if text and text != self.channel.name:
             self.channel.name = text
+            self._sync_options()
             self.renamed.emit()
             self.changed.emit()
 
@@ -181,6 +259,26 @@ class ChannelPanel(QGroupBox):
         device = self.device.itemData(index) or FOLLOW_DEFAULT
         if device != self.channel.device:
             self.channel.device = device
+            if device == NOWHERE:
+                self.channel.recordable = True
+            self._sync_options()
+            self.changed.emit()
+
+    def _recordable_toggled(self, on: bool) -> None:
+        if self._loading or self.channel is None or self.channel.is_input:
+            return
+        if on != self.channel.recordable:
+            self.channel.recordable = on
+            self._sync_options()
+            self.changed.emit()
+
+    def _listen_chosen(self, index: int) -> None:
+        if self._loading or self.channel is None or not self.channel.is_input:
+            return
+        through = self.listen.itemData(index) or NOT_LISTENING
+        if through != self.channel.listen:
+            self.channel.listen = through
+            self._sync_options()
             self.changed.emit()
 
     def _volume_moved(self, percent: int) -> None:

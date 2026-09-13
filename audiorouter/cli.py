@@ -15,7 +15,7 @@ import sys
 import threading
 from typing import Any
 
-from .channels import ChannelError
+from .channels import INPUT, NOWHERE, OUTPUT, ChannelError
 from .config import ConfigError, config_path
 from .effects import EffectError, all_specs, plugin_spec, plugin_specs
 from . import install
@@ -123,6 +123,10 @@ def cmd_status(engine: Engine, args: argparse.Namespace) -> int:
     rows = []
     for channel in status["channels"]:
         state = "running" if channel["running"] else ("off" if not channel["enabled"] else "stopped")
+        if channel.get("kind") == "input":
+            state = f"input, {state}"
+        elif channel.get("recordable"):
+            state = f"cable, {state}"
         if channel["needs_restart"]:
             state += " (stale)"
         if channel.get("volume") is not None:
@@ -179,9 +183,24 @@ def cmd_init(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def _device_arg(value: str | None) -> str:
+    """`nowhere` on the command line means an output that only apps record."""
+    if value is None:
+        return ""
+    return NOWHERE if value.strip().lower() == "nowhere" else value
+
+
 def cmd_channel_add(engine: Engine, args: argparse.Namespace) -> int:
-    channel = engine.create_channel(args.slug, name=args.name or "", device=args.device or "")
-    print(f"added channel {channel.slug} ({channel.name}) -> {channel.device or '(default sink)'}")
+    kind = INPUT if args.input else OUTPUT
+    channel = engine.create_channel(args.slug, name=args.name or "", device=_device_arg(args.device), kind=kind)
+    if args.recordable:
+        engine.set_recordable(channel.slug, True)
+    if args.listen:
+        engine.set_listen(channel.slug, args.listen)
+    default = "(default input)" if channel.is_input else "(default sink)"
+    print(f"added {channel.kind} channel {channel.slug} ({channel.name}) -> {channel.device or default}")
+    if channel.recording_name:
+        print(f"  apps can record it as: {channel.recording_name}")
     return 0
 
 
@@ -193,7 +212,11 @@ def cmd_channel_rm(engine: Engine, args: argparse.Namespace) -> int:
 
 def cmd_channel_set(engine: Engine, args: argparse.Namespace) -> int:
     if args.device is not None:
-        engine.set_device(args.slug, args.device)
+        engine.set_device(args.slug, _device_arg(args.device))
+    if args.recordable is not None:
+        engine.set_recordable(args.slug, args.recordable)
+    if args.listen is not None:
+        engine.set_listen(args.slug, "" if args.listen.lower() == "off" else args.listen)
     if args.name is not None:
         engine.rename_channel(args.slug, args.name)
     if args.enabled is not None:
@@ -404,7 +427,10 @@ def build_parser() -> argparse.ArgumentParser:
     add = channel.add_parser("add", help="create a channel")
     add.add_argument("slug")
     add.add_argument("--name")
-    add.add_argument("--device")
+    add.add_argument("--device", help="a device node name, or 'nowhere' for a recording-only cable")
+    add.add_argument("--input", action="store_true", help="a microphone or line-in channel")
+    add.add_argument("--recordable", action="store_true", help="output: apps can record it (virtual cable)")
+    add.add_argument("--listen", metavar="OUTPUT", help="input: also play it through this output channel")
     add.set_defaults(func=cmd_channel_add)
     remove = channel.add_parser("rm", help="delete a channel")
     remove.add_argument("slug")
@@ -415,6 +441,9 @@ def build_parser() -> argparse.ArgumentParser:
     change.add_argument("--device")
     change.add_argument("--enable", dest="enabled", action="store_true", default=None)
     change.add_argument("--disable", dest="enabled", action="store_false")
+    change.add_argument("--recordable", dest="recordable", action="store_true", default=None)
+    change.add_argument("--not-recordable", dest="recordable", action="store_false")
+    change.add_argument("--listen", metavar="OUTPUT", help="input: an output channel, or 'off'")
     change.set_defaults(func=cmd_channel_set)
     volume = channel.add_parser("volume", help="set a running channel's volume")
     volume.add_argument("slug")

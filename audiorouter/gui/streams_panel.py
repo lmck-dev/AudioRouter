@@ -88,6 +88,8 @@ class StreamsPanel(QGroupBox):
             combo = QComboBox(self)
             combo.addItem("Not routed", UNROUTED)
             for channel in status["channels"]:
+                if channel.get("kind") == "input":
+                    continue  # playback cannot be sent into a microphone
                 label = channel["name"]
                 if channel["slug"] not in running:
                     label += " (stopped)"

@@ -24,7 +24,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 SINK_CLASS = "Audio/Sink"
+SOURCE_CLASS = "Audio/Source"
 STREAM_OUTPUT_CLASS = "Stream/Output/Audio"
+STREAM_INPUT_CLASS = "Stream/Input/Audio"
 
 #: Stamped by us onto every node we create, so our own nodes can be told apart
 #: from applications. This matters more than it looks: a filter-chain's playback
@@ -74,6 +76,16 @@ class Node:
     @property
     def is_output_stream(self) -> bool:
         return self.media_class == STREAM_OUTPUT_CLASS
+
+    @property
+    def is_source(self) -> bool:
+        """Something apps can record from (includes virtual sources we create)."""
+        return self.media_class.startswith(SOURCE_CLASS)
+
+    @property
+    def is_input_stream(self) -> bool:
+        """A recording stream: an app capturing, or one of our own loopbacks."""
+        return self.media_class == STREAM_INPUT_CLASS
 
     @property
     def owned_channel(self) -> str | None:
@@ -231,6 +243,41 @@ class Graph:
     def devices(self) -> list[Node]:
         """Real hardware output devices, sorted for stable presentation."""
         return sorted((n for n in self.nodes if n.is_device), key=lambda n: n.label.lower())
+
+    def sources(self) -> list[Node]:
+        return [n for n in self.nodes if n.is_source]
+
+    def input_devices(self) -> list[Node]:
+        """Real hardware inputs (microphones, line-in), sorted for presentation.
+
+        Hardware sources carry `device.id`, like hardware sinks; virtual mics,
+        including the ones our input channels create, do not.
+        """
+        return sorted(
+            (n for n in self.nodes if n.is_source and "device.id" in n.props),
+            key=lambda n: n.label.lower(),
+        )
+
+    def node_owned_by_pid(self, pid: int, name: str) -> Node | None:
+        """The node called `name` that a given process created.
+
+        Names repeat while a channel restart hands over from its old host to
+        its new one; the owning process is what tells the two apart.
+        """
+        for node in self.nodes_named(name):
+            if self.client_pid(node.client_id) == int(pid):
+                return node
+        return None
+
+    def feeders_of(self, node_id: int) -> list[Node]:
+        """Playback streams linked into a node (a sink)."""
+        ids = {l.output_node for l in self.links() if l.input_node == int(node_id)}
+        return [n for n in self.nodes if n.id in ids and n.is_output_stream]
+
+    def readers_of(self, node_id: int) -> list[Node]:
+        """Recording streams linked out of a node (a source)."""
+        ids = {l.input_node for l in self.links() if l.output_node == int(node_id)}
+        return [n for n in self.nodes if n.id in ids and n.is_input_stream]
 
     def streams(self) -> list[Node]:
         """Every playback stream, including our own channel outputs."""

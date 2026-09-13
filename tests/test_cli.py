@@ -125,3 +125,27 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InputCliTest(unittest.TestCase):
+    # The fixture, not the tests: subclassing CliTest would run them all twice.
+    setUp = CliTest.setUp
+    run_cli = CliTest.run_cli
+    config = CliTest.config
+
+    def test_an_input_channel_listening_through_an_output(self):
+        self.run_cli("channel", "add", "speakers", "--device", "alsa_output.a")
+        code, out, err = self.run_cli("channel", "add", "mic", "--input", "--listen", "speakers")
+        self.assertEqual(code, 0, err)
+        self.assertIn("apps can record it as: ar_mic", out)
+        mic = self.config().channel("mic")
+        self.assertEqual((mic.kind, mic.listen), ("input", "speakers"))
+        self.run_cli("channel", "set", "mic", "--listen", "off")
+        self.assertEqual(self.config().channel("mic").listen, "")
+
+    def test_a_cable_to_nowhere(self):
+        code, out, err = self.run_cli("channel", "add", "stream", "--device", "nowhere")
+        self.assertEqual(code, 0, err)
+        cable = self.config().channel("stream")
+        self.assertTrue(cable.recordable)
+        self.assertIn("ar_stream_rec", out)

@@ -78,13 +78,22 @@ class Config:
             if channel.slug in seen:
                 issues.append(f"duplicate channel id {channel.slug!r}")
             seen.add(channel.slug)
-            if not channel.device:
+            if not channel.device and not channel.is_input:
                 issues.append(f"channel {channel.slug!r} has no output device")
             for reason in channel.missing_plugins():
                 issues.append(f"channel {channel.slug!r}: {reason}")
+        kinds = {c.slug: c.kind for c in self.channels}
+        for channel in self.channels:
+            if channel.listen and kinds.get(channel.listen) != "output":
+                issues.append(
+                    f"input channel {channel.slug!r} listens through {channel.listen!r}, "
+                    "which is not an output channel"
+                )
         for rule in self.rules.rules:
             if rule.channel not in seen:
                 issues.append(f"rule {rule.pattern!r} points at unknown channel {rule.channel!r}")
+            elif kinds.get(rule.channel) == "input":
+                issues.append(f"rule {rule.pattern!r} sends playback to input channel {rule.channel!r}")
         return issues
 
     # -- serialisation ----------------------------------------------------

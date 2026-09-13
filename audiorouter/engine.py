@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from .channels import (
+    NOWHERE,
+    OUTPUT,
     SLUG_RE,
     Channel,
     ChannelError,
@@ -175,6 +177,8 @@ class Engine:
         graph = graph if graph is not None else self.graph()
         found: dict[str, Node] = {}
         for channel in self.config.channels:
+            if channel.is_input:
+                continue  # routing sends playback to outputs only
             node = channel.sink_node(graph)
             if node is not None:
                 found[channel.slug] = node
@@ -191,9 +195,10 @@ class Engine:
         name: str = "",
         device: str = "",
         effects: Iterable[Effect] | None = None,
+        kind: str = OUTPUT,
     ) -> Channel:
         validate_slug(slug)
-        channel = Channel(slug=slug, name=name, device=device, effects=list(effects or []))
+        channel = Channel(slug=slug, name=name, device=device, effects=list(effects or []), kind=kind)
         self.config.add_channel(channel)
         self.save()
         return channel
@@ -206,8 +211,35 @@ class Engine:
             channel.config_path.unlink(missing_ok=True)
             channel.log_path.unlink(missing_ok=True)
         removed = self.config.remove_channel(slug)
+        for other in self.config.channels:
+            if other.listen == slug:
+                other.listen = ""  # nothing left to listen through
         self.save()
         return removed
+
+    def set_listen(self, slug: str, through: str) -> Channel:
+        """Play an input channel through an output channel ("" to stop)."""
+        channel = self.config.channel(slug)
+        if not channel.is_input:
+            raise EngineError(f"channel {slug!r} is an output; only inputs can be listened to")
+        if through:
+            target = self.config.channel(through)
+            if target.is_input:
+                raise EngineError(f"channel {through!r} is an input; listen through an output channel")
+        channel.listen = through
+        self.save()
+        return channel
+
+    def set_recordable(self, slug: str, recordable: bool) -> Channel:
+        """Offer an output channel to recording apps as a virtual cable."""
+        channel = self.config.channel(slug)
+        if channel.is_input:
+            raise EngineError(f"channel {slug!r} is an input; it is always recordable")
+        if not recordable and channel.device == NOWHERE:
+            raise EngineError(f"channel {slug!r} plays nowhere, so it must stay recordable")
+        channel.recordable = bool(recordable)
+        self.save()
+        return channel
 
     def rename_channel(self, slug: str, name: str) -> Channel:
         channel = self.config.channel(slug)
@@ -413,49 +445,84 @@ class Engine:
         return found
 
     def start_channel(self, slug: str, occupants: dict[int, str] | None = None) -> Action:
-        """Start a channel, or restart it without dropping what plays through it.
+        """Start a channel, or restart it without dropping anything using it.
 
-        `occupants` (stream id -> channel slug, from `_occupants`) names the
-        streams to carry across a restart; they are moved onto the new host's
-        sink while the old host is still playing.
+        A restart hands over from the old host to the new one (see
+        `_hand_over`); `occupants` is accepted for older callers and unused.
         """
         channel = self.config.channel(slug)
         if self.dry_run:
             return Action("start", slug, "dry run")
-        handover = None
-        if occupants and slug in occupants.values():
-            handover = lambda sink: self._hand_over(slug, occupants, sink)  # noqa: E731
-        channel.start(handover=handover)
+        channel.start(handover=lambda new_pid: self._hand_over(channel, new_pid))
         return Action("start", slug)
 
-    def _hand_over(self, slug: str, occupants: dict[int, str], sink: Node,
-                   timeout: float = 1.0) -> None:
-        """Move a restarting channel's streams onto its new sink, and wait.
+    def _hand_over(self, channel: Channel, new_pid: int, timeout: float = 1.0) -> None:
+        """Move everything using a restarting channel onto its new host, and wait.
 
-        Waiting until each stream is linked to the new sink matters: stopping
-        the old host while a move is still in flight takes the old sink away
-        first, and the stream falls back to the default output after all.
+        While both hosts run, each of the channel's node names exists twice.
+        Three kinds of stream have to end up on the new host's nodes before the
+        old host stops, or they fall back to a default device when it does:
+
+        - playback streams feeding the channel's sink - apps, and other
+          channels' own streams (an input channel listening through this one;
+          missing those played a microphone out of the default speakers);
+        - recording streams reading its virtual source - apps recording the
+          processed mic or the virtual cable;
+        - the new host's own internal loopbacks, which find their source by
+          name and may have attached to the old host's copy of it.
+
+        Waiting until each is linked matters: stopping the old host while a
+        move is still in flight takes its node away first.
         """
         graph = Graph.snapshot()
-        pending: list[int] = []
-        for stream_id, where in occupants.items():
-            stream = graph.node(stream_id)
-            if where != slug or stream is None or not stream.is_app_stream:
-                continue
+        moves: list[tuple[Node, Node]] = []
+
+        def copies(name: str | None) -> tuple[list[Node], Node | None]:
+            if name is None:
+                return [], None
+            new = graph.node_owned_by_pid(new_pid, name)
+            old = [n for n in graph.nodes_named(name) if new is None or n.id != new.id]
+            return old, new
+
+        if not channel.is_input:
+            old_sinks, new_sink = copies(channel.node_name)
+            for old in old_sinks:
+                for stream in graph.feeders_of(old.id):
+                    if new_sink is not None and stream.owned_channel != channel.slug:
+                        moves.append((stream, new_sink))
+        old_sources, new_source = copies(channel.recording_name)
+        for old in old_sources:
+            for stream in graph.readers_of(old.id):
+                if new_source is not None and stream.owned_channel != channel.slug:
+                    moves.append((stream, new_source))
+        for node in graph.nodes:
+            target = node.props.get("target.object")
+            if (node.is_input_stream and isinstance(target, str)
+                    and graph.client_pid(node.client_id) == new_pid):
+                own = graph.node_owned_by_pid(new_pid, target)
+                if own is not None:
+                    moves.append((node, own))
+
+        pending: list[tuple[int, int]] = []
+        for stream, target in moves:
             try:
-                self.router.move(stream, sink)
-                pending.append(stream_id)
+                if stream.is_ours:
+                    self.router.retarget(stream, target)
+                else:
+                    self.router.move(stream, target)
+                pending.append((stream.id, target.id))
             except Exception:  # noqa: BLE001 - one stream must not strand the rest
                 continue
         deadline = time.monotonic() + timeout
         while pending and time.monotonic() < deadline:
             time.sleep(0.02)
             graph = Graph.snapshot()
+            linked = {(l.output_node, l.input_node) for l in graph.links()}
             pending = [
-                stream_id for stream_id in pending
+                (stream_id, target_id) for stream_id, target_id in pending
                 if graph.node(stream_id) is not None
-                and (graph.sink_of_stream(stream_id) is None
-                     or graph.sink_of_stream(stream_id).id != sink.id)
+                and (stream_id, target_id) not in linked
+                and (target_id, stream_id) not in linked
             ]
 
     def stop_channel(self, slug: str) -> Action:
@@ -529,7 +596,10 @@ class Engine:
         # Channels whose sink is in the graph. A host process can outlive the
         # PipeWire daemon it was attached to (a PipeWire restart, a login race):
         # alive, config unchanged, and no sink. Unknown when the graph is.
-        present = set(self.sink_map(live)) if live is not None else None
+        present = (
+            {c.slug for c in self.config.channels if c.sink_node(live) is not None}
+            if live is not None else None
+        )  # every kind of channel; sink_map holds routable outputs only
         for slug in self.orphan_slugs():
             probe = Channel(slug=slug, name=slug, device="")
             if not self.dry_run:
@@ -558,7 +628,7 @@ class Engine:
                     report.actions.append(tuned)
                     continue
             try:
-                action = self.start_channel(channel.slug, occupants if running else None)
+                action = self.start_channel(channel.slug)
                 if running and not action.detail:
                     action.detail = "restart: its sink had gone" if lost_sink else "restart"
                 report.actions.append(action)
@@ -670,6 +740,7 @@ class Engine:
         return {
             "auto_route": self.config.auto_route,
             "devices": [{"name": n.name, "label": n.label} for n in graph.devices()],
+            "input_devices": [{"name": n.name, "label": n.label} for n in graph.input_devices()],
             "channels": channels,
             "streams": streams,
             "rules": [r.describe() for r in self.config.rules.rules],

@@ -235,11 +235,10 @@ class SeamlessRestartTest(unittest.TestCase):
             self.addCleanup(target.stop)
 
     def test_streams_are_handed_over_before_the_old_host_stops(self):
-        sink = mock.Mock(name="new sink")
-        with mock.patch.object(Channel, "_await_sink", return_value=sink):
-            pid = self.channel.start(handover=lambda s: self.events.append(("handover", s)))
+        with mock.patch.object(Channel, "_await_sink", return_value=mock.Mock()):
+            pid = self.channel.start(handover=lambda new_pid: self.events.append(("handover", new_pid)))
         self.assertEqual(pid, 222)
-        self.assertEqual(self.events, [("handover", sink), ("stop", 111)])
+        self.assertEqual(self.events, [("handover", 222), ("stop", 111)])
         self.assertEqual(self.channel.pid_path.read_text(), "222")
 
     def test_a_new_host_that_fails_leaves_the_old_one_playing(self):

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .effects import Effect, render_chain, unsatisfied_requirements
-from .pwgraph import Graph, Node, PwError, require_tools
+from .pwgraph import OWNER_KEY, Graph, Node, PwError, require_tools
 
 #: Prefix on every node we create, so our nodes are recognisable in the graph
 #: and cannot collide with sinks belonging to anything else.
@@ -39,6 +39,19 @@ MAX_VOLUME = 1.5
 SWITCH_MARK = "_switch_"
 SWITCH_FADE_S = 0.05
 SWITCH_FADE_STEPS = 5
+
+#: WirePlumber: never move this stream to a default device when its target
+#: vanishes. Measured without it: a loopback whose output channel was removed
+#: was relinked straight onto the real speakers - for a listen-through, that is
+#: a live microphone on the speakers.
+NO_FALLBACK = "node.dont-fallback"
+
+OUTPUT = "output"
+INPUT = "input"
+KINDS = (OUTPUT, INPUT)
+#: An output channel's device when it should play nowhere - a virtual cable
+#: that only recording apps hear.
+NOWHERE = "@nowhere"
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
@@ -128,6 +141,20 @@ def _without_controls(conf: Mapping[str, Any]) -> Any:
     return stripped
 
 
+def _loopback(description: str, capture: dict[str, Any], playback: dict[str, Any]) -> dict[str, Any]:
+    """A loopback module: record one node and play it into another."""
+    return {
+        "name": "libpipewire-module-loopback",
+        "args": {
+            "node.description": description,
+            "audio.channels": 2,
+            "audio.position": ["FL", "FR"],
+            "capture.props": capture,
+            "playback.props": playback,
+        },
+    }
+
+
 def _terminate(pid: int, timeout: float = 4.0) -> bool:
     """SIGTERM, then SIGKILL if it will not go. True if it was running."""
     try:
@@ -179,39 +206,98 @@ def _pid_alive(pid: int) -> bool:
 
 @dataclass
 class Channel:
-    """One routable destination with its own effect chain."""
+    """One named audio path with its own effect chain.
+
+    An *output* channel is a sink apps play into; its sound goes to `device`
+    (a real output, the default output, or NOWHERE) and, when `recordable`, it
+    is also offered to recording apps as a virtual source - a virtual cable.
+
+    An *input* channel reads a microphone or line-in (`device`, or the default
+    input) and offers the processed sound as a virtual microphone apps choose
+    from their input list; `listen` optionally plays it through an output
+    channel as well.
+    """
 
     slug: str
     name: str
     device: str
     effects: list[Effect] = field(default_factory=list)
     enabled: bool = True
+    kind: str = OUTPUT
+    #: Output channels: also offer the processed sound as a recording source.
+    recordable: bool = False
+    #: Input channels: the slug of an output channel to play the sound through.
+    listen: str = ""
 
     def __post_init__(self) -> None:
         validate_slug(self.slug)
         if not self.name:
             self.name = self.slug.replace("_", " ").replace("-", " ").title()
+        if self.kind not in KINDS:
+            raise ChannelError(f"channel {self.slug!r}: kind must be one of {', '.join(KINDS)}")
+        if self.kind == INPUT:
+            self.recordable = False
+            if self.device == NOWHERE:
+                raise ChannelError(f"input channel {self.slug!r} needs something to record from")
+        else:
+            self.listen = ""
+            if self.device == NOWHERE:
+                # Playing nowhere only makes sense as a virtual cable.
+                self.recordable = True
+
+    @property
+    def is_input(self) -> bool:
+        return self.kind == INPUT
 
     # -- identity in the graph -------------------------------------------
 
     @property
-    def sink_name(self) -> str:
+    def node_name(self) -> str:
+        """The node people see: an output's sink, or an input's virtual mic."""
         return f"{NODE_PREFIX}{self.slug}"
+
+    @property
+    def sink_name(self) -> str:
+        """Kept for outputs, where the channel's node is a sink."""
+        return self.node_name
+
+    @property
+    def control_name(self) -> str:
+        """The node carrying the effect controls: the filter's capture side."""
+        return f"{NODE_PREFIX}{self.slug}_in" if self.is_input else self.node_name
+
+    @property
+    def recording_name(self) -> str | None:
+        """The source recording apps pick, if this channel offers one."""
+        if self.is_input:
+            return self.node_name
+        return f"{NODE_PREFIX}{self.slug}_rec" if self.recordable else None
 
     @property
     def playback_name(self) -> str:
         return f"{NODE_PREFIX}{self.slug}_out"
 
+    @property
+    def listen_name(self) -> str:
+        """An input channel's stream playing into the channel it listens through."""
+        return f"{NODE_PREFIX}{self.slug}_listen"
+
     # -- persistence ------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "slug": self.slug,
             "name": self.name,
+            "kind": self.kind,
             "device": self.device,
             "enabled": self.enabled,
             "effects": [e.to_dict() for e in self.effects],
         }
+        if self.is_input:
+            data["listen"] = self.listen
+        else:
+            data["recordable"] = self.recordable
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Channel:
@@ -221,6 +307,9 @@ class Channel:
             device=str(data.get("device", "")),
             enabled=bool(data.get("enabled", True)),
             effects=[Effect.from_dict(e) for e in (data.get("effects") or [])],
+            kind=str(data.get("kind", OUTPUT)),
+            recordable=bool(data.get("recordable", False)),
+            listen=str(data.get("listen", "")),
         )
 
     # -- rendering --------------------------------------------------------
@@ -228,6 +317,7 @@ class Channel:
     def render_config(self) -> dict[str, Any]:
         """The complete conf structure for this channel's host process."""
         chain = render_chain(self.effects)
+        stamp = {OWNER_KEY: self.slug}
         args: dict[str, Any] = {
             "node.description": self.name,
             "media.name": self.name,
@@ -242,33 +332,82 @@ class Channel:
             },
             "audio.channels": 2,
             "audio.position": ["FL", "FR"],
-            "capture.props": {
-                "node.name": self.sink_name,
+        }
+        modules: list[dict[str, Any]] = [{"name": "libpipewire-module-filter-chain", "args": args}]
+
+        if self.is_input:
+            args["capture.props"] = {
+                "node.name": self.control_name,
+                "node.description": f"{self.name} (microphone in)",
+                # Passive: the real microphone is only opened while something
+                # records the processed one (or listens to it). Measured: the
+                # mic stayed suspended until a recorder appeared.
+                "node.passive": True,
+                **stamp,
+            }
+            if self.device:
+                args["capture.props"]["target.object"] = self.device
+                # A chosen mic that is unplugged must not be silently swapped
+                # for whichever other microphone happens to be the default.
+                args["capture.props"][NO_FALLBACK] = True
+            args["playback.props"] = {
+                "node.name": self.node_name,
+                "node.description": self.name,
+                "media.class": "Audio/Source",
+                **stamp,
+            }
+            if self.listen:
+                modules.append(_loopback(
+                    f"{self.name} (listening)",
+                    capture={"node.name": f"{self.node_name}_listen_in", "target.object": self.node_name,
+                             NO_FALLBACK: True, **stamp},
+                    playback={"node.name": self.listen_name,
+                              "target.object": f"{NODE_PREFIX}{self.listen}", NO_FALLBACK: True, **stamp},
+                ))
+        else:
+            args["capture.props"] = {
+                "node.name": self.node_name,
                 "node.description": self.name,
                 "media.class": "Audio/Sink",
-                "audiorouter.channel": self.slug,
-            },
-            "playback.props": {
-                "node.name": self.playback_name,
-                "node.description": f"{self.name} output",
-                "node.passive": True,
-                "audiorouter.channel": self.slug,
-            },
-        }
-        if self.device:
-            # Bind this channel's output to one real device. Without it the
-            # chain follows the default sink, which can be another channel.
-            args["playback.props"]["target.object"] = self.device
+                **stamp,
+            }
+            plays = self.device != NOWHERE
+            if self.recordable:
+                args["playback.props"] = {
+                    "node.name": self.recording_name,
+                    "node.description": f"{self.name} (recording)",
+                    "media.class": "Audio/Source",
+                    **stamp,
+                }
+                if plays:
+                    playback = {"node.name": self.playback_name, **stamp}
+                    if self.device:
+                        playback["target.object"] = self.device
+                    modules.append(_loopback(
+                        f"{self.name} output",
+                        capture={"node.name": f"{self.node_name}_play_in",
+                                 "target.object": self.recording_name, NO_FALLBACK: True, **stamp},
+                        playback=playback,
+                    ))
+            else:
+                args["playback.props"] = {
+                    "node.name": self.playback_name,
+                    "node.description": f"{self.name} output",
+                    "node.passive": True,
+                    **stamp,
+                }
+                if self.device:
+                    # Bind this channel's output to one real device. Without it
+                    # the chain follows the default sink, which can be another
+                    # channel.
+                    args["playback.props"]["target.object"] = self.device
         return {
             "context.properties": {"log.level": 0},
             "context.spa-libs": {
                 "audio.convert.*": "audioconvert/libspa-audioconvert",
                 "support.*": "support/libspa-support",
             },
-            "context.modules": [
-                *_CONTEXT_MODULES,
-                {"name": "libpipewire-module-filter-chain", "args": args},
-            ],
+            "context.modules": [*_CONTEXT_MODULES, *modules],
         }
 
     def render_config_text(self) -> str:
@@ -321,9 +460,9 @@ class Channel:
             return
         require_tools("pw-cli")
         graph = graph if graph is not None else Graph.snapshot()
-        node = self.sink_node(graph)
+        node = self.control_node(graph)
         if node is None:
-            raise ChannelError(f"channel {self.slug!r} has no sink in the graph to update")
+            raise ChannelError(f"channel {self.slug!r} is not in the graph to update")
         switches = {k: v for k, v in values.items() if SWITCH_MARK in k}
         others = {k: v for k, v in values.items() if SWITCH_MARK not in k}
         if others:
@@ -409,13 +548,14 @@ class Channel:
     def start(
         self,
         graph_timeout: float = 8.0,
-        handover: Callable[[Node], None] | None = None,
+        handover: Callable[[int], None] | None = None,
     ) -> int:
         """Start or restart this channel's host process and wait for its sink.
 
         A restart is make-before-break. The new host starts while the old one
-        is still playing; once its sink exists, `handover` is given that sink to
-        move the streams onto, and only then is the old host stopped. Stopping
+        is still playing; once its node exists, `handover` is given the new
+        host's pid to move streams onto its nodes, and only then is the old host
+        stopped. Stopping
         first took the sink away and every stream fell back to the default
         output - measured, ~110 ms of unprocessed sound on the speakers, even
         from the headphones channel. If the new host fails, the old one is left
@@ -439,7 +579,7 @@ class Channel:
             )
         self.pid_path.write_text(str(proc.pid))
         try:
-            sink = self._await_sink(proc, graph_timeout)
+            self._await_sink(proc, graph_timeout)
         except Exception:
             _terminate(proc.pid)
             if old_pid is not None:
@@ -453,14 +593,14 @@ class Channel:
         if old_pid is not None:
             if handover is not None:
                 try:
-                    handover(sink)
+                    handover(proc.pid)
                 except Exception:  # noqa: BLE001 - a failed move must not leave two hosts
                     pass
             _terminate(old_pid)
         return proc.pid
 
     def _await_sink(self, proc: subprocess.Popen[Any], timeout: float) -> Node:
-        """The new host's own sink - by process, as the old one shares its name."""
+        """The new host's own node - by process, as the old one shares its name."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -469,9 +609,9 @@ class Channel:
                     f"(code {proc.returncode}); see {self.log_path}"
                 )
             try:
-                sink = Graph.snapshot().sink_owned_by_pid(proc.pid)
-                if sink is not None and sink.name == self.sink_name:
-                    return sink
+                node = Graph.snapshot().node_owned_by_pid(proc.pid, self.node_name)
+                if node is not None:
+                    return node
             except PwError:
                 pass
             time.sleep(0.05)
@@ -520,26 +660,38 @@ class Channel:
 
     # -- status -----------------------------------------------------------
 
-    def sink_node(self, graph: Graph):
-        found = graph.nodes_named(self.sink_name)
+    def _node(self, graph: Graph, name: str | None) -> Node | None:
+        if name is None:
+            return None
+        found = graph.nodes_named(name)
         if len(found) <= 1:
             return found[0] if found else None
-        # Two sinks share the name only while a restart hands over from the old
-        # host to the new; the pid file already names the new one.
+        # Names repeat only while a restart hands over from the old host to the
+        # new; the pid file already names the new one.
         pid = self.pid()
-        owned = graph.sink_owned_by_pid(pid) if pid is not None else None
-        return owned if owned is not None and owned.name == self.sink_name else None
+        return graph.node_owned_by_pid(pid, name) if pid is not None else None
+
+    def sink_node(self, graph: Graph) -> Node | None:
+        """The channel's own node: an output's sink or an input's virtual mic."""
+        return self._node(graph, self.node_name)
+
+    def control_node(self, graph: Graph) -> Node | None:
+        return self._node(graph, self.control_name)
+
+    def recording_node(self, graph: Graph) -> Node | None:
+        return self._node(graph, self.recording_name)
 
     def device_present(self, graph: Graph) -> bool:
-        """Is this channel's output target currently in the graph?
+        """Is this channel's device currently in the graph?
 
-        Checks every sink, not only hardware ones: a channel may legitimately
-        target a virtual sink, and a Bluetooth device disappears entirely when
-        it disconnects rather than merely going idle.
+        Checks every sink (or source, for inputs), not only hardware: a channel
+        may legitimately use a virtual device, and a Bluetooth device vanishes
+        entirely when it disconnects rather than merely going idle.
         """
-        if not self.device:
+        if not self.device or self.device == NOWHERE:
             return True
-        return any(n.name == self.device for n in graph.sinks())
+        candidates = graph.sources() if self.is_input else graph.sinks()
+        return any(n.name == self.device for n in candidates)
 
     def status(self, graph: Graph | None = None) -> dict[str, Any]:
         graph = graph if graph is not None else Graph.snapshot()
@@ -547,7 +699,11 @@ class Channel:
         return {
             "slug": self.slug,
             "name": self.name,
+            "kind": self.kind,
             "device": self.device,
+            "listen": self.listen,
+            "recordable": self.recordable,
+            "recording_name": self.recording_name,
             "device_present": self.device_present(graph),
             "enabled": self.enabled,
             "running": self.is_running(),

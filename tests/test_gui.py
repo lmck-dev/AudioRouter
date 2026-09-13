@@ -446,3 +446,66 @@ class PluginGuiTest(GuiTestCase):
         panel.refresh()
         self.assertIn("unavailable", panel.list.item(0).text())
         self.assertIn("not installed", panel.summary.text())
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class InputAndCableGuiTest(GuiTestCase):
+    def setUp(self):
+        super().setUp()
+        from audiorouter.channels import INPUT
+
+        self.engine.config.add_channel(Channel("mic", "Desk mic", "", kind=INPUT))
+        self.window.refresh()
+        self.panel = self.window.channel_panel
+
+    def select(self, slug):
+        self.window.channel_list.setCurrentRow(self.engine.config.channel_slugs.index(slug))
+
+    def test_an_input_shows_records_from_and_listen_instead_of_the_cable_box(self):
+        self.select("mic")
+        self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Records from")
+        self.assertEqual(self.panel.device.itemText(0), "Default input")
+        self.assertTrue(self.panel.form.isRowVisible(self.panel.listen))
+        self.assertFalse(self.panel.form.isRowVisible(self.panel.recordable))
+        self.assertIn('microphone called "Desk mic"', self.panel.hint.text())
+        self.assertIn("(input)", self.window.channel_list.item(2).text())
+
+    def test_listen_offers_output_channels_only_and_warns_about_feedback(self):
+        self.select("mic")
+        names = [self.panel.listen.itemText(i) for i in range(self.panel.listen.count())]
+        self.assertEqual(names, ["Don't listen", "Speakers", "Headphones"])
+        self.panel.listen.setCurrentIndex(1)
+        self.panel.listen.activated.emit(1)
+        self.assertEqual(Config.load(self.engine.path).channel("mic").listen, "speakers")
+        self.assertIn("headphones", self.panel.hint.text())
+
+    def test_an_output_can_become_a_cable_and_nowhere_keeps_it_one(self):
+        from audiorouter.channels import NOWHERE
+
+        self.select("phones")
+        self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Plays through")
+        self.assertFalse(self.panel.form.isRowVisible(self.panel.listen))
+        self.panel.recordable.setChecked(True)
+        self.assertTrue(Config.load(self.engine.path).channel("phones").recordable)
+        index = self.panel.device.findData(NOWHERE)
+        self.panel.device.setCurrentIndex(index)
+        self.panel.device.activated.emit(index)
+        self.assertFalse(self.panel.recordable.isEnabled())
+        self.assertIn("(recording)", self.panel.hint.text())
+
+    def test_apps_cannot_be_sent_into_an_input(self):
+        streams = self.window.streams_panel
+        combo = streams.table.cellWidget(0, 2)
+        options = [combo.itemData(i) for i in range(combo.count())]
+        self.assertNotIn("mic", options)
+        self.assertIn("speakers", options)
+
+    def test_new_channel_asks_what_kind_and_creates_an_input_on_the_default_mic(self):
+        from audiorouter.gui.main import NEW_INPUT
+
+        with mock.patch("audiorouter.gui.main.QInputDialog.getItem", return_value=(NEW_INPUT, True)), \
+             mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Streaming mic", True)), \
+             mock.patch.object(Engine, "apply"):
+            self.window._add_channel()
+        created = self.engine.config.channels[-1]
+        self.assertEqual((created.name, created.kind, created.device), ("Streaming mic", "input", ""))
