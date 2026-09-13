@@ -99,5 +99,29 @@ class CliTest(unittest.TestCase):
         self.assertIn("lowpass", out)
 
 
+    def test_a_plugin_effect_is_added_by_uri_and_listed_by_name(self):
+        from .test_plugin_effects import STEREO, fake_catalogue
+
+        self.run_cli("channel", "add", "phones")
+        with mock.patch("audiorouter.lv2.catalogue", side_effect=fake_catalogue):
+            code, out, err = self.run_cli("effect", "add", "phones", "lv2", "--plugin", STEREO, "al=0.1")
+            self.assertEqual(code, 0, err)
+            self.assertIn("Example Compressor", out)
+            effect = self.config().channel("phones").effects[0]
+            self.assertEqual((effect.plugin, effect.params["al"]), (STEREO, 0.1))
+            _, listing, _ = self.run_cli("effects", "--plugins", "compressor")
+            self.assertIn(STEREO, listing)
+            self.assertNotIn("Synth", listing)
+            _, detail, _ = self.run_cli("effects", "--plugin", STEREO)
+            self.assertIn("0=Down", detail)
+            self.assertNotIn("igv", detail)
+
+    def test_plugin_is_refused_for_a_curated_effect(self):
+        self.run_cli("channel", "add", "phones")
+        code, _, err = self.run_cli("effect", "add", "phones", "gain", "--plugin", "urn:x")
+        self.assertNotEqual(code, 0)
+        self.assertIn("lv2", err)
+
+
 if __name__ == "__main__":
     unittest.main()

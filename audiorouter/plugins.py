@@ -58,6 +58,20 @@ class Requirement:
         return f"plugin {self.identifier} is not installed (install {self.package_hint})"
 
 
+@dataclass(frozen=True)
+class Unusable:
+    """A plugin that is installed but cannot run in a channel, and why."""
+
+    identifier: str
+    reason: str
+
+    def satisfied(self) -> bool:
+        return False
+
+    def explain(self) -> str:
+        return f"{self.identifier} {self.reason}"
+
+
 @functools.lru_cache(maxsize=1)
 def available_loaders() -> frozenset[str]:
     """Backend names filter-chain can load here, e.g. {builtin, ladspa, lv2}."""

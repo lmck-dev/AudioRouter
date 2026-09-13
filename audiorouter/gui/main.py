@@ -47,6 +47,9 @@ from .theme import Theme
 
 #: Collecting edits for this long turns a burst of typing into one restart.
 APPLY_DELAY_MS = 700
+#: A knob change is applied to the running channel, so it can be heard almost
+#: at once; this only batches the flood of values a slider drag produces.
+TUNE_DELAY_MS = 60
 
 USER_ERRORS = (EngineError, ChannelError, ConfigError, EffectError, RoutingError, PwError)
 
@@ -166,6 +169,7 @@ class MainWindow(QMainWindow):
         self.channel_panel.changed.connect(self._config_edited)
         self.channel_panel.renamed.connect(self._refresh_channel_list)
         self.effects_panel.changed.connect(self._config_edited)
+        self.effects_panel.tuned.connect(self._config_tuned)
         self.auto_route.toggled.connect(self._auto_route_toggled)
         self.background.toggled.connect(self._background_toggled)
         self.streams_panel.send_requested.connect(self._send_stream)
@@ -274,20 +278,43 @@ class MainWindow(QMainWindow):
             return
         self._refresh_channel_list()
         self._set_status("Updating...")
-        self._pending_apply.start()
+        self._structural_pending = True
+        self._pending_apply.start(APPLY_DELAY_MS)
+
+    def _config_tuned(self) -> None:
+        """A knob moved: save now, and apply it live very soon.
+
+        The timer is not restarted by each new value, or a continuous slider
+        drag would never be heard until the mouse stopped.
+        """
+        try:
+            self.engine.save()
+        except OSError as exc:
+            self._error("Could not save your settings", str(exc))
+            return
+        if not self._pending_apply.isActive():
+            self._pending_apply.start(TUNE_DELAY_MS)
 
     def apply_now(self) -> None:
         self._pending_apply.stop()
-        QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        structural = getattr(self, "_structural_pending", False)
+        self._structural_pending = False
+        # Only a restart is slow enough to deserve a busy cursor; flashing one
+        # sixteen times a second during a slider drag would be worse than none.
+        if structural:
+            QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
         try:
             report = self.engine.apply()
         except USER_ERRORS as exc:
             self._error("Could not update the audio channels", str(exc))
             return
         finally:
-            QGuiApplication.restoreOverrideCursor()
+            if structural:
+                QGuiApplication.restoreOverrideCursor()
         if report.failures:
             self._set_status(report.failures[0].describe(), warn=True)
+        elif not structural and not report.restarted:
+            return  # knobs changed in place: nothing else on screen is different
         self.refresh()
 
     def _add_channel(self) -> None:

@@ -76,7 +76,7 @@ class DegradationTest(unittest.TestCase):
                                return_value=frozenset({"builtin", "lv2"})), \
              mock.patch.object(plugins, "lv2_installed", return_value=False):
             (missing,) = unsatisfied_requirements([Effect("limiter")])
-            self.assertIn("limiter_mono", missing.explain())
+            self.assertIn("limiter_stereo", missing.explain())
 
     def test_builtin_effects_never_demand_anything(self):
         with mock.patch.object(plugins, "available_loaders", return_value=frozenset({"builtin"})):

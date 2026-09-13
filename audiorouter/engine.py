@@ -34,7 +34,7 @@ from .channels import (
     validate_slug,
 )
 from .config import Config, ConfigError, config_path, default_config
-from .effects import Effect, EffectError, spec_for
+from .effects import Effect, EffectError, make_effect
 from .pwgraph import Graph, GraphMonitor, Node, PwError
 from .routing import Placement, Router, Rule, RuleSet, plan
 
@@ -69,6 +69,11 @@ class ApplyReport:
     @property
     def changed(self) -> bool:
         return bool(self.actions)
+
+    @property
+    def restarted(self) -> bool:
+        """Did any sink get replaced? Only then can streams have fallen off."""
+        return any(a.kind == "start" for a in self.actions)
 
     def describe(self) -> list[str]:
         return [a.describe() for a in self.actions + self.failures]
@@ -234,11 +239,16 @@ class Engine:
     # -- effects -----------------------------------------------------------
 
     def add_effect(
-        self, slug: str, kind: str, params: dict[str, Any] | None = None, index: int | None = None
+        self,
+        slug: str,
+        kind: str,
+        params: dict[str, Any] | None = None,
+        index: int | None = None,
+        plugin: str = "",
     ) -> Effect:
+        """Add an effect; `plugin` is the LV2 URI when `kind` is "lv2"."""
         channel = self.config.channel(slug)
-        spec = spec_for(kind)
-        effect = Effect(kind=kind, params=spec.normalise(params))
+        effect = make_effect(kind, params, plugin)
         if index is None:
             channel.effects.append(effect)
         else:
@@ -346,6 +356,22 @@ class Engine:
             return channel.config_path.read_text() != channel.render_config_text()
         except OSError:
             return True
+
+    def _tune(self, channel: Channel, graph: Graph | None) -> Action | None:
+        """Apply knob-only changes to a running channel without restarting it.
+
+        None means it could not be done live - the graph's shape changed, or
+        PipeWire refused - and the caller restarts the channel instead, which
+        always works, only with a moment of silence.
+        """
+        changes = channel.control_changes()
+        if not changes:
+            return None
+        try:
+            channel.set_controls(changes, graph)
+        except (ChannelError, PwError):
+            return None
+        return Action("tune", channel.slug, f"{len(changes)} setting(s) changed live")
 
     def orphan_slugs(self) -> list[str]:
         """Channel processes still running for channels no longer configured.
@@ -468,6 +494,11 @@ class Engine:
             lost_sink = present is not None and channel.slug not in present
             if running and not self.needs_restart(channel) and not lost_sink:
                 continue
+            if running and not lost_sink and not self.dry_run:
+                tuned = self._tune(channel, live)
+                if tuned is not None:
+                    report.actions.append(tuned)
+                    continue
             try:
                 action = self.start_channel(channel.slug)
                 if running and not action.detail:
@@ -476,7 +507,7 @@ class Engine:
             except (ChannelError, PwError) as exc:
                 report.failures.append(Action("start", channel.slug, str(exc)))
         self._graph = None
-        if occupants and report.changed:
+        if occupants and report.restarted:
             report.actions.extend(self._restore(occupants))
         self._graph = None
         return report

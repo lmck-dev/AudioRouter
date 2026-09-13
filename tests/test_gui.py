@@ -105,8 +105,8 @@ class WindowTest(GuiTestCase):
         # Every keystroke restarting the audio would be unusable.
         with mock.patch.object(Engine, "apply") as apply:
             self.window.channel_list.setCurrentRow(0)
-            self.window.effects_panel.form._boxes["frequency"].setValue(120)
-            self.window.effects_panel.form._boxes["frequency"].setValue(130)
+            self.window.effects_panel.form._boxes["frequency"].spin.setValue(120)
+            self.window.effects_panel.form._boxes["frequency"].spin.setValue(130)
         apply.assert_not_called()
         self.assertTrue(self.window._pending_apply.isActive())
 
@@ -121,12 +121,12 @@ class WindowTest(GuiTestCase):
     def test_moving_a_knob_updates_the_line_in_the_chain(self):
         self.window.channel_list.setCurrentRow(0)
         panel = self.window.effects_panel
-        panel.form._boxes["frequency"].setValue(250)
+        panel.form._boxes["frequency"].spin.setValue(250)
         self.assertIn("250", panel.list.item(0).text())
 
     def test_effect_edits_reach_the_saved_config(self):
         self.window.channel_list.setCurrentRow(0)
-        self.window.effects_panel.form._boxes["frequency"].setValue(120)
+        self.window.effects_panel.form._boxes["frequency"].spin.setValue(120)
         self.assertEqual(
             Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 120
         )
@@ -143,8 +143,7 @@ class WindowTest(GuiTestCase):
     def test_adding_an_effect_selects_it_so_its_knobs_are_visible(self):
         self.window.channel_list.setCurrentRow(1)
         panel = self.window.effects_panel
-        panel.picker.setCurrentIndex(panel.picker.findData("gain"))
-        panel._add()
+        panel.add_effect("gain")
         self.assertEqual(panel.list.currentRow(), 0)
         self.assertIn("gain_db", panel.form._boxes)
 
@@ -153,19 +152,52 @@ class WindowTest(GuiTestCase):
         # scheduled for deletion.
         self.window.channel_list.setCurrentRow(0)
         panel = self.window.effects_panel
-        panel.picker.setCurrentIndex(panel.picker.findData("gain"))
-        panel._add()
+        panel.add_effect("gain")
         self.assertEqual(set(panel.form._boxes), {"gain_db"})
         self.assertEqual(panel.form._layout.rowCount(), 1)
 
-    def test_the_add_menu_defaults_to_something_this_machine_can_run(self):
-        from audiorouter.effects import spec_for
+    def test_an_edit_that_reshapes_the_chain_waits_longer_than_a_knob(self):
+        from audiorouter.gui.main import APPLY_DELAY_MS, TUNE_DELAY_MS
 
+        self.window.channel_list.setCurrentRow(0)
         panel = self.window.effects_panel
-        with mock.patch("audiorouter.plugins.available_loaders",
-                        return_value=frozenset({"builtin"})):
-            panel._select_first_available()
-            self.assertTrue(spec_for(panel.picker.currentData()).available)
+        with mock.patch.object(Engine, "apply"):
+            panel.form._boxes["frequency"].spin.setValue(150)
+            self.assertEqual(self.window._pending_apply.interval(), TUNE_DELAY_MS)
+            self.window._pending_apply.stop()
+            panel.add_effect("gain")
+            self.assertEqual(self.window._pending_apply.interval(), APPLY_DELAY_MS)
+
+    def test_a_slider_drag_is_heard_during_the_drag_not_only_after_it(self):
+        # Restarting the short timer on every value would postpone the update
+        # until the mouse stopped moving.
+        self.window.channel_list.setCurrentRow(0)
+        box = self.window.effects_panel.form._boxes["frequency"]
+        with mock.patch.object(Engine, "apply"):
+            box.slider.setValue(400)
+            remaining = self.window._pending_apply.remainingTime()
+            box.slider.setValue(410)
+            self.assertLessEqual(self.window._pending_apply.remainingTime(), remaining)
+
+    def test_a_live_knob_change_does_not_rebuild_the_form_under_the_mouse(self):
+        from audiorouter.engine import Action, ApplyReport
+
+        self.window.channel_list.setCurrentRow(0)
+        box = self.window.effects_panel.form._boxes["frequency"]
+        box.spin.setValue(300)
+        report = ApplyReport(actions=[Action("tune", "speakers")])
+        with mock.patch.object(Engine, "apply", return_value=report):
+            self.window.apply_now()
+        self.window.refresh()  # a graph event, as the live change itself causes
+        self.assertIs(self.window.effects_panel.form._boxes["frequency"], box)
+        self.assertEqual(Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 300)
+
+    def test_reset_puts_the_settings_back_to_defaults(self):
+        self.window.channel_list.setCurrentRow(0)
+        panel = self.window.effects_panel
+        panel.reset_button.click()
+        self.assertEqual(panel.form._boxes["frequency"].value(), 100.0)
+        self.assertEqual(Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 100.0)
 
     def test_deleting_a_channel_asks_first(self):
         from PyQt6.QtWidgets import QMessageBox
@@ -286,3 +318,103 @@ class NamingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class PluginGuiTest(GuiTestCase):
+    """The browser and the generated controls, against a hand-built catalogue."""
+
+    def setUp(self):
+        from .test_plugin_effects import fake_catalogue
+
+        for target in (
+            mock.patch("audiorouter.lv2.catalogue", side_effect=fake_catalogue),
+            mock.patch("audiorouter.plugins.available_loaders", return_value=frozenset({"builtin", "lv2"})),
+            mock.patch("audiorouter.plugins.lv2_installed", return_value=True),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+        super().setUp()
+
+    def browser(self):
+        from audiorouter.gui.effects_panel import EffectBrowser
+
+        browser = EffectBrowser(self.window)
+        self.addCleanup(browser.close)
+        return browser
+
+    def names(self, browser):
+        return [item.text(0) for _, item in browser._items() if not item.isHidden()]
+
+    def test_built_in_effects_come_first_then_plugins_by_maker(self):
+        browser = self.browser()
+        groups = [browser.tree.topLevelItem(i).text(0) for i in range(browser.tree.topLevelItemCount())]
+        self.assertEqual(groups[0], "Built in")
+        self.assertIn("example.org plugins", groups)
+        self.assertIn("Example Compressor", self.names(browser))
+
+    def test_search_filters_and_selects_the_first_usable_match(self):
+        browser = self.browser()
+        browser.search.setText("compressor")
+        visible = self.names(browser)
+        self.assertIn("Example Compressor", visible)
+        self.assertNotIn("Volume trim", visible)
+        self.assertIsNotNone(browser.tree.currentItem())
+        self.assertTrue(browser.buttons.button(browser.buttons.StandardButton.Ok).isEnabled())
+
+    def test_unusable_plugins_are_hidden_unless_asked_and_cannot_be_added(self):
+        browser = self.browser()
+        self.assertNotIn("Synth", self.names(browser))
+        browser.show_unusable.setChecked(True)
+        (item,) = [i for _, i in browser._items() if i.text(0) == "Synth"]
+        browser.tree.setCurrentItem(item)
+        self.assertFalse(browser.buttons.button(browser.buttons.StandardButton.Ok).isEnabled())
+        self.assertIn("makes sound", browser.detail.text())
+        browser._accept_item(item)
+        self.assertIsNone(browser.choice)
+
+    def test_choosing_a_plugin_adds_it_with_its_controls(self):
+        from PyQt6.QtWidgets import QCheckBox, QComboBox
+
+        from .test_plugin_effects import STEREO
+
+        self.window.channel_list.setCurrentRow(1)
+        panel = self.window.effects_panel
+        browser = self.browser()
+        browser.search.setText("example compressor")
+        browser._accept_item(browser.tree.currentItem())
+        self.assertEqual(browser.choice, ("lv2", STEREO))
+        panel.add_effect(*browser.choice)
+        self.assertEqual(set(panel.form._boxes), {"al", "cm", "sw"})  # igv is UI-only
+        self.assertIsInstance(panel.form._boxes["cm"].combo, QComboBox)
+        self.assertIsInstance(panel.form._boxes["sw"].check, QCheckBox)
+        saved = Config.load(self.engine.path).channel("phones").effects[0]
+        self.assertEqual((saved.kind, saved.plugin), ("lv2", STEREO))
+
+    def test_a_linear_gain_is_shown_and_edited_in_db(self):
+        from .test_plugin_effects import STEREO
+
+        self.window.channel_list.setCurrentRow(1)
+        panel = self.window.effects_panel
+        panel.add_effect("lv2", STEREO)
+        box = panel.form._boxes["al"]
+        self.assertAlmostEqual(box.spin.value(), -12.0, places=1)  # default 0.25
+        self.assertEqual(box.spin.suffix(), " dB")
+        box.spin.setValue(-6.0)
+        effect = self.engine.config.channel("phones").effects[0]
+        self.assertAlmostEqual(effect.params["al"], 0.501, places=3)
+
+    def test_a_logarithmic_slider_puts_the_middle_of_its_travel_at_the_geometric_middle(self):
+        self.window.channel_list.setCurrentRow(0)
+        box = self.window.effects_panel.form._boxes["frequency"]  # 20 Hz .. 20 kHz, log
+        box.slider.setValue(500)
+        self.assertAlmostEqual(box.value(), 632.5, delta=2)
+
+    def test_a_plugin_that_is_no_longer_installed_is_shown_as_unavailable(self):
+        self.window.channel_list.setCurrentRow(1)
+        panel = self.window.effects_panel
+        self.engine.config.channel("phones").effects.append(
+            Effect("lv2", plugin="http://example.org/uninstalled"))
+        panel.refresh()
+        self.assertIn("unavailable", panel.list.item(0).text())
+        self.assertIn("not installed", panel.summary.text())

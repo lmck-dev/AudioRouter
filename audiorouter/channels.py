@@ -96,6 +96,29 @@ def running_hosts() -> dict[str, int]:
     return found
 
 
+def _filter_graph(conf: Mapping[str, Any]) -> dict[str, Any]:
+    for module in conf.get("context.modules", ()):
+        if module.get("name") == "libpipewire-module-filter-chain":
+            return module.get("args", {}).get("filter.graph", {})
+    return {}
+
+
+def _graph_controls(conf: Mapping[str, Any]) -> dict[str, float]:
+    return {
+        f"{node.get('name')}:{key}": value
+        for node in _filter_graph(conf).get("nodes", ())
+        for key, value in (node.get("control") or {}).items()
+    }
+
+
+def _without_controls(conf: Mapping[str, Any]) -> Any:
+    """The conf with every knob value removed: what only a restart can change."""
+    stripped = json.loads(json.dumps(conf))
+    for node in _filter_graph(stripped).get("nodes", ()):
+        node.pop("control", None)
+    return stripped
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -161,11 +184,11 @@ class Channel:
             "filter.graph": {
                 "nodes": chain.nodes,
                 "links": chain.links,
-                # One in, one out: PipeWire then replicates the graph per
-                # channel. Leaving these implicit lets spare plugin ports turn
-                # the filter into an 8-in 1-out device that refuses to start.
-                "inputs": [chain.input_port],
-                "outputs": [chain.output_port],
+                # One port per side, named explicitly. Left implicit, every
+                # spare plugin port (a mixer's unused inputs, a sidechain)
+                # becomes a filter port and the graph refuses to start.
+                "inputs": list(chain.inputs),
+                "outputs": list(chain.outputs),
             },
             "audio.channels": 2,
             "audio.position": ["FL", "FR"],
@@ -202,6 +225,63 @@ class Channel:
         # SPA-JSON is a superset of JSON, so strict JSON is always accepted and
         # saves us hand-quoting keys that contain dots.
         return json.dumps(self.render_config(), indent=2) + "\n"
+
+    def controls(self) -> dict[str, float]:
+        """Every knob value in the rendered graph, as `node:control`."""
+        return render_chain(self.effects).controls()
+
+    def running_config(self) -> dict[str, Any] | None:
+        """The conf the running host was started with (or last updated to)."""
+        try:
+            return json.loads(self.config_path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def control_changes(self) -> dict[str, float] | None:
+        """Knob values that differ from the running host, if that is all that does.
+
+        None means the graph itself changed - an effect added, removed, moved,
+        switched off, or a setting that alters the graph's shape such as a
+        filter's steepness - and only a restart can apply it. An empty dict
+        means nothing changed at all.
+        """
+        running = self.running_config()
+        if running is None:
+            return None
+        wanted = self.render_config()
+        if _without_controls(running) != _without_controls(wanted):
+            return None
+        before = _graph_controls(running)
+        after = _graph_controls(wanted)
+        return {key: value for key, value in after.items() if before.get(key) != value}
+
+    def set_controls(self, values: Mapping[str, float], graph: Graph | None = None) -> None:
+        """Change knobs on the running host without restarting it.
+
+        Filter-chain exposes every control as a `Props` param on its sink node,
+        so this is heard at once and nothing playing is interrupted. The conf
+        beside the pid file is rewritten afterwards, because it is the record of
+        what the host is running that `control_changes` compares against.
+        """
+        if not values:
+            return
+        require_tools("pw-cli")
+        graph = graph if graph is not None else Graph.snapshot()
+        node = self.sink_node(graph)
+        if node is None:
+            raise ChannelError(f"channel {self.slug!r} has no sink in the graph to update")
+        params: list[Any] = []
+        for key, value in values.items():
+            params.extend([key, float(value)])
+        pod = json.dumps({"params": params})
+        try:
+            subprocess.run(
+                ["pw-cli", "set-param", str(node.id), "Props", pod],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            raise ChannelError(f"could not update channel {self.slug!r} live: {exc}") from exc
+        self.config_path.write_text(self.render_config_text())
 
     # -- process lifecycle ------------------------------------------------
 
@@ -349,5 +429,5 @@ class Channel:
             "pid": self.pid(),
             "sink_node_id": node.id if node else None,
             "sink_serial": node.serial if node else None,
-            "effects": [e.kind for e in self.effects if e.enabled],
+            "effects": [e.label if e.plugin else e.kind for e in self.effects if e.enabled],
         }

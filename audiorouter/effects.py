@@ -1,14 +1,20 @@
 """Effect definitions and their translation into filter-chain graph fragments.
 
-The graph is built mono and PipeWire replicates it across the channel's
-channels, so every effect here has exactly one audio input and one audio
-output. That keeps chain assembly uniform at the cost of stereo linking: a
-compressor reacts to each side independently. Stereo-linked dynamics would need
-an explicitly wired stereo graph, which is a later change, not a tweak.
+Two families live here. The *curated* effects (volume trim, filters, tone bands,
+delay, compressor, limiter) have friendly names and knobs in the units a person
+thinks in. The *plugin* effect (`kind="lv2"`) is any usable LV2 plugin from
+`lv2.catalogue()`, with one knob per control port in the plugin's own units.
 
-Gain values are exchanged in decibels at this layer because that is what a user
-understands; conversion to the linear multipliers the plugins want happens at
-render time.
+Every chain is rendered as an explicit stereo graph. A mono effect is placed
+twice, once per side; a stereo plugin is placed once and sees both sides, which
+is what lets a compressor or limiter react to the pair together instead of
+pulling the image sideways. (PipeWire can replicate a mono graph per channel by
+itself, but then no stereo plugin could ever be used.)
+
+Gain values of curated effects are exchanged in decibels because that is what a
+user understands; conversion to the linear multipliers the plugins want happens
+at render time. Plugin effects keep native values, and `ParamSpec.db` tells the
+window to show a linear gain as decibels.
 """
 
 from __future__ import annotations
@@ -18,13 +24,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .plugins import Requirement
+from . import lv2
+from .plugins import Requirement, Unusable
 
 LSP = "http://lsp-plug.in/plugins/lv2/"
 
 #: Package that teaches PipeWire to load LV2 plugins. Not installed by default
 #: on Fedora, and its absence is only reported as ENOENT at process start.
 LV2_PACKAGE = "pipewire-module-filter-chain-lv2"
+
+#: The plugin effect's kind. Its identity is the `plugin` URI on the Effect.
+PLUGIN_KIND = "lv2"
+
+SIDES = ("l", "r")
 
 
 class EffectError(ValueError):
@@ -33,6 +45,10 @@ class EffectError(ValueError):
 
 def db_to_linear(db: float) -> float:
     return 10.0 ** (float(db) / 20.0)
+
+
+def linear_to_db(value: float, floor: float = -120.0) -> float:
+    return 20.0 * math.log10(value) if value > 0 else floor
 
 
 @dataclass(frozen=True)
@@ -46,6 +62,16 @@ class ParamSpec:
     maximum: float
     unit: str = ""
     step: float = 1.0
+    toggled: bool = False
+    integer: bool = False
+    logarithmic: bool = False
+    #: The value is a linear gain factor best shown to people as dB.
+    db: bool = False
+    #: (label, value) pairs for a list of named settings.
+    choices: tuple[tuple[str, float], ...] = ()
+    comment: str = ""
+    #: Left at its default and not offered as a control.
+    hidden: bool = False
 
     def clamp(self, value: float) -> float:
         try:
@@ -54,22 +80,27 @@ class ParamSpec:
             raise EffectError(f"{self.key}: {value!r} is not a number") from exc
         if math.isnan(number) or math.isinf(number):
             raise EffectError(f"{self.key}: {value!r} is not a finite number")
-        return max(self.minimum, min(self.maximum, number))
+        number = max(self.minimum, min(self.maximum, number))
+        if self.toggled:
+            return 1.0 if number >= (self.minimum + self.maximum) / 2 else self.minimum
+        if self.integer or self.choices:
+            return float(round(number))
+        return number
 
 
 @dataclass(frozen=True)
 class Fragment:
-    """A rendered piece of a filter graph, with its entry and exit ports."""
+    """A rendered piece of a filter graph, with its stereo entry and exit ports."""
 
     nodes: list[dict[str, Any]]
     links: list[dict[str, str]]
-    input_port: str
-    output_port: str
+    inputs: tuple[str, str]
+    outputs: tuple[str, str]
 
 
 @dataclass(frozen=True)
 class Chain:
-    """A whole channel's graph: nodes, links, and the ports the stream binds to.
+    """A whole channel's graph: nodes, links, and the ports the streams bind to.
 
     The ports are not a convenience. PipeWire derives a filter's inputs from
     every *unconnected* input port in the graph, so one `mixer` node - which has
@@ -77,13 +108,21 @@ class Chain:
     1-out device. The graph then refuses to start with "invalid ports" and the
     channel is silent while still appearing in the graph, fully linked, as if it
     were working. Naming the entry and exit ports explicitly is what prevents
-    that, and it must stay for any effect whose plugin has spare ports.
+    that, and it matters even more now that plugins bring sidechain inputs.
     """
 
     nodes: list[dict[str, Any]]
     links: list[dict[str, str]]
-    input_port: str
-    output_port: str
+    inputs: tuple[str, str]
+    outputs: tuple[str, str]
+
+    def controls(self) -> dict[str, float]:
+        """Every control value, named as PipeWire names it: `node:control`."""
+        return {
+            f"{node['name']}:{key}": value
+            for node in self.nodes
+            for key, value in (node.get("control") or {}).items()
+        }
 
 
 @dataclass(frozen=True)
@@ -94,9 +133,16 @@ class EffectSpec:
     params: tuple[ParamSpec, ...]
     #: Plugins this effect needs; empty when it is built into PipeWire.
     requires: tuple[Requirement, ...] = ()
+    #: Set for plugin effects: the LV2 URI.
+    plugin: str = ""
+    #: Reasons this effect can never run here, beyond missing packages.
+    problems: tuple[Unusable, ...] = ()
+    #: Grouping for the browser ("Built in", "LSP", "Calf", ...).
+    group: str = "Built in"
 
-    def unsatisfied(self) -> list[Requirement]:
-        return [r for r in self.requires if not r.satisfied()]
+    def unsatisfied(self) -> list[Requirement | Unusable]:
+        missing: list[Requirement | Unusable] = [r for r in self.requires if not r.satisfied()]
+        return missing + list(self.problems)
 
     @property
     def available(self) -> bool:
@@ -106,40 +152,90 @@ class EffectSpec:
         for spec in self.params:
             if spec.key == key:
                 return spec
-        raise EffectError(f"{self.kind} has no parameter {key!r}")
+        raise EffectError(f"{self.label} ({self.kind}) has no parameter {key!r}")
+
+    def visible_params(self) -> list[ParamSpec]:
+        return [p for p in self.params if not p.hidden]
 
     def defaults(self) -> dict[str, float]:
-        return {p.key: p.default for p in self.params}
+        return {p.key: p.default for p in self.params if not p.hidden}
 
     def normalise(self, values: Mapping[str, Any] | None) -> dict[str, float]:
-        """Fill in defaults and clamp everything into range."""
+        """Fill in defaults and clamp everything into range.
+
+        A plugin effect silently drops settings for ports the plugin no longer
+        has: a plugin update must not make a saved channel impossible to load.
+        """
         merged = self.defaults()
+        known = {p.key for p in self.params}
         for key, value in (values or {}).items():
+            if self.plugin and key not in known:
+                continue
             merged[key] = self.param(key).clamp(value)
         return merged
 
 
 def _biquad_stack(name: str, label: str, values: Mapping[str, float], stages: int) -> Fragment:
-    """`stages` identical biquads in series; each stage is 12 dB/octave."""
+    """`stages` identical biquads in series per side; each stage is 12 dB/octave."""
     nodes: list[dict[str, Any]] = []
     links: list[dict[str, str]] = []
-    for index in range(stages):
-        stage = f"{name}_{index}"
-        nodes.append(
-            {
-                "type": "builtin",
-                "name": stage,
-                "label": label,
-                "control": {
-                    "Freq": round(float(values["frequency"]), 4),
-                    "Q": round(float(values.get("q", 0.707)), 4),
-                    "Gain": 0.0,
-                },
-            }
+    for side in SIDES:
+        for index in range(stages):
+            stage = f"{name}_{index}_{side}"
+            nodes.append(
+                {
+                    "type": "builtin",
+                    "name": stage,
+                    "label": label,
+                    "control": {
+                        "Freq": round(float(values["frequency"]), 4),
+                        "Q": round(float(values.get("q", 0.707)), 4),
+                        "Gain": 0.0,
+                    },
+                }
+            )
+            if index:
+                links.append({"output": f"{name}_{index - 1}_{side}:Out", "input": f"{stage}:In"})
+    last = stages - 1
+    return Fragment(
+        nodes, links,
+        (f"{name}_0_l:In", f"{name}_0_r:In"),
+        (f"{name}_{last}_l:Out", f"{name}_{last}_r:Out"),
+    )
+
+
+def _per_side(node: dict[str, Any], in_port: str, out_port: str) -> Fragment:
+    """The same mono node placed once for each side."""
+    nodes = []
+    for side in SIDES:
+        copy = dict(node)
+        copy["name"] = f"{node['name']}_{side}"
+        if "control" in copy:
+            copy["control"] = dict(copy["control"])
+        nodes.append(copy)
+    name = node["name"]
+    return Fragment(
+        nodes, [],
+        (f"{name}_l:{in_port}", f"{name}_r:{in_port}"),
+        (f"{name}_l:{out_port}", f"{name}_r:{out_port}"),
+    )
+
+
+def _lv2_node(
+    name: str,
+    uri: str,
+    control: dict[str, float],
+    audio_in: tuple[str, ...],
+    audio_out: tuple[str, ...],
+) -> Fragment:
+    node = {"type": "lv2", "name": name, "plugin": uri, "control": control}
+    if len(audio_in) == 2:
+        return Fragment(
+            [node], [],
+            (f"{name}:{audio_in[0]}", f"{name}:{audio_in[1]}"),
+            (f"{name}:{audio_out[0]}", f"{name}:{audio_out[1]}"),
         )
-        if index:
-            links.append({"output": f"{name}_{index - 1}:Out", "input": f"{stage}:In"})
-    return Fragment(nodes, links, f"{name}_0:In", f"{name}_{stages - 1}:Out")
+    return _per_side(node, audio_in[0], audio_out[0])
 
 
 # --- registry ------------------------------------------------------------
@@ -167,9 +263,9 @@ LOWPASS = register(
         label="Low-pass",
         summary="Removes treble above the cutoff.",
         params=(
-            ParamSpec("frequency", "Cutoff", 2000.0, 20.0, 20000.0, "Hz", 10.0),
+            ParamSpec("frequency", "Cutoff", 2000.0, 20.0, 20000.0, "Hz", 10.0, logarithmic=True),
             ParamSpec("q", "Resonance", 0.707, 0.1, 4.0, "Q", 0.05),
-            ParamSpec("poles", "Steepness", 2, 1, 4, "x12dB/oct", 1.0),
+            ParamSpec("poles", "Steepness", 2, 1, 4, "x12dB/oct", 1.0, integer=True),
         ),
     )
 )
@@ -180,9 +276,9 @@ HIGHPASS = register(
         label="High-pass",
         summary="Removes bass below the cutoff. Protects small speakers.",
         params=(
-            ParamSpec("frequency", "Cutoff", 100.0, 20.0, 20000.0, "Hz", 10.0),
+            ParamSpec("frequency", "Cutoff", 100.0, 20.0, 20000.0, "Hz", 10.0, logarithmic=True),
             ParamSpec("q", "Resonance", 0.707, 0.1, 4.0, "Q", 0.05),
-            ParamSpec("poles", "Steepness", 2, 1, 4, "x12dB/oct", 1.0),
+            ParamSpec("poles", "Steepness", 2, 1, 4, "x12dB/oct", 1.0, integer=True),
         ),
     )
 )
@@ -193,7 +289,7 @@ PEAKING = register(
         label="Tone band",
         summary="Boost or cut a band. Stack several to build an equaliser.",
         params=(
-            ParamSpec("frequency", "Frequency", 1000.0, 20.0, 20000.0, "Hz", 10.0),
+            ParamSpec("frequency", "Frequency", 1000.0, 20.0, 20000.0, "Hz", 10.0, logarithmic=True),
             ParamSpec("gain_db", "Gain", 0.0, -24.0, 24.0, "dB", 0.5),
             ParamSpec("q", "Width", 1.0, 0.1, 10.0, "Q", 0.05),
         ),
@@ -206,7 +302,7 @@ LOWSHELF = register(
         label="Bass shelf",
         summary="Lifts or drops everything below the frequency.",
         params=(
-            ParamSpec("frequency", "Frequency", 120.0, 20.0, 2000.0, "Hz", 10.0),
+            ParamSpec("frequency", "Frequency", 120.0, 20.0, 2000.0, "Hz", 10.0, logarithmic=True),
             ParamSpec("gain_db", "Gain", 0.0, -24.0, 24.0, "dB", 0.5),
             ParamSpec("q", "Width", 0.707, 0.1, 4.0, "Q", 0.05),
         ),
@@ -219,7 +315,7 @@ HIGHSHELF = register(
         label="Treble shelf",
         summary="Lifts or drops everything above the frequency.",
         params=(
-            ParamSpec("frequency", "Frequency", 6000.0, 500.0, 20000.0, "Hz", 100.0),
+            ParamSpec("frequency", "Frequency", 6000.0, 500.0, 20000.0, "Hz", 100.0, logarithmic=True),
             ParamSpec("gain_db", "Gain", 0.0, -24.0, 24.0, "dB", 0.5),
             ParamSpec("q", "Width", 0.707, 0.1, 4.0, "Q", 0.05),
         ),
@@ -239,7 +335,7 @@ COMPRESSOR = register(
     EffectSpec(
         kind="compressor",
         label="Compressor",
-        summary="Evens out loud and quiet passages.",
+        summary="Evens out loud and quiet passages. Both sides are compressed together.",
         params=(
             ParamSpec("threshold_db", "Threshold", -18.0, -60.0, 0.0, "dB", 0.5),
             ParamSpec("ratio", "Ratio", 4.0, 1.0, 20.0, ":1", 0.1),
@@ -247,7 +343,7 @@ COMPRESSOR = register(
             ParamSpec("release_ms", "Release", 100.0, 0.0, 5000.0, "ms", 5.0),
             ParamSpec("makeup_db", "Makeup", 0.0, -24.0, 24.0, "dB", 0.5),
         ),
-        requires=(Requirement("lv2", f"{LSP}compressor_mono", LV2_PACKAGE),),
+        requires=(Requirement("lv2", f"{LSP}compressor_stereo", LV2_PACKAGE),),
     )
 )
 
@@ -261,28 +357,94 @@ LIMITER = register(
             ParamSpec("lookahead_ms", "Lookahead", 5.0, 0.1, 20.0, "ms", 0.1),
             ParamSpec("release_ms", "Release", 5.0, 0.25, 20.0, "ms", 0.25),
         ),
-        requires=(Requirement("lv2", f"{LSP}limiter_mono", LV2_PACKAGE),),
+        requires=(Requirement("lv2", f"{LSP}limiter_stereo", LV2_PACKAGE),),
     )
 )
 
 
-def spec_for(kind: str) -> EffectSpec:
+def _param_from_control(control: lv2.Control) -> ParamSpec:
+    if control.is_gain:
+        step = 0.5  # in dB, which is how the window shows it
+    elif control.integer or control.toggled or control.choices:
+        step = 1.0
+    else:
+        span = control.maximum - control.minimum
+        step = 10 ** math.floor(math.log10(span / 100)) if span > 0 else 0.01
+    return ParamSpec(
+        key=control.symbol,
+        label=control.name,
+        default=control.default,
+        minimum=control.minimum,
+        maximum=control.maximum,
+        unit="dB" if control.is_gain else control.unit,
+        step=step,
+        toggled=control.toggled,
+        integer=control.integer,
+        logarithmic=control.logarithmic,
+        db=control.is_gain,
+        choices=control.choices,
+        comment=control.comment,
+        hidden=control.hidden,
+    )
+
+
+def plugin_spec(uri: str) -> EffectSpec:
+    """The spec for one LV2 plugin, whether or not it is installed."""
+    requirement = Requirement("lv2", uri, LV2_PACKAGE)
+    plugin = lv2.catalogue().get(uri)
+    if plugin is None:
+        return EffectSpec(
+            kind=PLUGIN_KIND,
+            label=uri.rstrip("/").rsplit("/", 1)[-1] or uri,
+            summary="This plugin is not installed.",
+            params=(),
+            requires=(requirement,),
+            plugin=uri,
+            problems=(Unusable(uri, "is not installed"),),
+            group="Missing",
+        )
+    classes = ", ".join(c for c in plugin.classes if c) or "Effect"
+    layout = "stereo" if plugin.stereo else "mono, run on each side"
+    return EffectSpec(
+        kind=PLUGIN_KIND,
+        label=plugin.name,
+        summary=f"{plugin.vendor} {classes.lower()} ({layout}).",
+        params=tuple(_param_from_control(c) for c in plugin.controls),
+        requires=(requirement,),
+        plugin=uri,
+        problems=tuple(Unusable(plugin.name, reason) for reason in plugin.problems),
+        group=plugin.vendor,
+    )
+
+
+def spec_for(kind: str, plugin: str = "") -> EffectSpec:
+    if kind == PLUGIN_KIND:
+        if not plugin:
+            raise EffectError("a plugin effect needs the plugin's URI")
+        return plugin_spec(plugin)
     try:
         return _SPECS[kind]
     except KeyError:
         raise EffectError(
-            f"unknown effect {kind!r}; known effects: " + ", ".join(sorted(_SPECS))
+            f"unknown effect {kind!r}; known effects: "
+            + ", ".join(sorted([*_SPECS, PLUGIN_KIND]))
         ) from None
 
 
 def all_specs() -> list[EffectSpec]:
-    """Every effect, in the order they are worth offering.
+    """Every curated effect, in the order they are worth offering.
 
     Registration order, not alphabetical: the first thing a menu shows should be
     the thing most people want (a volume trim), not whichever name happens to
     sort first (a compressor that needs a plugin installed).
     """
     return list(_SPECS.values())
+
+
+def plugin_specs(include_unusable: bool = False) -> list[EffectSpec]:
+    """Every installed LV2 plugin as an effect, grouped by vendor then name."""
+    source = lv2.catalogue().all() if include_unusable else lv2.catalogue().usable()
+    return [plugin_spec(p.uri) for p in source]
 
 
 @dataclass
@@ -292,31 +454,55 @@ class Effect:
     kind: str
     params: dict[str, float] = field(default_factory=dict)
     enabled: bool = True
+    #: The LV2 URI, for plugin effects only.
+    plugin: str = ""
 
     @property
     def spec(self) -> EffectSpec:
-        return spec_for(self.kind)
+        return spec_for(self.kind, self.plugin)
+
+    @property
+    def label(self) -> str:
+        return self.spec.label
 
     def resolved(self) -> dict[str, float]:
         return self.spec.normalise(self.params)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": self.kind, "params": dict(self.params), "enabled": self.enabled}
+        data: dict[str, Any] = {"kind": self.kind, "params": dict(self.params), "enabled": self.enabled}
+        if self.plugin:
+            data["plugin"] = self.plugin
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Effect:
         kind = str(data.get("kind", ""))
-        spec_for(kind)  # validate early, with a helpful message
+        plugin = str(data.get("plugin", ""))
+        if kind == PLUGIN_KIND:
+            if not plugin:
+                raise EffectError("a plugin effect needs the plugin's URI")
+        else:
+            spec_for(kind)  # validate early, with a helpful message
         return cls(
             kind=kind,
             params={str(k): float(v) for k, v in (data.get("params") or {}).items()},
             enabled=bool(data.get("enabled", True)),
+            plugin=plugin,
         )
 
     def render(self, index: int) -> Fragment:
         """Build this effect's graph fragment. `index` keeps node names unique."""
         values = self.resolved()
-        name = f"{self.kind}{index}"
+        name = f"fx{index}" if self.kind == PLUGIN_KIND else f"{self.kind}{index}"
+
+        if self.kind == PLUGIN_KIND:
+            plugin = lv2.catalogue().get(self.plugin)
+            if plugin is None or not plugin.usable:
+                raise EffectError(f"plugin {self.plugin} cannot be used here")
+            control = {key: round(float(value), 6) for key, value in values.items()}
+            if plugin.enable_port:
+                control[plugin.enable_port] = 1.0
+            return _lv2_node(name, plugin.uri, control, plugin.audio_in, plugin.audio_out)
 
         if self.kind == "gain":
             node = {
@@ -325,7 +511,7 @@ class Effect:
                 "label": "mixer",
                 "control": {"Gain 1": round(db_to_linear(values["gain_db"]), 6)},
             }
-            return Fragment([node], [], f"{name}:In 1", f"{name}:Out")
+            return _per_side(node, "In 1", "Out")
 
         if self.kind in ("lowpass", "highpass"):
             label = "bq_lowpass" if self.kind == "lowpass" else "bq_highpass"
@@ -345,86 +531,96 @@ class Effect:
                     "Gain": round(float(values["gain_db"]), 4),
                 },
             }
-            return Fragment([node], [], f"{name}:In", f"{name}:Out")
+            return _per_side(node, "In", "Out")
 
         if self.kind == "delay":
-            seconds = float(values["delay_ms"]) / 1000.0
             node = {
                 "type": "builtin",
                 "name": name,
                 "label": "delay",
-                "config": {"max-delay": max(seconds, 0.001)},
-                "control": {"Delay (s)": round(seconds, 6)},
+                # Sized for the knob's whole range, not the current setting, so
+                # moving the knob is a live change rather than a new graph.
+                "config": {"max-delay": self.spec.param("delay_ms").maximum / 1000.0},
+                "control": {"Delay (s)": round(float(values["delay_ms"]) / 1000.0, 6)},
             }
-            return Fragment([node], [], f"{name}:In", f"{name}:Out")
+            return _per_side(node, "In", "Out")
 
         if self.kind == "compressor":
-            node = {
-                "type": "lv2",
-                "name": name,
-                "plugin": f"{LSP}compressor_mono",
-                "control": {
-                    # LSP takes thresholds and makeup as linear gain, not dB.
-                    "al": round(db_to_linear(values["threshold_db"]), 6),
-                    "cr": round(float(values["ratio"]), 4),
-                    "at": round(float(values["attack_ms"]), 4),
-                    "rt": round(float(values["release_ms"]), 4),
-                    "mk": round(db_to_linear(values["makeup_db"]), 6),
-                },
+            control = {
+                # LSP takes thresholds and makeup as linear gain, not dB.
+                "al": round(db_to_linear(values["threshold_db"]), 6),
+                "cr": round(float(values["ratio"]), 4),
+                "at": round(float(values["attack_ms"]), 4),
+                "rt": round(float(values["release_ms"]), 4),
+                "mk": round(db_to_linear(values["makeup_db"]), 6),
+                "enabled": 1.0,
             }
-            return Fragment([node], [], f"{name}:in", f"{name}:out")
+            return _lv2_node(name, f"{LSP}compressor_stereo", control, ("in_l", "in_r"), ("out_l", "out_r"))
 
         if self.kind == "limiter":
-            node = {
-                "type": "lv2",
-                "name": name,
-                "plugin": f"{LSP}limiter_mono",
-                "control": {
-                    "th": round(db_to_linear(values["threshold_db"]), 6),
-                    "lk": round(float(values["lookahead_ms"]), 4),
-                    "rt": round(float(values["release_ms"]), 4),
-                },
+            control = {
+                "th": round(db_to_linear(values["threshold_db"]), 6),
+                "lk": round(float(values["lookahead_ms"]), 4),
+                "rt": round(float(values["release_ms"]), 4),
+                # LSP's default "gain boost" turns the level back up by the
+                # amount the ceiling took off, so the ceiling does nothing
+                # audible. Measured: a -20 dB ceiling changed the level 0.5 dB.
+                "boost": 0.0,
+                # Automatic level regulation pulls the level down further than
+                # the ceiling asks for: a -20 dB ceiling left peaks ~8 dB lower.
+                "alr": 0.0,
+                "enabled": 1.0,
             }
-            return Fragment([node], [], f"{name}:in", f"{name}:out")
+            return _lv2_node(name, f"{LSP}limiter_stereo", control, ("in_l", "in_r"), ("out_l", "out_r"))
 
         raise EffectError(f"no renderer for effect {self.kind!r}")
 
 
-def render_chain(effects: list[Effect]) -> Chain:
-    """Render effects into one series graph.
+def make_effect(kind: str, params: Mapping[str, Any] | None = None, plugin: str = "") -> Effect:
+    """A new effect with its settings filled in and clamped."""
+    spec = spec_for(kind, plugin)
+    return Effect(kind=kind, params=spec.normalise(params), plugin=plugin if kind == PLUGIN_KIND else "")
 
-    Disabled effects are dropped. An empty chain yields a single `copy` node so
-    the channel still exists and passes audio through untouched.
+
+def render_chain(effects: list[Effect]) -> Chain:
+    """Render effects into one series stereo graph.
+
+    Disabled effects are dropped. An empty chain yields a `copy` node per side
+    so the channel still exists and passes audio through untouched.
     """
     active = [e for e in effects if e.enabled]
     if not active:
         return Chain(
-            [{"type": "builtin", "name": "passthrough", "label": "copy"}],
+            [
+                {"type": "builtin", "name": "passthrough_l", "label": "copy"},
+                {"type": "builtin", "name": "passthrough_r", "label": "copy"},
+            ],
             [],
-            "passthrough:In",
-            "passthrough:Out",
+            ("passthrough_l:In", "passthrough_r:In"),
+            ("passthrough_l:Out", "passthrough_r:Out"),
         )
 
     nodes: list[dict[str, Any]] = []
     links: list[dict[str, str]] = []
-    first_in: str | None = None
-    previous_out: str | None = None
+    first_in: tuple[str, str] | None = None
+    previous_out: tuple[str, str] | None = None
     for index, effect in enumerate(active):
         fragment = effect.render(index)
         nodes.extend(fragment.nodes)
         links.extend(fragment.links)
         if previous_out is None:
-            first_in = fragment.input_port
+            first_in = fragment.inputs
         else:
-            links.append({"output": previous_out, "input": fragment.input_port})
-        previous_out = fragment.output_port
+            for out_port, in_port in zip(previous_out, fragment.inputs):
+                links.append({"output": out_port, "input": in_port})
+        previous_out = fragment.outputs
     assert first_in is not None and previous_out is not None
     return Chain(nodes, links, first_in, previous_out)
 
 
-def unsatisfied_requirements(effects: list[Effect]) -> list[Requirement]:
+def unsatisfied_requirements(effects: list[Effect]) -> list[Requirement | Unusable]:
     """Requirements of the enabled effects that this machine cannot meet."""
-    missing: list[Requirement] = []
+    missing: list[Requirement | Unusable] = []
     for effect in effects:
         if not effect.enabled:
             continue

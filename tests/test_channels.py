@@ -55,13 +55,13 @@ class RenderTest(unittest.TestCase):
     def test_without_a_device_the_output_is_left_to_follow_the_default(self):
         self.assertNotIn("target.object", self.args(Channel("x", "X", ""))["playback.props"])
 
-    def test_the_graph_declares_exactly_one_input_and_one_output(self):
+    def test_the_graph_declares_exactly_one_input_and_one_output_per_side(self):
         # Implicit ports let a mixer's seven spare inputs make the filter
         # unstartable; the channel then runs, links up, and is silent.
         channel = Channel("x", "X", "dev", effects=[Effect("gain", {"gain_db": -3})])
         graph = self.args(channel)["filter.graph"]
-        self.assertEqual(graph["inputs"], ["gain0:In 1"])
-        self.assertEqual(graph["outputs"], ["gain0:Out"])
+        self.assertEqual(graph["inputs"], ["gain0_l:In 1", "gain0_r:In 1"])
+        self.assertEqual(graph["outputs"], ["gain0_l:Out", "gain0_r:Out"])
 
     def test_the_rendered_config_is_valid_json(self):
         self.assertEqual(

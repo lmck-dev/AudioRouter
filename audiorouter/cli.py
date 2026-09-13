@@ -17,7 +17,7 @@ from typing import Any
 
 from .channels import ChannelError
 from .config import ConfigError, config_path
-from .effects import EffectError, all_specs
+from .effects import EffectError, all_specs, plugin_spec, plugin_specs
 from . import install
 from .engine import AutoRouter, DaemonRecord, Engine, EngineError, MoveResult, daemon_pid
 from .pwgraph import PwError
@@ -64,7 +64,35 @@ def cmd_devices(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_spec(spec) -> None:
+    mark = "" if spec.available else "   [unavailable]"
+    name = spec.plugin or spec.kind
+    print(f"{name:<12} {spec.label}{mark}")
+    print(f"{'':<12} {spec.summary}")
+    for param in spec.visible_params():
+        unit = f" {param.unit}" if param.unit else ""
+        choices = "  (" + ", ".join(f"{v:g}={label}" for label, v in param.choices) + ")" if param.choices else ""
+        print(
+            f"{'':<14} {param.key:<14} {param.label:<24} "
+            f"default {param.default:g}{unit}  range {param.minimum:g}..{param.maximum:g}{choices}"
+        )
+    for missing in spec.unsatisfied():
+        print(f"{'':<14} needs: {missing.explain()}")
+
+
 def cmd_effects(engine: Engine, args: argparse.Namespace) -> int:
+    if args.plugin:
+        _print_spec(plugin_spec(args.plugin))
+        return 0
+    if args.plugins is not None:
+        words = args.plugins.lower().split()
+        rows = [
+            (spec.group, spec.label, spec.plugin)
+            for spec in plugin_specs()
+            if all(w in f"{spec.group} {spec.label} {spec.summary}".lower() for w in words)
+        ]
+        _print_table(rows, ("maker", "plugin", "uri"))
+        return 0
     for spec in all_specs():
         mark = "" if spec.available else "   [unavailable]"
         print(f"{spec.kind:<12} {spec.label}{mark}")
@@ -170,20 +198,25 @@ def cmd_channel_set(engine: Engine, args: argparse.Namespace) -> int:
 
 
 def cmd_effect_add(engine: Engine, args: argparse.Namespace) -> int:
-    effect = engine.add_effect(args.slug, args.kind, _parse_params(args.params), index=args.at)
-    print(f"{args.slug}: added {effect.kind} {effect.resolved()}")
+    kind = args.kind
+    if args.plugin and kind != "lv2":
+        raise EffectError("--plugin is only for the lv2 effect kind")
+    effect = engine.add_effect(
+        args.slug, kind, _parse_params(args.params), index=args.at, plugin=args.plugin or ""
+    )
+    print(f"{args.slug}: added {effect.label}")
     return 0
 
 
 def cmd_effect_rm(engine: Engine, args: argparse.Namespace) -> int:
     effect = engine.remove_effect(args.slug, args.index)
-    print(f"{args.slug}: removed {effect.kind}")
+    print(f"{args.slug}: removed {effect.label}")
     return 0
 
 
 def cmd_effect_set(engine: Engine, args: argparse.Namespace) -> int:
     effect = engine.set_effect_params(args.slug, args.index, _parse_params(args.params))
-    print(f"{args.slug}: {effect.kind} {effect.resolved()}")
+    print(f"{args.slug}: {effect.label} {effect.resolved()}")
     return 0
 
 
@@ -192,14 +225,14 @@ def cmd_effect_list(engine: Engine, args: argparse.Namespace) -> int:
     rows = []
     for index, effect in enumerate(channel.effects):
         values = " ".join(f"{k}={v:g}" for k, v in effect.resolved().items())
-        rows.append((index, effect.kind, "on" if effect.enabled else "off", values))
+        rows.append((index, effect.label, "on" if effect.enabled else "off", values))
     _print_table(rows, ("#", "effect", "state", "settings"))
     return 0
 
 
 def cmd_effect_mv(engine: Engine, args: argparse.Namespace) -> int:
     effect = engine.move_effect(args.slug, args.index, args.to)
-    print(f"{args.slug}: moved {effect.kind} to position {args.to}")
+    print(f"{args.slug}: moved {effect.label} to position {args.to}")
     return 0
 
 
@@ -330,7 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("devices", help="list real output devices").set_defaults(func=cmd_devices)
-    sub.add_parser("effects", help="list available effects").set_defaults(func=cmd_effects)
+    effects = sub.add_parser("effects", help="list available effects")
+    effects.add_argument("--plugins", nargs="?", const="", metavar="SEARCH",
+                         help="list installed LV2 plugins usable as effects, optionally filtered")
+    effects.add_argument("--plugin", metavar="URI", help="show one plugin's settings")
+    effects.set_defaults(func=cmd_effects)
     sub.add_parser("init", help="create one channel per output device").set_defaults(func=cmd_init)
 
     status = sub.add_parser("status", help="show channels, streams and rules")
@@ -361,7 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eadd = effect.add_parser("add", help="append an effect")
     eadd.add_argument("slug")
-    eadd.add_argument("kind")
+    eadd.add_argument("kind", help='an effect from "effects", or "lv2" with --plugin')
+    eadd.add_argument("--plugin", metavar="URI", help="the LV2 plugin, for kind lv2")
     eadd.add_argument("params", nargs="*", help="key=value settings")
     eadd.add_argument("--at", type=int, help="insert at this position instead of the end")
     eadd.set_defaults(func=cmd_effect_add)

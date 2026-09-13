@@ -1,33 +1,230 @@
 """The effect chain for one channel: what is in it, in what order, set how.
 
-Every edit is reported the moment it happens, so nothing typed can be lost.
-Changing an effect means restarting the channel's host process, which is far too
-heavy to do on every tick of a spin box, but the waiting belongs to whoever owns
-the restart - the window - not to two timers in series.
+Every edit is reported the moment it happens, so nothing typed can be lost, and
+in two kinds. `changed` means the chain itself changed (an effect added, removed,
+moved or switched off), which restarts the channel. `tuned` means only a knob
+moved, which the engine applies to the running channel with no gap in the
+sound. The window owns the waiting for both.
 """
 
 from __future__ import annotations
 
+import math
+
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
+    QSlider,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from ..channels import Channel
-from ..effects import Effect, EffectSpec, all_specs, spec_for
+from ..effects import (
+    Effect,
+    EffectError,
+    EffectSpec,
+    ParamSpec,
+    all_specs,
+    db_to_linear,
+    linear_to_db,
+    make_effect,
+    plugin_specs,
+)
 from .theme import Theme
+
+#: Lowest level a gain knob shows before it reads as "off".
+DB_FLOOR = -80.0
+SLIDER_STEPS = 1000
+
+
+def format_value(param: ParamSpec, value: float) -> str:
+    """A setting as a person reads it: named choice, on/off, or number and unit."""
+    if param.choices:
+        for label, choice in param.choices:
+            if choice == value:
+                return label
+    if param.toggled:
+        return "on" if value >= 0.5 else "off"
+    if param.db:
+        if value <= 0 or linear_to_db(value) <= DB_FLOOR:
+            return "-inf dB"
+        value = linear_to_db(value)
+    unit = f" {param.unit}" if param.unit else ""
+    return f"{value:.3g}{unit}"
+
+
+class ParamControl(QWidget):
+    """One knob: a switch, a list, or a slider with a number box.
+
+    Values in and out are always the plugin's own; only what is *shown* is
+    converted (a linear gain appears in dB), so nothing is lost to rounding
+    through the display.
+    """
+
+    edited = pyqtSignal()
+
+    def __init__(self, param: ParamSpec, value: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.param = param
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.check: QCheckBox | None = None
+        self.combo: QComboBox | None = None
+        self.slider: QSlider | None = None
+        self.spin: QDoubleSpinBox | None = None
+        if param.comment:
+            self.setToolTip(param.comment)
+
+        if param.choices:
+            self.combo = QComboBox(self)
+            for label, choice in param.choices:
+                self.combo.addItem(label, choice)
+            self.combo.currentIndexChanged.connect(self._from_widget)
+            layout.addWidget(self.combo)
+            layout.addStretch(1)
+        elif param.toggled:
+            self.check = QCheckBox(self)
+            self.check.toggled.connect(self._from_widget)
+            layout.addWidget(self.check)
+            layout.addStretch(1)
+        else:
+            low, high = self._display_range()
+            self.slider = QSlider(Qt.Orientation.Horizontal, self)
+            self.slider.setRange(0, SLIDER_STEPS)
+            self.spin = QDoubleSpinBox(self)
+            self.spin.setRange(low, high)
+            self.spin.setDecimals(self._decimals())
+            self.spin.setSingleStep(param.step if not param.db else 0.5)
+            self.spin.setKeyboardTracking(False)
+            if param.unit:
+                self.spin.setSuffix(f" {param.unit}")
+            if param.db and param.minimum <= 0:
+                self.spin.setSpecialValueText("-inf dB")
+            self.spin.setMinimumWidth(110)
+            self.slider.valueChanged.connect(self._from_slider)
+            self.spin.valueChanged.connect(self._from_widget)
+            layout.addWidget(self.slider, 1)
+            layout.addWidget(self.spin)
+        self.setValue(value)
+
+    # -- display mapping ----------------------------------------------------
+
+    def _display_range(self) -> tuple[float, float]:
+        p = self.param
+        if p.db:
+            low = DB_FLOOR if p.minimum <= 0 else max(linear_to_db(p.minimum), DB_FLOOR)
+            return low, linear_to_db(p.maximum)
+        return p.minimum, p.maximum
+
+    def _decimals(self) -> int:
+        p = self.param
+        if p.integer:
+            return 0
+        if p.db:
+            return 1
+        return max(0, min(6, math.ceil(-math.log10(p.step)))) if p.step < 1 else 0
+
+    def _to_display(self, value: float) -> float:
+        if self.param.db:
+            low, _ = self._display_range()
+            return max(low, linear_to_db(value)) if value > 0 else low
+        return value
+
+    def _from_display(self, shown: float) -> float:
+        p = self.param
+        if p.db:
+            low, _ = self._display_range()
+            if shown <= low and p.minimum <= 0:
+                return p.minimum
+            return p.clamp(db_to_linear(shown))
+        return p.clamp(shown)
+
+    def _position(self, shown: float) -> int:
+        low, high = self._display_range()
+        if high <= low:
+            return 0
+        if self.param.logarithmic and not self.param.db:
+            if low > 0:
+                t = math.log(shown / low) / math.log(high / low)
+            else:
+                t = math.log1p(shown - low) / math.log1p(high - low)
+        else:
+            t = (shown - low) / (high - low)
+        return round(max(0.0, min(1.0, t)) * SLIDER_STEPS)
+
+    def _shown_at(self, position: int) -> float:
+        low, high = self._display_range()
+        t = position / SLIDER_STEPS
+        if self.param.logarithmic and not self.param.db:
+            if low > 0:
+                return low * (high / low) ** t
+            return low + math.expm1(t * math.log1p(high - low))
+        return low + (high - low) * t
+
+    # -- value --------------------------------------------------------------
+
+    def value(self) -> float:
+        if self.combo is not None:
+            return float(self.combo.currentData())
+        if self.check is not None:
+            return self.param.maximum if self.check.isChecked() else self.param.minimum
+        assert self.spin is not None
+        return self._from_display(self.spin.value())
+
+    def setValue(self, value: float) -> None:
+        widgets = [w for w in (self.combo, self.check, self.slider, self.spin) if w is not None]
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            if self.combo is not None:
+                index = self.combo.findData(float(value))
+                self.combo.setCurrentIndex(max(index, 0))
+            elif self.check is not None:
+                self.check.setChecked(value >= (self.param.minimum + self.param.maximum) / 2)
+            else:
+                assert self.spin is not None and self.slider is not None
+                shown = self._to_display(value)
+                self.spin.setValue(shown)
+                self.slider.setValue(self._position(shown))
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+
+    def _from_slider(self, position: int) -> None:
+        assert self.spin is not None
+        self.spin.blockSignals(True)
+        self.spin.setValue(self._shown_at(position))
+        self.spin.blockSignals(False)
+        self.edited.emit()
+
+    def _from_widget(self) -> None:
+        if self.spin is not None and self.slider is not None:
+            self.slider.blockSignals(True)
+            self.slider.setValue(self._position(self.spin.value()))
+            self.slider.blockSignals(False)
+        self.edited.emit()
+
 
 class ParameterForm(QWidget):
     """One row per knob, in the effect's own units."""
@@ -38,7 +235,12 @@ class ParameterForm(QWidget):
         super().__init__(parent)
         self._layout = QFormLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._boxes: dict[str, QDoubleSpinBox] = {}
+        self._layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        # Inside a scroll area the form must never be squeezed below the height
+        # its rows need: without this a 30-knob plugin was crushed into a
+        # stack of overlapping few-pixel rows instead of scrolling.
+        self._layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        self._boxes: dict[str, ParamControl] = {}
         self._effect: Effect | None = None
 
     def show_effect(self, effect: Effect | None) -> None:
@@ -51,19 +253,22 @@ class ParameterForm(QWidget):
         self._boxes.clear()
         if effect is None:
             return
-        spec = effect.spec
-        values = effect.resolved()
-        for param in spec.params:
-            box = QDoubleSpinBox(self)
-            box.setRange(param.minimum, param.maximum)
-            box.setSingleStep(param.step)
-            box.setDecimals(0 if param.step >= 1 else 2)
-            box.setValue(values[param.key])
-            if param.unit:
-                box.setSuffix(f" {param.unit}")
-            box.valueChanged.connect(self._changed)
-            self._boxes[param.key] = box
-            self._layout.addRow(param.label, box)
+        try:
+            spec = effect.spec
+            values = effect.resolved()
+        except EffectError as exc:
+            self._layout.addRow(QLabel(str(exc), self))
+            return
+        for param in spec.visible_params():
+            control = ParamControl(param, values[param.key], self)
+            control.edited.connect(self._changed)
+            self._boxes[param.key] = control
+            label = QLabel(param.label, self)
+            if param.comment:
+                label.setToolTip(param.comment)
+            self._layout.addRow(label, control)
+        if not self._boxes:
+            self._layout.addRow(QLabel("This effect has no settings.", self))
         self._effect = effect
 
     def _changed(self) -> None:
@@ -75,10 +280,138 @@ class ParameterForm(QWidget):
         self.edited.emit()
 
 
+class EffectBrowser(QDialog):
+    """Pick an effect: the built-in ones first, then every installed plugin."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Add effect")
+        self.resize(560, 560)
+        self.choice: tuple[str, str] | None = None
+
+        self.search = QLineEdit(self)
+        self.search.setPlaceholderText("Search effects - e.g. compressor, reverb, eq")
+        self.search.setClearButtonEnabled(True)
+        self.show_unusable = QCheckBox("Also show plugins that cannot be used here", self)
+        self.tree = QTreeWidget(self)
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["Effect", "Type"])
+        self.tree.setRootIsDecorated(True)
+        self.tree.setUniformRowHeights(True)
+        # Sized by the header, not by contents: the plugin groups start
+        # collapsed, so measuring them then cut every plugin name short.
+        header = self.tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.detail = QLabel(self)
+        self.detail.setWordWrap(True)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add")
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.search)
+        layout.addWidget(self.tree, 1)
+        layout.addWidget(self.detail)
+        layout.addWidget(self.show_unusable)
+        layout.addWidget(self.buttons)
+
+        self.search.textChanged.connect(self._filter)
+        self.show_unusable.toggled.connect(self._populate)
+        self.tree.currentItemChanged.connect(self._selected)
+        self.tree.itemDoubleClicked.connect(lambda item, _: self._accept_item(item))
+        self.buttons.accepted.connect(lambda: self._accept_item(self.tree.currentItem()))
+        self.buttons.rejected.connect(self.reject)
+
+        self._populate()
+        self.search.setFocus()
+
+    def _populate(self) -> None:
+        self.tree.clear()
+        groups: dict[str, QTreeWidgetItem] = {}
+        specs: list[EffectSpec] = list(all_specs())
+        try:
+            specs += plugin_specs(include_unusable=self.show_unusable.isChecked())
+        except Exception as exc:  # noqa: BLE001 - a broken catalogue must not hide the built-ins
+            self.detail.setText(f"Could not read the installed plugins: {exc}")
+        dim = Theme(self).dim
+        for spec in specs:
+            group = groups.get(spec.group)
+            if group is None:
+                title = "Built in" if spec.group == "Built in" else f"{spec.group} plugins"
+                group = QTreeWidgetItem(self.tree, [title])
+                group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                group.setFirstColumnSpanned(True)
+                groups[spec.group] = group
+            kind = spec.summary.split(" (")[0] if spec.plugin else "Simple"
+            item = QTreeWidgetItem(group, [spec.label, kind.replace(f"{spec.group} ", "", 1)])
+            item.setData(0, Qt.ItemDataRole.UserRole, (spec.kind, spec.plugin))
+            problems = spec.unsatisfied()
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, spec.summary)
+            if problems:
+                reason = "\n".join(p.explain() for p in problems)
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, f"{spec.summary}\nCannot be used: {reason}")
+                item.setForeground(0, dim)
+                item.setForeground(1, dim)
+                item.setToolTip(0, reason)
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, False)
+            else:
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, True)
+        builtin = groups.get("Built in")
+        if builtin is not None:
+            builtin.setExpanded(True)
+        self._filter(self.search.text())
+
+    def _items(self):
+        for g in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(g)
+            for i in range(group.childCount()):
+                yield group, group.child(i)
+
+    def _filter(self, text: str) -> None:
+        words = text.lower().split()
+        visible_groups: set[int] = set()
+        first: QTreeWidgetItem | None = None
+        for group, item in self._items():
+            haystack = " ".join(
+                [item.text(0), item.text(1), group.text(0), str(item.data(0, Qt.ItemDataRole.UserRole + 1))]
+            ).lower()
+            hit = all(word in haystack for word in words)
+            item.setHidden(not hit)
+            if hit:
+                visible_groups.add(id(group))
+                if first is None and item.data(0, Qt.ItemDataRole.UserRole + 2):
+                    first = item
+        for g in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(g)
+            group.setHidden(id(group) not in visible_groups)
+            if words:
+                group.setExpanded(True)
+        if words and first is not None:
+            self.tree.setCurrentItem(first)
+
+    def _selected(self, item: QTreeWidgetItem | None) -> None:
+        usable = bool(item is not None and item.data(0, Qt.ItemDataRole.UserRole + 2))
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(usable)
+        self.detail.setText(str(item.data(0, Qt.ItemDataRole.UserRole + 1) or "") if item else "")
+
+    def _accept_item(self, item: QTreeWidgetItem | None) -> None:
+        if item is None or not item.data(0, Qt.ItemDataRole.UserRole + 2):
+            return
+        kind, plugin = item.data(0, Qt.ItemDataRole.UserRole)
+        self.choice = (kind, plugin)
+        self.accept()
+
+
 class EffectsPanel(QGroupBox):
     """Add, order, switch off and adjust the effects on one channel."""
 
+    #: The chain changed shape: the channel must restart.
     changed = pyqtSignal()
+    #: Only settings changed: they can be applied to the running channel.
+    tuned = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Effects", parent)
@@ -89,65 +422,65 @@ class EffectsPanel(QGroupBox):
         self.list.currentRowChanged.connect(self._selection_changed)
         self.list.itemChanged.connect(self._item_toggled)
 
-        self.picker = QComboBox(self)
-        self.add_button = QPushButton("Add", self)
+        self.add_button = QPushButton("Add effect...", self)
         self.add_button.clicked.connect(self._add)
         self.remove_button = QPushButton("Remove", self)
         self.remove_button.clicked.connect(self._remove)
-        self.up_button = QPushButton("Move up", self)
+        self.up_button = QPushButton("Up", self)
         self.up_button.clicked.connect(lambda: self._move(-1))
-        self.down_button = QPushButton("Move down", self)
+        self.down_button = QPushButton("Down", self)
         self.down_button.clicked.connect(lambda: self._move(1))
+        self.reset_button = QPushButton("Reset settings", self)
+        self.reset_button.clicked.connect(self._reset)
 
+        self.title = QLabel(self)
+        font = self.title.font()
+        font.setBold(True)
+        self.title.setFont(font)
         self.summary = QLabel(self)
         self.summary.setWordWrap(True)
         self.form = ParameterForm(self)
-
         self.form.edited.connect(self._parameter_edited)
 
-        add_row = QHBoxLayout()
-        add_row.addWidget(self.picker, 1)
-        add_row.addWidget(self.add_button)
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setWidget(self.form)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.up_button)
         buttons.addWidget(self.down_button)
         buttons.addWidget(self.remove_button)
-        buttons.addStretch(1)
 
-        layout = QVBoxLayout(self)
-        layout.addLayout(add_row)
-        layout.addWidget(self.list, 1)
-        layout.addLayout(buttons)
-        layout.addWidget(self.summary)
-        layout.addWidget(self.form)
+        chain = QVBoxLayout()
+        chain.addWidget(self.add_button)
+        chain.addWidget(self.list, 1)
+        chain.addLayout(buttons)
 
-        self._fill_picker()
+        heading = QHBoxLayout()
+        heading.addWidget(self.title, 1)
+        heading.addWidget(self.reset_button)
+
+        settings = QVBoxLayout()
+        settings.addLayout(heading)
+        settings.addWidget(self.summary)
+        settings.addWidget(self.scroll, 1)
+
+        layout = QHBoxLayout(self)
+        layout.addLayout(chain, 2)
+        layout.addLayout(settings, 3)
+
         self.set_channel(None)
-        self._select_first_available()
 
     # -- population --------------------------------------------------------
 
-    def _fill_picker(self) -> None:
-        self.picker.clear()
-        for spec in all_specs():
-            label = spec.label if spec.available else f"{spec.label} (needs a plugin)"
-            self.picker.addItem(label, spec.kind)
-            index = self.picker.count() - 1
-            if not spec.available:
-                self.picker.setItemData(
-                    index, "\n".join(r.explain() for r in spec.unsatisfied()),
-                    Qt.ItemDataRole.ToolTipRole,
-                )
-
-    def _select_first_available(self) -> None:
-        """Default the Add menu to something this machine can actually run."""
-        for index in range(self.picker.count()):
-            if spec_for(self.picker.itemData(index)).available:
-                self.picker.setCurrentIndex(index)
-                return
-
     def set_channel(self, channel: Channel | None) -> None:
+        # The window re-selects the same channel after every refresh, and a
+        # live knob change causes a refresh. Rebuilding the form then would
+        # destroy the slider under the user's mouse halfway through a drag.
+        if channel is self.channel and channel is not None:
+            self._refresh_labels()
+            return
         self.channel = channel
         self.setEnabled(channel is not None)
         self.refresh()
@@ -172,15 +505,30 @@ class EffectsPanel(QGroupBox):
             self._selection_changed(-1)
         self._update_buttons()
 
+    def _refresh_labels(self) -> None:
+        if self.channel is None or self.list.count() != len(self.channel.effects):
+            self.refresh()
+            return
+        self.list.blockSignals(True)
+        for row, effect in enumerate(self.channel.effects):
+            self.list.item(row).setText(self._describe(effect))
+        self.list.blockSignals(False)
+
     def _describe(self, effect: Effect) -> str:
-        spec = effect.spec
-        values = effect.resolved()
+        try:
+            spec = effect.spec
+            values = effect.resolved()
+        except EffectError:
+            return f"{effect.kind} (cannot be loaded)"
+        problems = spec.unsatisfied()
+        if problems:
+            return f"{spec.label} (unavailable)"
+        if spec.plugin:
+            return spec.label
         headline = spec.params[0] if spec.params else None
         if headline is None:
             return spec.label
-        value = values[headline.key]
-        unit = f" {headline.unit}" if headline.unit else ""
-        return f"{spec.label} - {headline.label.lower()} {value:g}{unit}"
+        return f"{spec.label} - {headline.label.lower()} {format_value(headline, values[headline.key])}"
 
     # -- editing -----------------------------------------------------------
 
@@ -193,23 +541,51 @@ class EffectsPanel(QGroupBox):
     def _selection_changed(self, row: int) -> None:
         effect = self._current()
         self.form.show_effect(effect)
-        self.summary.setText(effect.spec.summary if effect else "")
-        colour = Theme(self).dim
-        self.summary.setStyleSheet(f"color: {colour.name()};")
+        dim = Theme(self).dim
+        if effect is None:
+            self.title.setText("")
+            self.summary.setText("Add an effect to change how this channel sounds."
+                                 if self.channel is not None else "")
+        else:
+            try:
+                spec = effect.spec
+                problems = spec.unsatisfied()
+                self.title.setText(spec.label)
+                text = spec.summary
+                if problems:
+                    text += "\nCannot run here: " + "; ".join(p.explain() for p in problems)
+                self.summary.setText(text)
+            except EffectError as exc:
+                self.title.setText(effect.kind)
+                self.summary.setText(str(exc))
+        self.summary.setStyleSheet(f"color: {dim.name()};")
         self._update_buttons()
 
     def _update_buttons(self) -> None:
         row = self.list.currentRow()
         count = self.list.count()
         self.remove_button.setEnabled(row >= 0)
+        self.reset_button.setEnabled(row >= 0 and bool(self.form._boxes))
         self.up_button.setEnabled(row > 0)
         self.down_button.setEnabled(0 <= row < count - 1)
 
     def _add(self) -> None:
         if self.channel is None:
             return
-        kind = self.picker.currentData()
-        self.channel.effects.append(Effect(kind=kind, params=spec_for(kind).defaults()))
+        # Reading every plugin description takes ~5 s when the cache is stale
+        # (after installing or updating plugins); a tenth of a second otherwise.
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        try:
+            browser = EffectBrowser(self)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+        if browser.exec() == QDialog.DialogCode.Accepted and browser.choice is not None:
+            self.add_effect(*browser.choice)
+
+    def add_effect(self, kind: str, plugin: str = "") -> None:
+        if self.channel is None:
+            return
+        self.channel.effects.append(make_effect(kind, plugin=plugin))
         self.refresh()
         self.list.setCurrentRow(len(self.channel.effects) - 1)
         self.changed.emit()
@@ -235,6 +611,14 @@ class EffectsPanel(QGroupBox):
         self.list.setCurrentRow(target)
         self.changed.emit()
 
+    def _reset(self) -> None:
+        effect = self._current()
+        if effect is None:
+            return
+        effect.params = effect.spec.defaults()
+        self.form.show_effect(effect)
+        self._parameter_edited()
+
     def _parameter_edited(self) -> None:
         row = self.list.currentRow()
         effect = self._current()
@@ -243,7 +627,7 @@ class EffectsPanel(QGroupBox):
             self.list.blockSignals(True)
             self.list.item(row).setText(self._describe(effect))
             self.list.blockSignals(False)
-        self.changed.emit()
+        self.tuned.emit()
 
     def _item_toggled(self, item: QListWidgetItem) -> None:
         if self.channel is None:

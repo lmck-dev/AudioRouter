@@ -12,7 +12,9 @@ needed, no dependencies).
 | module        | holds                                                     |
 |---------------|-----------------------------------------------------------|
 | `plugins.py`  | what plugin backends this machine can load                 |
-| `effects.py`  | effect catalogue + rendering into filter-graph fragments   |
+| `turtle.py`   | dependency-free Turtle reader (LV2 descriptions)           |
+| `lv2.py`      | installed LV2 plugins, their controls, which we can host; cached |
+| `effects.py`  | curated effects + plugin effects, rendered as a stereo graph |
 | `channels.py` | conf generation, process lifecycle, pid files              |
 | `pwgraph.py`  | read-only `pw-dump` model + live monitor                   |
 | `routing.py`  | rules, planning, and the actual move                       |
@@ -41,11 +43,10 @@ belongs in the engine, never in the CLI.
 - **`log.level: 0` in a channel conf hides the reason it died.** Raise it to 2
   or 4 in the rendered conf when a channel will not start, then read
   `$XDG_RUNTIME_DIR/audiorouter/<slug>.log`.
-- **No LV2 loader on this box.** `/usr/lib64/spa-0.2/filter-graph` has only
-  `builtin`, `ebur128` and `ladspa`. The compressor and limiter therefore cannot
-  run until `pipewire-module-filter-chain-lv2` is installed (or they are ported
-  to the LADSPA build of LSP, whose loader *is* present). `plugins.py` probes
-  this and the engine degrades with an installable message instead of a crash.
+- **The LV2 loader is a separate package** (`pipewire-module-filter-chain-lv2`,
+  installed on this box 13/09/2026). Without it no LV2 effect can run;
+  `plugins.py` probes for it and the engine degrades with an installable message
+  instead of a crash.
 - **`application.process.binary` is the executable, not the command.** `paplay`
   reports `pacat`; a `binary` rule for "paplay" matches nothing. Prefer `app`.
 - **A filter-chain's own playback node has `media.class = Stream/Output/Audio`,
@@ -64,10 +65,42 @@ belongs in the engine, never in the CLI.
   turn.** Kill by pid from `pgrep -x`, after checking `/proc/<pid>/cmdline`.
   `pgrep -x pipewire` also matches the user's main daemon - always check the
   cmdline before killing.
-- **Changing an effect needs the channel restarted.** `Engine.needs_restart()`
-  compares the rendered conf against the copy written beside the pid file, so
-  `apply` restarts exactly the channels that changed. Live parameter updates
-  would be a real feature, not a tweak.
+- **Knob changes are live; shape changes restart.** `Channel.control_changes()`
+  compares the rendered conf with the one beside the pid file *with every
+  `control` block removed*. Same shape -> `Channel.set_controls()` sends one
+  `pw-cli set-param <sink id> Props '{"params":["node:control",v,...]}'` and
+  rewrites the conf; different shape (effect added/removed/moved/switched off,
+  a filter's steepness) -> restart. Measured: a live change lands in ~28 ms with
+  the same pid. Anything that changes a node's `config` is a shape change, which
+  is why the delay's `max-delay` is sized for the knob's whole range.
+- **Every chain is an explicit stereo graph.** Mono nodes are placed per side
+  (`name_l`/`name_r`); a stereo plugin is one node fed both sides, which is what
+  makes its dynamics linked. PipeWire's own per-channel replication of a mono
+  graph would make stereo plugins impossible. Node control names follow the
+  node names, so the `_l`/`_r` suffixes are part of the live-update contract.
+- **LSP limiter defaults defeat a "ceiling".** `boost` (default on) turns the
+  level back up by what was taken off - a -20 dB ceiling changed the level by
+  0.5 dB - and `alr` (automatic level regulation) pulls peaks ~8 dB *below* the
+  ceiling. The curated limiter sets both to 0; measured peaks then sit exactly
+  at -20.00 / -12.00 dB.
+- **Turtle blank nodes must be tagged per parse with a counter, not `id()`.**
+  Python reuses ids as soon as a parser is freed, and every LSP plugin silently
+  received every other plugin's ports (a compressor with 15 audio inputs).
+- **The plugin catalogue is cached** at `~/.cache/audiorouter/lv2-catalogue.json`,
+  keyed by the mtime/size of every `.ttl`; a cold build reads ~16 MB of Turtle
+  and takes ~5 s. Bump `lv2.CACHE_VERSION` when `Plugin`/`Control` change shape
+  or the hiding rules change, or users keep stale data.
+- **LSP "link" controls do nothing here** (they need shared memory between
+  plugin instances); they are hidden with the UI-only toggles in `lv2._UI_ONLY`.
+  LSP impulse-response plugins load but need a sample file we cannot pass yet.
+- `~/.lv2/LV2` on this box is an empty directory; lilv logs a harmless
+  "failed to open .../manifest.ttl" for it in every channel log.
+- **A test `Engine.apply()` in the real runtime dir STOPS the user's channels**:
+  every channel not in the test config is an orphan. Live experiments must set
+  `XDG_RUNTIME_DIR=/run/user/1000/arlab PIPEWIRE_RUNTIME_DIR=/run/user/1000
+  PULSE_RUNTIME_PATH=/run/user/1000/pulse`.
+- **The login service runs this checkout.** Whatever branch is checked out is
+  what `audiorouter.service` loads the next time it restarts.
 
 ## Testing audio without hardware
 
@@ -81,6 +114,10 @@ pactl load-module module-null-sink sink_name=ar_testdev \
 paplay --device=ar_test_<slug> tone.wav      # play into the channel
 parec --device=ar_testdev.monitor ... out.wav # capture what came out
 ```
+
+**Stop `parec` with SIGINT, not SIGTERM**, and wait for it: SIGTERM drops its
+unwritten buffer, so a short capture comes back empty and reads as silence -
+which once looked exactly like a broken channel.
 
 Measure the RMS of the capture against a reference played straight into
 `ar_testdev`. That is how `-6 dB` gain and a 3-stage 1 kHz highpass were both
@@ -98,6 +135,17 @@ asks `Engine` to make reality match; it decides nothing about audio itself.
 - **Render it and look at it.** `QWidget.grab().save(path)` under
   `QT_QPA_PLATFORM=offscreen`; `spectacle` is broken on this box. Doing that is
   what caught the form bug below - the tests were all passing.
+- **A form inside a `QScrollArea` needs `setSizeConstraint(SetMinAndMaxSize)`**
+  or a 30-knob plugin is crushed into overlapping few-pixel rows instead of
+  scrolling. Offscreen, the scrollbar only appears after a few
+  `processEvents()` passes - a single pass renders a (false) missing scrollbar.
+- **`EffectsPanel.set_channel()` ignores the channel it already shows.** Every
+  apply and every graph event re-selects the channel, and a live knob change
+  *causes* a graph event: rebuilding then destroyed the slider mid-drag.
+- **Two signals, two delays.** `EffectsPanel.changed` (shape) waits
+  `APPLY_DELAY_MS` and shows a busy cursor; `tuned` (knob) starts a
+  `TUNE_DELAY_MS` timer only if none is running, so a drag is heard while it
+  happens, and a tune-only apply skips the full window refresh.
 - **`QFormLayout.removeRow()`, never `takeAt()` + `deleteLater()`.** deleteLater
   only schedules destruction, so the previous effect's labels stay painted
   underneath the new ones and the text overlaps into gibberish.
@@ -150,6 +198,23 @@ that already has a rule is a one-off and changes nothing saved. "Always send
 this app here" (`Engine.remember_app`) UPDATES the app's existing rule rather
 than appending one - rules are first-match-wins, so a second rule for the same
 app would be listed and never take effect.
+
+## Effects (13/09/2026)
+
+Owner chose **LV2 first, VST later**. The window's "Add effect..." opens a
+searchable browser: built-in effects, then every usable installed LV2 plugin
+grouped by maker (246 of 300 on this box: LSP, Calf, MDA, ZAM). Controls are
+generated from each plugin's ports: switches, lists, sliders (logarithmic where
+the plugin says so), linear gains shown in dB. CLI: `effects --plugins [search]`,
+`effects --plugin URI`, `effect add <slug> lv2 --plugin URI k=v`.
+
+**VST is phase 2 and cannot go through filter-chain** - PipeWire has no VST
+loader. The agreed route is a Carla host per channel (`Carla`, `Carla-vst` in
+the Nobara repos): sink -> Carla -> device, VST block at the end of the chain,
+each plugin's own editor window, state in a Carla project file.
+
+Plugins with 1 in / 2 out (wideners), several ins/outs, or instruments are
+listed as unusable with the reason. Plugin windows (LV2 UIs) are not shown.
 
 ## State
 
