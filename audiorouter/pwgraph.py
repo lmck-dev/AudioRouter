@@ -64,6 +64,8 @@ class Node:
     media_class: str
     client_id: int | None
     props: dict[str, Any] = field(default_factory=dict, repr=False)
+    #: The node's `Props` param holding volume and mute, when pw-dump has it.
+    audio_props: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def is_sink(self) -> bool:
@@ -123,6 +125,24 @@ class Node:
     def label(self) -> str:
         return self.description or self.name or f"node {self.id}"
 
+    @property
+    def volume(self) -> float | None:
+        """The volume as a desktop slider shows it (1.0 = 100%), if known.
+
+        PipeWire stores linear per-channel gains; sliders everywhere (wpctl,
+        pactl, Plasma) show their cube root, so 50% is -18 dB. Measured: a
+        channel at 0.5 attenuated by 18.06 dB, at 0.25 by 36.13 dB.
+        """
+        gains = self.audio_props.get("channelVolumes")
+        if not gains:
+            return None
+        return round(max(float(g) for g in gains) ** (1 / 3), 4)
+
+    @property
+    def muted(self) -> bool | None:
+        value = self.audio_props.get("mute")
+        return bool(value) if value is not None else None
+
 
 @dataclass(frozen=True)
 class Link:
@@ -136,6 +156,12 @@ def _node_from_object(obj: dict[str, Any]) -> Node:
     props = info.get("props") or {}
     serial = props.get("object.serial")
     client_id = props.get("client.id")
+    audio_props: dict[str, Any] = {}
+    for entry in ((info.get("params") or {}).get("Props") or []):
+        # A node lists several Props objects; only one carries the volume.
+        if isinstance(entry, dict) and "channelVolumes" in entry:
+            audio_props = entry
+            break
     return Node(
         id=int(obj["id"]),
         serial=int(serial) if serial is not None else None,
@@ -144,6 +170,7 @@ def _node_from_object(obj: dict[str, Any]) -> Node:
         media_class=str(props.get("media.class", "") or ""),
         client_id=int(client_id) if client_id is not None else None,
         props=props,
+        audio_props=audio_props,
     )
 
 

@@ -227,6 +227,24 @@ class Engine:
         self.save()
         return channel
 
+    def set_channel_volume(self, slug: str, volume: float) -> float:
+        """Set a running channel's volume (1.0 = 100%). Not saved in our config:
+        the sink holds it, WirePlumber restores it, and the desktop shares it."""
+        if self.dry_run:
+            return volume
+        try:
+            return self.config.channel(slug).set_volume(volume, self._live_graph())
+        finally:
+            self._graph = None
+
+    def set_channel_muted(self, slug: str, muted: bool) -> None:
+        if self.dry_run:
+            return
+        try:
+            self.config.channel(slug).set_muted(muted, self._live_graph())
+        finally:
+            self._graph = None
+
     def adopt_devices(self) -> list[Channel]:
         """Seed an empty configuration with one pass-through channel per device."""
         if self.config.channels:

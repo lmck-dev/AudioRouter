@@ -81,6 +81,14 @@ class MainWindow(QMainWindow):
         self._pending_apply.setInterval(APPLY_DELAY_MS)
         self._pending_apply.timeout.connect(self.apply_now)
 
+        # Volume goes straight to the sink, never through apply(); this only
+        # batches a slider drag into a few wpctl calls a second.
+        self._pending_volume: tuple[str, float] | None = None
+        self._volume_timer = QTimer(self)
+        self._volume_timer.setSingleShot(True)
+        self._volume_timer.setInterval(TUNE_DELAY_MS)
+        self._volume_timer.timeout.connect(self._write_volume)
+
         self._build()
         self._connect()
 
@@ -174,6 +182,8 @@ class MainWindow(QMainWindow):
         self.remove_channel_button.clicked.connect(self._remove_channel)
         self.channel_panel.changed.connect(self._config_edited)
         self.channel_panel.renamed.connect(self._refresh_channel_list)
+        self.channel_panel.volume_changed.connect(self._volume_changed)
+        self.channel_panel.mute_changed.connect(self._mute_changed)
         self.effects_panel.changed.connect(self._config_edited)
         self.effects_panel.tuned.connect(self._config_tuned)
         self.auto_route.toggled.connect(self._auto_route_toggled)
@@ -282,6 +292,7 @@ class MainWindow(QMainWindow):
         self.channel_panel.set_channel(
             channel, devices, present=entry["device_present"] if entry else True
         )
+        self.channel_panel.show_status(entry)
         self.effects_panel.set_channel(channel)
         self.remove_channel_button.setEnabled(channel is not None)
 
@@ -298,6 +309,33 @@ class MainWindow(QMainWindow):
         self._set_status("Updating...")
         self._structural_pending = True
         self._pending_apply.start(APPLY_DELAY_MS)
+
+    def _volume_changed(self, volume: float) -> None:
+        channel = self.selected_channel
+        if channel is None:
+            return
+        self._pending_volume = (channel.slug, volume)
+        if not self._volume_timer.isActive():
+            self._volume_timer.start()
+
+    def _write_volume(self) -> None:
+        if self._pending_volume is None:
+            return
+        slug, volume = self._pending_volume
+        self._pending_volume = None
+        try:
+            self.engine.set_channel_volume(slug, volume)
+        except USER_ERRORS as exc:
+            self._set_status(str(exc), warn=True)
+
+    def _mute_changed(self, muted: bool) -> None:
+        channel = self.selected_channel
+        if channel is None:
+            return
+        try:
+            self.engine.set_channel_muted(channel.slug, muted)
+        except USER_ERRORS as exc:
+            self._set_status(str(exc), warn=True)
 
     def _config_tuned(self) -> None:
         """A knob moved: save now, and apply it live very soon.

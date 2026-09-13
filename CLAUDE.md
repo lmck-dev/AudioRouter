@@ -104,6 +104,17 @@ belongs in the engine, never in the CLI.
   and the stream reads "not routed" (owner hit this 13/09/2026). Detected by
   that sink in the graph (`Graph.conflicting_routers()`); the window shows a
   banner and `status` prints a warning first.
+- **Test tones must not play as `paplay`.** The owner's config has a remembered
+  rule `paplay -> Speakers` (a "Send to" on one of Claude's test tones), and the
+  login service routed five test beeps onto the real speakers on 13/09/2026.
+  Play with `--client-name=ar-lab-tone --property=application.name=ar-lab-tone`,
+  and confirm with a *silent* file where the stream lands before any audible one.
+- **Channel volume is the sink's own volume, not a config value.** Set with
+  `wpctl set-volume/set-mute <sink id>`, read from the node's `Props`
+  `channelVolumes` (cube root = the % every desktop slider shows; measured 50% =
+  -18.06 dB, 25% = -36.13 dB). WirePlumber restores it by node name when a
+  channel restarts, and the desktop's sound settings change the same value, so
+  storing a copy would only fight them.
 - **The login service runs this checkout.** Whatever branch is checked out is
   what `audiorouter.service` loads the next time it restarts.
 
@@ -147,6 +158,14 @@ asks `Engine` to make reality match; it decides nothing about audio itself.
 - **`EffectsPanel.set_channel()` ignores the channel it already shows.** Every
   apply and every graph event re-selects the channel, and a live knob change
   *causes* a graph event: rebuilding then destroyed the slider mid-drag.
+- **Offscreen harnesses must process `DeferredDelete`** (`QCoreApplication.
+  sendPostedEvents(None, QEvent.Type.DeferredDelete.value)`), not only
+  `processEvents()`: replaced table cell widgets are `deleteLater()`-ed, and
+  without it a stale "Send to" combo rendered over the Application column - a
+  render bug that does not exist in the real event loop.
+- **The volume slider ignores graph readings for 0.8 s after a local edit**
+  (`VOLUME_SETTLE_S`): a refresh can carry the value from just before the change
+  and would yank the slider back. Switching channel resets that window.
 - **Two signals, two delays.** `EffectsPanel.changed` (shape) waits
   `APPLY_DELAY_MS` and shows a busy cursor; `tuned` (knob) starts a
   `TUNE_DELAY_MS` timer only if none is running, so a drag is heard while it

@@ -125,6 +125,10 @@ def cmd_status(engine: Engine, args: argparse.Namespace) -> int:
         state = "running" if channel["running"] else ("off" if not channel["enabled"] else "stopped")
         if channel["needs_restart"]:
             state += " (stale)"
+        if channel.get("volume") is not None:
+            state += f" {channel['volume'] * 100:.0f}%"
+            if channel.get("muted"):
+                state += " muted"
         device = channel["device"] or "(default)"
         if not channel["device_present"]:
             device += " [missing]"
@@ -197,6 +201,23 @@ def cmd_channel_set(engine: Engine, args: argparse.Namespace) -> int:
     channel = engine.channel(args.slug)
     print(f"{channel.slug}: {channel.name} -> {channel.device or '(default sink)'}"
           f" {'enabled' if channel.enabled else 'disabled'}")
+    return 0
+
+
+def cmd_channel_volume(engine: Engine, args: argparse.Namespace) -> int:
+    text = args.level.strip().rstrip("%")
+    try:
+        percent = float(text)
+    except ValueError:
+        raise EngineError(f"volume must be a percentage such as 80 or 80%, not {args.level!r}") from None
+    volume = engine.set_channel_volume(args.slug, percent / 100.0)
+    print(f"{args.slug}: volume {volume * 100:.0f}%")
+    return 0
+
+
+def cmd_channel_mute(engine: Engine, args: argparse.Namespace) -> int:
+    engine.set_channel_muted(args.slug, args.state == "on")
+    print(f"{args.slug}: {'muted' if args.state == 'on' else 'unmuted'}")
     return 0
 
 
@@ -395,6 +416,14 @@ def build_parser() -> argparse.ArgumentParser:
     change.add_argument("--enable", dest="enabled", action="store_true", default=None)
     change.add_argument("--disable", dest="enabled", action="store_false")
     change.set_defaults(func=cmd_channel_set)
+    volume = channel.add_parser("volume", help="set a running channel's volume")
+    volume.add_argument("slug")
+    volume.add_argument("level", help="percentage, e.g. 80 or 80%% (up to 150)")
+    volume.set_defaults(func=cmd_channel_volume)
+    mute = channel.add_parser("mute", help="mute or unmute a running channel")
+    mute.add_argument("slug")
+    mute.add_argument("state", choices=("on", "off"))
+    mute.set_defaults(func=cmd_channel_mute)
 
     effect = sub.add_parser("effect", help="manage a channel's effect chain").add_subparsers(
         dest="effect_command", required=True

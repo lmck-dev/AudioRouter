@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+import time
+
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QSlider,
     QWidget,
 )
 
@@ -18,12 +22,20 @@ from .theme import Theme
 
 FOLLOW_DEFAULT = ""
 
+#: After the user moves the volume, readings from the graph are ignored for
+#: this long: a refresh can carry the value from just *before* the change, and
+#: would otherwise yank the slider back under the mouse.
+VOLUME_SETTLE_S = 0.8
+
 
 class ChannelPanel(QGroupBox):
     """Name, output device and on/off for the selected channel."""
 
     changed = pyqtSignal()
     renamed = pyqtSignal()
+    #: The user moved the volume slider (1.0 = 100%).
+    volume_changed = pyqtSignal(float)
+    mute_changed = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Channel", parent)
@@ -39,8 +51,24 @@ class ChannelPanel(QGroupBox):
         self.status = QLabel(self)
         self.status.setWordWrap(True)
 
+        self.volume = QSlider(Qt.Orientation.Horizontal, self)
+        self.volume.setRange(0, 100)
+        self.volume.setPageStep(10)
+        self.volume.valueChanged.connect(self._volume_moved)
+        self.volume_label = QLabel("", self)
+        self.volume_label.setMinimumWidth(48)
+        self.volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.mute = QCheckBox("Mute", self)
+        self.mute.toggled.connect(self._mute_toggled)
+        self._last_local_edit = 0.0
+        volume_row = QHBoxLayout()
+        volume_row.addWidget(self.volume, 1)
+        volume_row.addWidget(self.volume_label)
+        volume_row.addWidget(self.mute)
+
         layout = QFormLayout(self)
         layout.addRow("Name", self.name)
+        layout.addRow("Volume", volume_row)
         layout.addRow("Plays through", self.device)
         layout.addRow("", self.enabled)
         layout.addRow("", self.status)
@@ -79,6 +107,10 @@ class ChannelPanel(QGroupBox):
         present: bool = True,
     ) -> None:
         self._loading = True
+        if channel is not self.channel:
+            # The settle window protects a slider the user just moved; it must
+            # not hide the newly selected channel's own volume.
+            self._last_local_edit = 0.0
         self.channel = channel
         self.setEnabled(channel is not None)
         self.name.setText(channel.name if channel else "")
@@ -86,7 +118,35 @@ class ChannelPanel(QGroupBox):
         self.set_devices(devices, present)
         self._loading = False
 
+    def show_volume(self, volume: float | None, muted: bool | None) -> None:
+        """Reflect the sink's volume, wherever it was changed from.
+
+        None means the channel is not running, so there is nothing to set.
+        """
+        available = volume is not None
+        self.volume.setEnabled(available)
+        self.mute.setEnabled(available)
+        if not available:
+            self.volume_label.setText("-")
+            self.volume.setToolTip("Start the channel to change its volume.")
+            return
+        self.volume.setToolTip("")
+        if self.volume.isSliderDown() or time.monotonic() - self._last_local_edit < VOLUME_SETTLE_S:
+            return
+        percent = round(volume * 100)
+        self.volume.blockSignals(True)
+        # 100% is the normal top; a level raised past it elsewhere must still
+        # show truthfully instead of being clamped and then written back.
+        self.volume.setMaximum(150 if percent > 100 else 100)
+        self.volume.setValue(percent)
+        self.volume.blockSignals(False)
+        self.volume_label.setText(f"{percent}%")
+        self.mute.blockSignals(True)
+        self.mute.setChecked(bool(muted))
+        self.mute.blockSignals(False)
+
     def show_status(self, entry: dict | None) -> None:
+        self.show_volume(entry.get("volume") if entry else None, entry.get("muted") if entry else None)
         if entry is None:
             self.status.setText("")
             return
@@ -122,6 +182,19 @@ class ChannelPanel(QGroupBox):
         if device != self.channel.device:
             self.channel.device = device
             self.changed.emit()
+
+    def _volume_moved(self, percent: int) -> None:
+        self.volume_label.setText(f"{percent}%")
+        if self._loading or self.channel is None:
+            return
+        self._last_local_edit = time.monotonic()
+        self.volume_changed.emit(percent / 100.0)
+
+    def _mute_toggled(self, on: bool) -> None:
+        if self._loading or self.channel is None:
+            return
+        self._last_local_edit = time.monotonic()
+        self.mute_changed.emit(on)
 
     def _enabled_toggled(self, on: bool) -> None:
         if self._loading or self.channel is None:

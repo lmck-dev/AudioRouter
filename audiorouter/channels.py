@@ -31,6 +31,10 @@ from .pwgraph import Graph, PwError, require_tools
 #: and cannot collide with sinks belonging to anything else.
 NODE_PREFIX = "ar_"
 
+#: Highest channel volume offered: 150%, as desktop sound settings allow when
+#: "raise maximum volume" is on. Above 100% the signal can clip.
+MAX_VOLUME = 1.5
+
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 #: Minimal module set a standalone filter-chain host needs. Verified working;
@@ -400,6 +404,36 @@ class Channel:
             pass
         return True
 
+    # -- volume -----------------------------------------------------------
+
+    def _sink_id(self, graph: Graph | None) -> int:
+        graph = graph if graph is not None else Graph.snapshot()
+        node = self.sink_node(graph)
+        if node is None:
+            raise ChannelError(f"channel {self.slug!r} is not running, so it has no volume to set")
+        return node.id
+
+    def _wpctl(self, *argv: str) -> None:
+        require_tools("wpctl")
+        try:
+            subprocess.run(["wpctl", *argv], check=True, capture_output=True, text=True, timeout=5)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            raise ChannelError(f"could not change the volume of {self.slug!r}: {exc}") from exc
+
+    def set_volume(self, volume: float, graph: Graph | None = None) -> float:
+        """Set the channel's volume, 1.0 being 100%, on its sink.
+
+        The sink's own volume is used rather than a gain effect: it is what the
+        desktop's sound settings show and change too, WirePlumber remembers it
+        across restarts by node name, and changing it never touches the graph.
+        """
+        volume = max(0.0, min(MAX_VOLUME, float(volume)))
+        self._wpctl("set-volume", str(self._sink_id(graph)), f"{volume:.4f}")
+        return volume
+
+    def set_muted(self, muted: bool, graph: Graph | None = None) -> None:
+        self._wpctl("set-mute", str(self._sink_id(graph)), "1" if muted else "0")
+
     # -- status -----------------------------------------------------------
 
     def sink_node(self, graph: Graph):
@@ -429,5 +463,7 @@ class Channel:
             "pid": self.pid(),
             "sink_node_id": node.id if node else None,
             "sink_serial": node.serial if node else None,
+            "volume": node.volume if node else None,
+            "muted": node.muted if node else None,
             "effects": [e.label if e.plugin else e.kind for e in self.effects if e.enabled],
         }
