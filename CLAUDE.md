@@ -99,6 +99,11 @@ belongs in the engine, never in the CLI.
   every channel not in the test config is an orphan. Live experiments must set
   `XDG_RUNTIME_DIR=/run/user/1000/arlab PIPEWIRE_RUNTIME_DIR=/run/user/1000
   PULSE_RUNTIME_PATH=/run/user/1000/pulse`.
+- **EasyEffects and Audio Router cannot run together.** EasyEffects relinks
+  every app stream onto `easyeffects_sink`, so a "Send to" silently snaps back
+  and the stream reads "not routed" (owner hit this 13/09/2026). Detected by
+  that sink in the graph (`Graph.conflicting_routers()`); the window shows a
+  banner and `status` prints a warning first.
 - **The login service runs this checkout.** Whatever branch is checked out is
   what `audiorouter.service` loads the next time it restarts.
 

@@ -103,6 +103,11 @@ class MainWindow(QMainWindow):
         self.background.setChecked(install.login_service_enabled())
         self.status_label = QLabel(self)
         self.status_label.setWordWrap(True)
+        # A conflict with another audio program breaks routing entirely, so it
+        # gets a banner across the window rather than the small status text.
+        self.conflict_banner = QLabel(self)
+        self.conflict_banner.setWordWrap(True)
+        self.conflict_banner.setHidden(True)
 
         top = QHBoxLayout()
         top.addWidget(self.auto_route)
@@ -152,6 +157,7 @@ class MainWindow(QMainWindow):
 
         central = QWidget(self)
         layout = QVBoxLayout(central)
+        layout.addWidget(self.conflict_banner)
         layout.addLayout(top)
         layout.addWidget(splitter, 2)
         layout.addWidget(self.streams_panel, 1)
@@ -194,6 +200,7 @@ class MainWindow(QMainWindow):
             self._set_status(str(exc), warn=True)
             return
         self._status = status
+        self._show_conflicts(status.get("conflicts", []))
         self._refresh_channel_list(status)
         self._refresh_rules()
         self.streams_panel.refresh(status)
@@ -244,6 +251,17 @@ class MainWindow(QMainWindow):
                 name = rule.channel
             QListWidgetItem(f"{rule.pattern} -> {name}", self.rules_list)
         self.forget_button.setEnabled(bool(self.engine.config.rules.rules))
+
+    def _show_conflicts(self, conflicts: list[str]) -> None:
+        self.conflict_banner.setHidden(not conflicts)
+        if not conflicts:
+            return
+        theme = Theme(self)
+        self.conflict_banner.setText("\n".join(conflicts))
+        self.conflict_banner.setStyleSheet(
+            f"color: {theme.warn.name()}; font-weight: bold; padding: 6px;"
+            f"border: 1px solid {theme.warn.name()}; border-radius: 4px;"
+        )
 
     def _set_status(self, text: str, warn: bool = False) -> None:
         theme = Theme(self)

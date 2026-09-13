@@ -114,6 +114,9 @@ def cmd_status(engine: Engine, args: argparse.Namespace) -> int:
         print(json.dumps(status, indent=2))
         return 0
 
+    for conflict in status.get("conflicts", ()):
+        print(f"! WARNING: {conflict}")
+        print()
     print(f"auto-route: {'on' if status['auto_route'] else 'off'}")
     print()
     print("Channels")

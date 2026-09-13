@@ -616,8 +616,19 @@ class Engine:
             "streams": streams,
             "rules": [r.describe() for r in self.config.rules.rules],
             "problems": self.config.problems(),
+            "conflicts": [conflict_message(name) for name in graph.conflicting_routers()],
             "orphans": self.orphan_slugs(),
         }
+
+
+def conflict_message(program: str) -> str:
+    """Why another audio program stops routing working, and what to do."""
+    return (
+        f"{program} is running. It moves every app onto its own output, so apps "
+        f"cannot stay on your channels and will show as not routed. Quit {program} "
+        "(including its background service) to use Audio Router - the two cannot "
+        "run together. Your channels' own effects replace it."
+    )
 
 
 class AutoRouter:

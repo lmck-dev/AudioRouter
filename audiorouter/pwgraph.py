@@ -213,6 +213,20 @@ class Graph:
         """Playback streams belonging to applications. What the router may move."""
         return [n for n in self.nodes if n.is_app_stream]
 
+    def conflicting_routers(self) -> list[str]:
+        """Programs in the graph that move app streams themselves.
+
+        EasyEffects (with its default "process all output streams") relinks
+        every application onto its own `easyeffects_sink`, immediately undoing
+        any move we make: the stream shows as "not routed" no matter what is
+        chosen. It is recognised by that sink rather than by process name, so
+        the native build, the Flatpak and its background service all count.
+        """
+        found: list[str] = []
+        if any(n.name.startswith("easyeffects_sink") for n in self.nodes):
+            found.append("EasyEffects")
+        return found
+
     def nodes_named(self, name: str) -> list[Node]:
         """All nodes with this node.name - plural because names are not unique."""
         return [n for n in self.nodes if n.name == name]
