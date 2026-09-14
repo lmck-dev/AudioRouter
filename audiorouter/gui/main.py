@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .. import install
+from .. import install, native
 from ..channels import INPUT, ChannelError, validate_slug
 from ..config import ConfigError
 from ..effects import EffectError
@@ -558,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         QMessageBox.critical(None, "Audio Router", f"Your settings could not be read:\n\n{exc}")
         return 2
+    native.ensure_rnnoise()  # well under a second, and only when missing or stale
     window = MainWindow(engine)
     window.show()
     return app.exec()

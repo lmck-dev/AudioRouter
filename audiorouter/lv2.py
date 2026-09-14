@@ -33,7 +33,20 @@ PP = "http://lv2plug.in/ns/ext/port-props#"
 ATOM = "http://lv2plug.in/ns/ext/atom#"
 
 #: Bump when the cached catalogue's shape changes.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
+
+#: Plugins that load but do not work in a channel, measured. The werman RNNoise
+#: build (1.10) came out at half level, ~63 ms late and more distortion than
+#: speech inside filter-chain, and its settings are patch parameters on an atom
+#: port filter-chain cannot drive. `native` builds a working replacement.
+KNOWN_BROKEN = {
+    "https://github.com/werman/noise-suppression-for-voice#mono": (
+        "distorts speech under PipeWire; use Voice noise suppression instead"
+    ),
+    "https://github.com/werman/noise-suppression-for-voice#stereo": (
+        "distorts speech under PipeWire; use Voice noise suppression instead"
+    ),
+}
 
 #: Host features PipeWire's LV2 loader provides (from the strings in
 #: libspa-filter-graph-plugin-lv2.so, PipeWire 1.6). A plugin that *requires*
@@ -80,7 +93,7 @@ _VENDORS = (
     ("plugin.org.uk/swh", "SWH"), ("guitarix", "Guitarix"), ("breakfastquay", "Rubber Band"),
     ("noise-suppression-for-voice", "RNNoise"), ("eq10q", "EQ10Q"), ("hippie.lt", "abGate"),
     ("dragonfly", "Dragonfly"), ("invada", "Invada"), ("tap-plugins", "TAP"),
-    ("tomszilagyi", "TAP"),
+    ("tomszilagyi", "TAP"), ("urn:audiorouter:", "Audio Router"),
 )
 
 #: What an effect does, in the order the browser offers them.
@@ -272,6 +285,8 @@ def _read_plugin(store: Store, uri: str, bundle: Path) -> Plugin:
     )
     name = store.value(uri, DOAP + "name") or store.value(uri, RDFS + "label") or uri.rsplit("/", 1)[-1]
     problems: list[str] = []
+    if uri in KNOWN_BROKEN:
+        problems.append(KNOWN_BROKEN[uri])
 
     for feature in store.objects(uri, LV2 + "requiredFeature"):
         if str(feature) not in SUPPORTED_FEATURES:

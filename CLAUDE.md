@@ -134,6 +134,34 @@ belongs in the engine, never in the CLI.
   every channel not in the test config is an orphan. Live experiments must set
   `XDG_RUNTIME_DIR=/run/user/1000/arlab PIPEWIRE_RUNTIME_DIR=/run/user/1000
   PULSE_RUNTIME_PATH=/run/user/1000/pulse`.
+- **Never run `init` in the lab config.** It adds a Speakers channel with the
+  same slug as the owner's, so the lab host takes the same node name and
+  `apply` moves the owner's playing apps onto it; stopping it drops them onto
+  the raw device. Done 14 Sep 2026 (Zen, sent back by hand). Add only
+  `lab*` channels.
+- **The werman RNNoise LV2 plugin (`lv2-noise-suppression-for-voice` 1.10) is
+  broken under filter-chain.** Measured 14 Sep 2026 on natural speech (Kokoro)
+  through a fake mic: half level, ~63 ms late, residual +3.2 dB against the dry
+  signal, 3x the clicks; erratic at forced quanta of 480 and 1024 too. The same
+  audio through system `librnnoise.so.0` directly (ctypes, 480-sample frames) is
+  near-transparent: gain 0.99, residual -16.5 dB. Its settings are LV2 patch
+  parameters on an atom port, which filter-chain cannot send, so it also shows
+  no controls. Espeak is a poor test voice for RNNoise; use Kokoro
+  (`~/.claude/hooks/speak-kokoro.py`). `lv2.KNOWN_BROKEN` marks both unusable.
+- **Our own RNNoise plugin** (`audiorouter/native/`, URI
+  `urn:audiorouter:rnnoise`, "Voice noise suppression"). C with no headers:
+  the LV2 and librnnoise ABIs are declared in the file, linked with
+  `-l:librnnoise.so.0`. `native.ensure_rnnoise()` compiles it into
+  `~/.lv2/audiorouter-rnnoise.lv2` when missing or older than the source; the
+  GUI and `watch` call it at start, and it never raises. Latency is 1440
+  samples: 480 of frame buffering plus RNNoise's own 960, which the dry side of
+  "Amount" is delayed to match (a 50% mix measured closer to dry than 100%, so
+  no comb). Measured live through a fake mic: speech level unchanged and
+  residual -16.4 dB, the same as librnnoise run directly; 37 dB of fan/hum noise
+  removed; pauses at -90 dB, and digital silence with the voice gate on; knob
+  changes live. RNNoise can rate a steady sine as voice, so gate tests use noise.
+  Lab runs with a scratch plugin need `LV2_PATH` *and* `XDG_CACHE_HOME` set, or
+  the lab rebuilds the owner's catalogue cache.
 - **EasyEffects and Audio Router cannot run together.** EasyEffects relinks
   every app stream onto `easyeffects_sink`, so a "Send to" silently snaps back
   and the stream reads "not routed" (owner hit this 13/09/2026). Detected by

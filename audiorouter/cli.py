@@ -18,7 +18,7 @@ from typing import Any
 from .channels import INPUT, NOWHERE, OUTPUT, ChannelError
 from .config import ConfigError, config_path
 from .effects import EffectError, all_specs, plugin_spec, plugin_specs
-from . import install
+from . import install, native
 from .engine import AutoRouter, DaemonRecord, Engine, EngineError, MoveResult, daemon_pid
 from .pwgraph import PwError
 from .routing import MATCH_FIELDS, RoutingError
@@ -345,6 +345,7 @@ def cmd_send(engine: Engine, args: argparse.Namespace) -> int:
 
 def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     """Start the channels and keep routing new streams until interrupted."""
+    native.ensure_rnnoise()  # before apply: a channel may use it
     report = engine.apply()
     for line in report.describe():
         print(line)
