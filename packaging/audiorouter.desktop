@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Audio Router
+GenericName=Audio Channels
+Comment=Send each app's sound to its own channel, with its own effects
+Exec=audiorouter-gui
+Icon=multimedia-volume-control
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=audio;sound;routing;pipewire;effects;equaliser;equalizer;
+StartupNotify=true
+StartupWMClass=audiorouter

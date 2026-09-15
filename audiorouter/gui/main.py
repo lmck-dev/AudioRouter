@@ -14,6 +14,7 @@ on a worker thread (`applier.py`), so the window never freezes while it does.
 from __future__ import annotations
 
 import sys
+import time
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QGuiApplication
@@ -605,6 +606,23 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def _set_up_package(wait_s: float = 3.0) -> None:
+    """Switch routing from login on at a packaged app's first start.
+
+    Then wait briefly for the service to announce itself: the window starts its
+    own router when it finds none, and two routers both place every new stream.
+    """
+    try:
+        if not install.set_up_for_user():
+            return
+    except (install.InstallError, OSError) as exc:
+        print(f"audiorouter: could not start routing at login: {exc}", file=sys.stderr)
+        return
+    deadline = time.monotonic() + wait_s
+    while daemon_pid() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
 def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Audio Router")
@@ -615,6 +633,7 @@ def main(argv: list[str] | None = None) -> int:
         QMessageBox.critical(None, "Audio Router", f"Your settings could not be read:\n\n{exc}")
         return 2
     native.ensure_rnnoise()  # well under a second, and only when missing or stale
+    _set_up_package()
     window = MainWindow(engine)
     window.show()
     return app.exec()

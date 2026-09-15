@@ -224,7 +224,7 @@ belongs in the engine, never in the CLI.
   "Lab mic (listening) output" is left in `~/.local/state/wireplumber/
   stream-properties`. The remaining blip: a listen-through doubles (+6 dB) for
   ~90 ms when the input channel restarts (adding/removing/moving an effect).
-- **The login service runs this checkout.** Whatever branch is checked out is
+- **The login service runs this checkout** (unless the RPM is installed and its window has been opened: see "The RPM"). Whatever branch is checked out is
   what `audiorouter.service` loads the next time it restarts.
 
 ## Testing audio without hardware
@@ -374,6 +374,36 @@ re-running `launcher` and toggling login off/on.
   A host process can outlive the PipeWire it was attached to; conf unchanged
   plus pid alive used to count as healthy. Unit-tested only - verifying it live
   means restarting the user's PipeWire.
+
+## The RPM (15 Sep 2026)
+
+`packaging/`: `audiorouter.spec`, the packaged `audiorouter.service` (runs
+`/usr/bin/audiorouter watch`) and `audiorouter.desktop` (runs `audiorouter-gui`),
+and `build-rpm.sh`, which tars the working tree (committed or not) and runs
+`rpmbuild` in a `fedora:44` podman container, `%check` included. Our noise
+plugin is compiled at build time into `/usr/lib64/lv2/audiorouter-rnnoise.lv2`,
+so users need no gcc. Bump the version in BOTH `pyproject.toml` and the spec
+(the script refuses a mismatch).
+
+- **`install.packaged()` is decided by location, not `sysconfig`.** Fedora's
+  `sysconfig.get_path("purelib")` says `/usr/local/lib/python3.x/site-packages`,
+  but the RPM installs to `/usr/lib/...`. Packaged = the system unit exists AND
+  this code lives under `/usr/lib*`, so a checkout on a machine that also has
+  the package still writes its own launcher and unit.
+- **A package cannot enable a user service in each session**, so
+  `install.set_up_for_user()` does it at the window's first start and writes
+  `~/.config/audiorouter/package-set-up`; later starts change nothing (switched
+  off stays off). It also removes a checkout's `~/.config/systemd/user` unit and
+  `~/.local` launcher, which would otherwise HIDE the package's copies and keep
+  running the checkout. The window then waits up to 3 s for the daemon record,
+  or it would start a second router.
+- **`systemctl --user enable --now` without a running user manager** (e.g. a
+  container) creates the link, skips `--now`, and exits 0 - not a failure.
+- `PackageFilesTest` keeps the packaged unit and menu entry identical to the
+  generated ones apart from the command. Change both together.
+- Test the package with a fresh `fedora:44` container (`dnf install` the rpm,
+  `useradd`, `runuser` - the base image has no `su`), not by installing it on
+  the dev box: that swaps the owner's login service over to the packaged copy.
 
 ## Remembering apps (owner ruling 2026-09-12)
 

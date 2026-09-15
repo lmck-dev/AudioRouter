@@ -55,6 +55,18 @@ class EnsureWithoutToolsTest(unittest.TestCase):
             self.assertIsNone(native.ensure_rnnoise(Path(tmp)))
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
+    def test_a_packaged_plugin_is_used_instead_of_building_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            system = Path(tmp) / "usr-lv2"
+            (system / native.RNNOISE_BUNDLE).mkdir(parents=True)
+            (system / native.RNNOISE_BUNDLE / "audiorouter_rnnoise.so").write_bytes(b"")
+            calls = []
+            with mock.patch.object(native, "_SYSTEM_LV2_DIRS", (system,)), \
+                    mock.patch.object(native, "user_lv2_dir", return_value=Path(tmp) / "home"):
+                found = native.ensure_rnnoise(run=lambda args: calls.append(args))
+            self.assertEqual(found, system / native.RNNOISE_BUNDLE)
+            self.assertEqual(calls, [])
+
     def test_a_failed_compile_is_not_fatal(self):
         failed = subprocess.CompletedProcess([], 1, "", "boom")
         with tempfile.TemporaryDirectory() as tmp:

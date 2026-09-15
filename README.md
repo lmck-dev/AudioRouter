@@ -19,7 +19,29 @@ its own. At most one instance can ever work, and its chain is global. That was
 measured, reproduced on two and three instances, and confirmed in the 8.1.6
 source before this design was chosen.
 
-## Requirements
+## Installing (Fedora, Nobara)
+
+Install `audiorouter-<version>.fc44.x86_64.rpm` - double-click it, or
+
+```sh
+sudo dnf install ./audiorouter-0.1.0-1.fc44.x86_64.rpm
+```
+
+That brings everything it needs: PyQt6, PipeWire's LV2 loader, the LSP plugins
+and the effects toolbox (the toolbox packs are weak dependencies, so they can be
+removed). Then open **Audio Router** from the menu. The first time it opens it
+switches on routing from login for that user, and offers to create a channel for
+each output.
+
+To build the package (needs only podman):
+
+```sh
+packaging/build-rpm.sh          # -> dist/audiorouter-<version>-1.fc44.x86_64.rpm
+```
+
+It builds in a clean Fedora container and runs the test suite there.
+
+## Requirements (running from a checkout)
 
 - PipeWire (with `pw-dump`, `pw-metadata`, `pipewire` on `PATH`)
 - Python 3.11+

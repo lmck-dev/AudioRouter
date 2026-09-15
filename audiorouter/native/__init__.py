@@ -28,6 +28,7 @@ _C_FILE = "audiorouter_rnnoise.c"
 _LIBRARY = "librnnoise.so.0"
 _LIBRARY_DIRS = (Path("/usr/lib64"), Path("/usr/lib"), Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/local/lib"))
 _TURTLE = ("manifest.ttl", "rnnoise.ttl")
+_SYSTEM_LV2_DIRS = (Path("/usr/lib64/lv2"), Path("/usr/lib/lv2"))
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
 
@@ -64,6 +65,15 @@ def missing_for_rnnoise() -> list[str]:
     if not rnnoise_library_present():
         missing.append("rnnoise")
     return missing
+
+
+def system_rnnoise_bundle() -> Path | None:
+    """The copy the package installed, already built, if there is one."""
+    for d in _SYSTEM_LV2_DIRS:
+        bundle = d / RNNOISE_BUNDLE
+        if (bundle / "audiorouter_rnnoise.so").is_file():
+            return bundle
+    return None
 
 
 def rnnoise_up_to_date(root: Path | None = None) -> bool:
@@ -108,7 +118,14 @@ def ensure_rnnoise(root: Path | None = None, run: Runner = _run) -> Path | None:
 
     Returns the bundle when one is in place, None when it cannot be built.
     Never raises: a missing noise suppressor must not stop the app starting.
+    Installed from the package, the plugin is already built system-wide, and
+    nothing is compiled unless this user already has a copy of their own
+    (a checkout keeps that copy current with its source).
     """
+    if root is None and not rnnoise_bundle().exists():
+        system = system_rnnoise_bundle()
+        if system is not None:
+            return system
     if rnnoise_up_to_date(root):
         return rnnoise_bundle(root)
     if missing_for_rnnoise():
