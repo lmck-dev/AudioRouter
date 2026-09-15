@@ -34,6 +34,8 @@ STREAM_INPUT_CLASS = "Stream/Input/Audio"
 #: router that did not exclude it would route a channel's output back into a
 #: channel and build a feedback loop.
 OWNER_KEY = "audiorouter.channel"
+#: Marks our level-meter recording streams (see meter.py): never moved, never routed.
+METER_KEY = "audiorouter.meter"
 
 _NODE = "PipeWire:Interface:Node"
 _PORT = "PipeWire:Interface:Port"
@@ -96,6 +98,10 @@ class Node:
     @property
     def is_ours(self) -> bool:
         return self.owned_channel is not None
+
+    @property
+    def is_meter(self) -> bool:
+        return str(self.props.get(METER_KEY, "")).lower() in {"true", "1"}
 
     @property
     def is_app_stream(self) -> bool:

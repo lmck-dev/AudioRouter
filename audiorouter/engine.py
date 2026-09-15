@@ -493,6 +493,10 @@ class Engine:
         old_sources, new_source = copies(channel.recording_name)
         for old in old_sources:
             for stream in graph.readers_of(old.id):
+                # A level meter refuses moves by design; waiting for one would
+                # hold every restart for the full timeout. It reopens itself.
+                if stream.is_meter:
+                    continue
                 if new_source is not None and stream.owned_channel != channel.slug:
                     moves.append((stream, new_source))
         for node in graph.nodes:

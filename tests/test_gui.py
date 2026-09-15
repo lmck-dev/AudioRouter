@@ -5,6 +5,7 @@ schedules an apply rather than restarting audio on every keystroke, and that the
 panels ask the engine for things instead of doing them.
 """
 
+import math
 import os
 import tempfile
 import unittest
@@ -24,12 +25,30 @@ from audiorouter.effects import Effect
 from audiorouter.engine import ApplyReport, Engine
 from audiorouter.pwgraph import Graph
 
+from . import fakes
 from .test_engine import live_graph
 
 if QApplication is not None:
     from audiorouter.gui.main import MainWindow as _MainWindow
 
     REAL_START_AUTO_ROUTER = _MainWindow._start_auto_router
+
+
+class FakeReader:
+    """Stands in for meter.LevelReader: records what was started and stopped."""
+
+    started: list = []
+
+    def __init__(self, tap, on_levels, on_ended=None):
+        self.tap, self.on_levels, self.on_ended = tap, on_levels, on_ended
+        self.running = False
+
+    def start(self):
+        self.running = True
+        FakeReader.started.append(self)
+
+    def stop(self):
+        self.running = False
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -54,6 +73,8 @@ class GuiTestCase(unittest.TestCase):
             # Closing the window runs any apply still queued, and each test's
             # own apply mock has ended by then: never start real channel hosts.
             mock.patch.object(Engine, "apply", return_value=ApplyReport()),
+            # Never start a real parec from a test, even if a window is shown.
+            mock.patch("audiorouter.gui.meters.LevelReader", FakeReader),
         ):
             target.start()
             self.addCleanup(target.stop)
@@ -351,6 +372,196 @@ class ApplyWorkerTest(GuiTestCase):
         self.window.close()
         self.assertEqual([run["frequency"] for run in self.runs], [90, 444])
         self.assertFalse(self.window.applier.busy)
+
+
+class MeterTest(GuiTestCase):
+    """The In/Out meters follow the selected channel and run only while shown."""
+
+    def setUp(self):
+        super().setUp()
+        FakeReader.started = []
+        pid = mock.patch.object(Channel, "pid", return_value=4242)
+        pid.start()
+        self.addCleanup(pid.stop)
+        self.meters = self.window.meters
+
+    def running(self):
+        return sorted(r.tap.label for r in FakeReader.started if r.running)
+
+    def select(self, row):
+        self.window.channel_list.setCurrentRow(row)
+
+    def test_nothing_is_measured_until_the_window_is_shown(self):
+        self.select(0)
+        self.assertEqual(self.running(), [])
+        self.meters.set_active(True)
+        self.assertEqual(self.running(), ["In", "Out"])
+        self.assertEqual(
+            {r.tap.label: r.tap.args for r in FakeReader.started},
+            {"In": ("--device=ar_speakers.monitor",), "Out": ("--monitor-stream=610",)},
+        )
+
+    def test_hiding_the_window_stops_every_tap(self):
+        self.select(0)
+        self.meters.set_active(True)
+        from PyQt6.QtGui import QHideEvent
+
+        self.window.hideEvent(QHideEvent())  # also what minimising sends
+        self.assertEqual(self.running(), [])
+
+    def test_choosing_another_channel_stops_the_first_channels_taps(self):
+        self.meters.set_active(True)
+        self.select(0)
+        first = [r for r in FakeReader.started if r.running]
+        self.select(1)  # "phones" is not in the graph, so nothing to measure
+        self.assertTrue(first and not any(r.running for r in first))
+        self.assertEqual(self.running(), [])
+        self.assertIn("Not running", self.meters.hint.text())
+
+    def test_a_restart_reopens_the_taps_and_a_refresh_without_one_does_not(self):
+        self.meters.set_active(True)
+        self.select(0)
+        self.window.refresh()
+        self.assertEqual(len(FakeReader.started), 2)
+        with mock.patch.object(Channel, "pid", return_value=5151):
+            self.window.refresh()
+        self.assertEqual(len(FakeReader.started), 4)
+        self.assertEqual(self.running(), ["In", "Out"])
+
+    def test_readings_move_the_bars_and_a_stopped_taps_late_readings_are_ignored(self):
+        from PyQt6.QtCore import QCoreApplication
+
+        from audiorouter.meter import Levels
+
+        self.meters.set_active(True)
+        self.select(0)
+        reader = next(r for r in FakeReader.started if r.tap.label == "Out")
+        reader.on_levels(Levels(0.5, 0.25, 0.125, 0.03125))
+        QCoreApplication.sendPostedEvents(None, 0)
+        left, right = self.meters.bars["Out"]
+        self.assertAlmostEqual(left.state.hold_db, -6.02, places=1)
+        self.assertAlmostEqual(right.state.hold_db, -12.04, places=1)
+        self.meters.set_active(False)
+        reader.on_levels(Levels(1.0, 1.0, 0.5, 0.5))
+        QCoreApplication.sendPostedEvents(None, 0)
+        self.assertLess(left.state.hold_db, -50)
+
+    def test_a_tap_that_ends_by_itself_is_not_retried_at_once(self):
+        from PyQt6.QtCore import QCoreApplication
+
+        self.meters.set_active(True)
+        self.select(0)
+        tap_in = next(r for r in FakeReader.started if r.tap.label == "In")
+        tap_in.on_ended()
+        QCoreApplication.sendPostedEvents(None, 0)
+        self.assertEqual(self.running(), ["Out"])
+        self.window.refresh()  # a graph event straight after: still waiting
+        self.assertEqual(self.running(), ["Out"])
+
+    def test_the_first_retry_is_quick_and_repeated_failures_back_off(self):
+        from PyQt6.QtCore import QCoreApplication
+
+        from audiorouter.gui import meters
+
+        self.meters.set_active(True)
+        self.select(0)
+        next(r for r in FakeReader.started if r.tap.label == "In").on_ended()
+        QCoreApplication.sendPostedEvents(None, 0)
+        self.assertLessEqual(self.meters._retry.interval(), int(meters.FIRST_RETRY_S * 1000) + 50)
+        self.meters._retry.stop()  # as it is once it has fired
+        with mock.patch.object(meters, "FIRST_RETRY_S", 0.0):
+            self.meters._retry_now()
+        again = [r for r in FakeReader.started if r.tap.label == "In" and r.running][-1]
+        again.on_ended()  # ended again with no reading in between: a mic that is gone
+        QCoreApplication.sendPostedEvents(None, 0)
+        self.assertGreaterEqual(self.meters._retry.interval(), int(meters.RETRY_S * 1000))
+
+    def test_a_tap_that_ended_comes_back_by_itself_with_no_graph_event(self):
+        # Measured live: after a restart settled there was no further event,
+        # and the Out meter stayed dark for good.
+        from PyQt6.QtCore import QCoreApplication
+
+        from audiorouter.gui import meters
+
+        self.meters.set_active(True)
+        self.select(0)
+        tap_out = next(r for r in FakeReader.started if r.tap.label == "Out")
+        tap_out.on_ended()
+        QCoreApplication.sendPostedEvents(None, 0)
+        self.assertTrue(self.meters._retry.isActive())
+        self.assertEqual(self.running(), ["In"])
+        self.meters._retry.stop()
+        with mock.patch.object(meters, "FIRST_RETRY_S", 0.0):
+            self.meters._retry_now()  # what the timer does when it fires
+        self.assertEqual(self.running(), ["In", "Out"])
+
+    def test_hiding_cancels_a_pending_retry(self):
+        from PyQt6.QtCore import QCoreApplication
+
+        self.meters.set_active(True)
+        self.select(0)
+        next(r for r in FakeReader.started if r.tap.label == "Out").on_ended()
+        QCoreApplication.sendPostedEvents(None, 0)
+        self.meters.set_active(False)
+        self.assertFalse(self.meters._retry.isActive())
+
+    def test_an_input_channel_says_that_measuring_opens_the_microphone(self):
+        self.engine.create_channel("mic", "Mic", "", kind="input")
+        graph = live_graph()
+        graph.apply([fakes.node(70, "ar_mic", "Audio/Source", serial=700, **{"audiorouter.channel": "mic"})])
+        self.meters.set_active(True)
+        self.meters.follow(self.engine.channel("mic"), graph)
+        self.assertEqual(
+            {r.tap.label: r.tap.args for r in FakeReader.started if r.running},
+            {"In": ("--device=@DEFAULT_SOURCE@",), "Out": ("--device=ar_mic",)},
+        )
+        self.assertIn("microphone", self.meters.hint.text())
+
+    def test_closing_the_window_stops_the_meters(self):
+        self.meters.set_active(True)
+        self.select(0)
+        self.window.close()
+        self.assertEqual(self.running(), [])
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class BallisticsTest(unittest.TestCase):
+    def setUp(self):
+        from audiorouter.gui import meters
+
+        self.m = meters
+        self.bar = meters.Ballistics()
+
+    def feed_tone(self, peak, seconds, start=0.0):
+        steps = int(seconds / self.m.BLOCK_S)
+        for i in range(steps):
+            self.bar.feed(peak, peak * peak / 2, start + i * self.m.BLOCK_S)
+        return start + steps * self.m.BLOCK_S
+
+    def test_a_steady_tone_settles_with_average_and_peak_together(self):
+        self.feed_tone(0.5, 2.0)
+        self.assertAlmostEqual(self.bar.average_db, -6.02, places=1)
+        self.assertAlmostEqual(self.bar.peak_db, -6.02, places=1)
+
+    def test_the_average_takes_a_moment_like_a_needle(self):
+        self.feed_tone(0.5, self.m.AVERAGE_TAU_S)
+        # One time constant: 63% of the power, about 4.3 dB short.
+        self.assertAlmostEqual(self.bar.average_db, -6.02 + 10 * math.log10(1 - math.exp(-1)), delta=0.3)
+
+    def test_the_peak_falls_back_and_the_hold_waits_first(self):
+        end = self.feed_tone(0.5, 0.2)
+        self.bar.tick(end + 1.0)
+        self.assertAlmostEqual(self.bar.peak_db, -6.02 - self.m.PEAK_FALL_DB_PER_S, delta=0.6)
+        self.assertAlmostEqual(self.bar.hold_db, -6.02, places=1)
+        self.bar.tick(end + self.m.HOLD_S + 0.5)
+        self.assertLess(self.bar.hold_db, -6.02 - 5)
+
+    def test_a_full_scale_peak_lights_the_clip_marker_for_a_while(self):
+        self.bar.feed(1.0, 0.5, 10.0)
+        self.assertTrue(self.bar.clipped(10.0 + self.m.CLIP_SHOW_S - 0.1))
+        self.assertFalse(self.bar.clipped(10.0 + self.m.CLIP_SHOW_S + 0.1))
+        self.bar.silence()
+        self.assertFalse(self.bar.clipped(10.0))
 
 
 class StreamsTest(GuiTestCase):

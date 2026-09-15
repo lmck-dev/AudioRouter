@@ -208,6 +208,25 @@ class HandOverTest(EngineTestCase):
             self.engine._hand_over(self.engine.channel("mic"), 222, timeout=0)
         self.assertEqual([c.args for c in metadata.call_args_list], [(75, 710)])
 
+    def test_a_level_meter_reading_the_old_source_is_left_alone(self):
+        # Meter taps refuse moves; waiting for one held every restart for the
+        # full timeout. The meter reopens itself on the new host instead.
+        self.engine.create_channel("mic", "Mic", kind=INPUT)
+        graph = Graph([
+            fakes.client(1, 111), fakes.client(2, 222),
+            fakes.node(70, "ar_mic", "Audio/Source", serial=700, client_id=1, **{"audiorouter.channel": "mic"}),
+            fakes.node(71, "ar_mic", "Audio/Source", serial=710, client_id=2, **{"audiorouter.channel": "mic"}),
+            fakes.node(75, "discord", "Stream/Input/Audio", serial=750, **{"application.name": "Discord"}),
+            fakes.node(77, "meter", "Stream/Input/Audio", serial=770, **{"audiorouter.meter": "true"}),
+            fakes.port(80, 70, "out"), fakes.port(81, 75, "in"), fakes.port(82, 77, "in"),
+            fakes.link(90, 80, 81), fakes.link(91, 80, 82),
+        ])
+        with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)), \
+             mock.patch("audiorouter.routing.Router._set_metadata") as metadata, \
+             mock.patch("audiorouter.engine.time.sleep"):
+            self.engine._hand_over(self.engine.channel("mic"), 222, timeout=0)
+        self.assertEqual([c.args for c in metadata.call_args_list], [(75, 710)])
+
     def test_the_new_hosts_own_loopback_is_pointed_at_its_own_source(self):
         self.engine.create_channel("mic", "Mic", kind=INPUT)
         self.engine.set_listen("mic", "speakers")

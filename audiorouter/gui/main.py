@@ -43,6 +43,7 @@ from ..routing import RoutingError
 from .applier import Applier
 from .channel_panel import ChannelPanel
 from .effects_panel import EffectsPanel
+from .meters import MeterPanel
 from .monitor import GraphBridge
 from .streams_panel import StreamsPanel
 from .theme import Theme
@@ -161,11 +162,13 @@ class MainWindow(QMainWindow):
 
         self.channel_panel = ChannelPanel(self)
         self.effects_panel = EffectsPanel(self)
+        self.meters = MeterPanel(self, graph_source=self._meter_graph)
 
         right = QWidget(self)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(self.channel_panel)
+        right_layout.addWidget(self.meters)
         right_layout.addWidget(self.effects_panel, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -233,6 +236,8 @@ class MainWindow(QMainWindow):
             None,
         )
         self.channel_panel.show_status(entry)
+        # A restart replaces the nodes a meter reads; this reopens its taps.
+        self.meters.follow(self.selected_channel, self.engine.graph())
         self.channel_panel.set_outputs(self._output_choices())
         self.channel_panel.set_devices(
             self._device_choices(status, self.selected_channel),
@@ -325,6 +330,11 @@ class MainWindow(QMainWindow):
         )
         self.channel_panel.show_status(entry)
         self.effects_panel.set_channel(channel)
+        try:
+            graph = self.engine.graph()
+        except PwError:
+            graph = None
+        self.meters.follow(channel, graph)
         self.remove_channel_button.setEnabled(channel is not None)
 
     # -- actions -----------------------------------------------------------
@@ -569,12 +579,27 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, title, detail)
         self._set_status(detail, warn=True)
 
+    def _meter_graph(self):
+        if self.bridge.running:
+            return self.bridge.graph
+        return self.engine.graph(refresh=True)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.meters.set_active(True)
+
+    def hideEvent(self, event) -> None:
+        # Also minimising: no meter runs - or holds a microphone open - unseen.
+        super().hideEvent(event)
+        self.meters.set_active(False)
+
     def closeEvent(self, event) -> None:
         # Never leave a restart half done (two hosts for one channel), and
         # never drop an edit that is saved but not yet heard.
         if self._pending_apply.isActive():
             self.apply_now()
         self.applier.flush()
+        self.meters.stop()
         self._stop_auto_router()
         self.bridge.stop()
         super().closeEvent(event)

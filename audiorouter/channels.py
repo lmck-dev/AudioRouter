@@ -662,6 +662,10 @@ class Channel:
     def recording_node(self, graph: Graph) -> Node | None:
         return self._node(graph, self.recording_name)
 
+    def playback_node(self, graph: Graph) -> Node | None:
+        """An output channel's stream into its device (absent for a cable playing nowhere)."""
+        return self._node(graph, self.playback_name)
+
     def device_present(self, graph: Graph) -> bool:
         """Is this channel's device currently in the graph?
 

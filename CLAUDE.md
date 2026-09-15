@@ -308,6 +308,45 @@ asks `Engine` to make reality match; it decides nothing about audio itself.
 - The monitor thread must never touch a widget: `gui/monitor.py` turns each
   graph callback into a Qt signal and coalesces bursts into one refresh.
 
+## Level meters (15 Sep 2026)
+
+`meter.py` (engine side, no Qt, no numpy) + `gui/meters.py`. The selected
+channel gets In (before effects) and Out (after) meters: one bar per ear with
+the average (~300 ms), the peak, a peak-hold tick and a clip marker - the
+owner's choice of style. Each side is a `parec --raw` *tap*:
+
+| channel | In | Out |
+|---|---|---|
+| output | `--device=ar_<slug>.monitor` | `--monitor-stream=<serial of ar_<slug>_out>` |
+| virtual cable | same | `--device=ar_<slug>_rec` |
+| input | the mic (`device` or `@DEFAULT_SOURCE@`) | `--device=ar_<slug>` |
+
+Measured live on a -20 dB channel: In -6.02, Out -26.02 dB, for all three
+kinds, through the real window. Two taps cost ~1.5% of one core.
+
+- **pipewire-pulse numbers sink inputs by `object.serial`** (checked against
+  `pactl -f json list sink-inputs`), so the graph snapshot gives the Out tap.
+- **Taps carry `node.dont-reconnect`/`node.dont-fallback`** (parec has no
+  no-move flag) so a meter never wanders onto the real mic or another device,
+  and **`audiorouter.meter=true`**, which `Engine._hand_over` skips: a
+  metadata "move" of a stream that refuses moves still reports success, and
+  the handover then waited its full timeout on every restart.
+- **A restart ends the Out tap** (its playback stream is replaced). `Tap.key`
+  includes the host pid so a graph event reopens taps, but after a restart
+  settles there may be NO further event - the Out meter stayed dark for good.
+  The panel therefore schedules its own retry and fetches a fresh graph
+  (`graph_source`): 0.3 s the first time, 2 s after repeated endings (a mic
+  that stays unplugged). Measured: Out back within 1 s of a restart.
+- **Meters run only while the window is shown** (`showEvent`/`hideEvent`,
+  which minimising also sends) and only for the selected channel. An input
+  channel's In meter opens the mic; the owner accepted the desktop's
+  "mic in use" indicator while one is selected.
+- **`LevelReader` must close its pipe** or every reopened meter leaks a file
+  descriptor. GUI tests replace `LevelReader` module-wide with `FakeReader`
+  (`GuiTestCase`), so no test can start a real parec even if a window is shown.
+- The two `ResourceWarning: subprocess ... still running` lines in a full run
+  come from `tests/test_channels.py` and predate the meters.
+
 ## Launcher and login service
 
 `python -m audiorouter launcher` writes `~/.local/share/applications/audiorouter.desktop`;
