@@ -397,6 +397,10 @@ so users need no gcc. Bump the version in BOTH `pyproject.toml` and the spec
   `~/.local` launcher, which would otherwise HIDE the package's copies and keep
   running the checkout. The window then waits up to 3 s for the daemon record,
   or it would start a second router.
+- **On a box that already ran the checkout, the menu still opens the CHECKOUT
+  after installing** - a `~/.local/share/applications` entry of the same name
+  wins over the system one, and the checkout's window never runs the set-up.
+  Start `/usr/bin/audiorouter-gui` once by hand (hit on the owner's box 15 Sep).
 - **`systemctl --user enable --now` without a running user manager** (e.g. a
   container) creates the link, skips `--now`, and exits 0 - not a failure.
 - `PackageFilesTest` keeps the packaged unit and menu entry identical to the
