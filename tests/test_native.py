@@ -86,7 +86,10 @@ class BuildTest(unittest.TestCase):
 
     def test_a_newer_source_makes_it_stale(self):
         so = self.bundle / "audiorouter_rnnoise.so"
-        old = time.time_ns() - 10**12
+        # Older than the source itself, not merely older than now: the source's
+        # mtime is whenever it was last edited.
+        source = native._SOURCE / native._C_FILE
+        old = source.stat().st_mtime_ns - 10**9
         os.utime(so, ns=(old, old))
         try:
             self.assertFalse(native.rnnoise_up_to_date(self.root))
