@@ -139,7 +139,7 @@ class PluginRenderTest(PluginTestCase):
     def test_plugins_and_curated_effects_chain_side_by_side(self):
         chain = render_chain([make_effect("gain"), make_effect("lv2", plugin=STEREO)])
         self.assertIn({"output": "sw1_in_l:Out", "input": "fx1:in_l"}, chain.links)
-        self.assertIn({"output": "fx1:out_r", "input": "sw1_switch_r:In 1"}, chain.links)
+        self.assertIn({"output": "fx1:out_r", "input": "sw1_wet_r:In 1"}, chain.links)
 
     def test_rendering_an_unusable_plugin_fails_loudly(self):
         with self.assertRaises(EffectError):
@@ -178,10 +178,7 @@ class ControlChangeTest(PluginTestCase):
 
     def test_switching_an_effect_off_or_on_is_a_live_change(self):
         self.channel.effects[1].enabled = False
-        self.assertEqual(self.channel.control_changes(), {
-            "sw1_switch_l:Gain 1": 0.0, "sw1_switch_l:Gain 2": 1.0,
-            "sw1_switch_r:Gain 1": 0.0, "sw1_switch_r:Gain 2": 1.0,
-        })
+        self.assertEqual(self.channel.control_changes(), {"sw1_target:Add": 0.0})
 
     def test_a_setting_that_reshapes_the_graph_needs_a_restart(self):
         channel = Channel("y", "Y", "dev", effects=[make_effect("highpass", {"poles": 2})])
@@ -212,19 +209,20 @@ class ControlChangeTest(PluginTestCase):
         self.assertEqual(params[0::2], ["gain0_l:Gain 1", "gain0_r:Gain 1"])
         self.assertEqual(channel.control_changes(), {})
 
-    def test_switching_an_effect_off_fades_rather_than_jumps(self):
+    def test_switching_an_effect_off_is_one_update_and_the_fade_is_left_to_the_graph(self):
+        # The ramp fades inside the audio thread; stepping it from here with
+        # pw-cli calls was what made the old fade coarse.
         from .test_engine import live_graph
 
         channel = Channel("speakers", "Speakers", "alsa_output.a", effects=[make_effect("gain")])
         channel.config_path.write_text(channel.render_config_text())
         channel.effects[0].enabled = False
         with mock.patch("audiorouter.channels.require_tools"), \
-             mock.patch("audiorouter.channels.time.sleep"), \
              mock.patch("audiorouter.channels.subprocess.run") as run:
             channel.set_controls(channel.control_changes(), live_graph())
-        wet = [dict(zip(p[0::2], p[1::2]))["sw0_switch_l:Gain 1"]
-               for p in (json.loads(c.args[0][4])["params"] for c in run.call_args_list)]
-        self.assertEqual(wet, [0.8, 0.6, 0.4, 0.2, 0.0])
+        run.assert_called_once()
+        params = json.loads(run.call_args.args[0][4])["params"]
+        self.assertEqual(dict(zip(params[0::2], params[1::2])), {"sw0_target:Add": 0.0})
         self.assertEqual(channel.control_changes(), {})
 
     def test_set_controls_without_a_sink_refuses(self):

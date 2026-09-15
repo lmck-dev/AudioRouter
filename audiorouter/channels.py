@@ -35,11 +35,6 @@ NODE_PREFIX = "ar_"
 #: "raise maximum volume" is on. Above 100% the signal can clip.
 MAX_VOLUME = 1.5
 
-#: Marks the mixer controls of an effect's bypass switch (see effects._with_bypass).
-SWITCH_MARK = "_switch_"
-SWITCH_FADE_S = 0.05
-SWITCH_FADE_STEPS = 5
-
 #: WirePlumber: never move this stream to a default device when its target
 #: vanishes. Measured without it: a loopback whose output channel was removed
 #: was relinked straight onto the real speakers - for a listen-through, that is
@@ -452,9 +447,9 @@ class Channel:
         beside the pid file is rewritten afterwards, because it is the record of
         what the host is running that `control_changes` compares against.
 
-        Bypass switches are faded over ~50 ms rather than flipped: an instant
-        jump from the processed to the dry sound (20 dB, for a -20 dB trim) can
-        click on anything sustained.
+        Switching an effect on or off needs nothing special here: it is a
+        change of its ramp's `Start`/`Stop`, and the crossfade then runs inside
+        the audio thread (see `effects._with_bypass`).
         """
         if not values:
             return
@@ -463,21 +458,7 @@ class Channel:
         node = self.control_node(graph)
         if node is None:
             raise ChannelError(f"channel {self.slug!r} is not in the graph to update")
-        switches = {k: v for k, v in values.items() if SWITCH_MARK in k}
-        others = {k: v for k, v in values.items() if SWITCH_MARK not in k}
-        if others:
-            self._send_props(node.id, others)
-        if switches:
-            running = self.running_config()
-            before = _graph_controls(running) if running is not None else {}
-            for step in range(1, SWITCH_FADE_STEPS + 1):
-                fraction = step / SWITCH_FADE_STEPS
-                self._send_props(node.id, {
-                    key: before.get(key, target) + (target - before.get(key, target)) * fraction
-                    for key, target in switches.items()
-                })
-                if step < SWITCH_FADE_STEPS:
-                    time.sleep(SWITCH_FADE_S / SWITCH_FADE_STEPS)
+        self._send_props(node.id, values)
         self.config_path.write_text(self.render_config_text())
 
     def _send_props(self, node_id: int, values: Mapping[str, float]) -> None:

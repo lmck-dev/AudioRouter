@@ -73,14 +73,34 @@ belongs in the engine, never in the CLI.
   a filter's steepness) -> restart. Measured: a live change lands in ~28 ms with
   the same pid. Anything that changes a node's `config` is a shape change, which
   is why the delay's `max-delay` is sized for the knob's whole range.
-- **Every effect sits behind a bypass switch** (`effects._with_bypass`): per
-  side, a `copy` fans the input out to the effect and to a `mixer`'s `In 2`;
-  the effect feeds `In 1`. On/off is then only `Gain 1`/`Gain 2` - a live
-  change - and is faded over ~50 ms (`SWITCH_FADE_*`). The fade is coarse:
-  each step is a `pw-cli` process, and only 2-3 steps land (measured
-  -29 -> -16 -> -13 -> -9 dB). A switched-off effect still uses CPU. An
-  interactive `pw-cli` fed over stdin does NOT exit when stdin closes - it hung
-  a test for two minutes.
+- **Every effect sits behind a crossfading switch** (`effects._with_bypass`,
+  15 Sep 2026): wet = effect x `ramp`, dry = input x (1 - ramp), summed. The
+  builtin `ramp` is AUDIO rate and moves toward `Stop` from wherever it is, so
+  on/off is ONE live change (`sw<i>_target:Add` 1/0) and the 50 ms linear fade
+  (`SWITCH_FADE_S`) runs in the audio thread. Measured against the old
+  stepped `pw-cli` fade: sample-to-sample jumps 1.00x a clean sine (old
+  3.2-6.3x, i.e. clicks), 10-90% in 40.0 ms as a straight line (old: 20 ms
+  stairs), a switch reversed mid-fade turns round at -13 dB with no jump, and
+  apply is ~28 ms (old ~90 ms, sleeping between steps). A switched-off effect
+  still uses CPU.
+- **A `ramp`'s controls CANNOT be set from a conf or `Props`.** Its ports declare
+  no range and filter-graph's `port_set_control_value` clamps every value to
+  the range: Start/Stop/Duration all read 0 and the switch passed only the dry
+  sound. Control LINKS bypass the clamp, so each ramp control is fed from a
+  `linear` node's `Notify` (`Control*Mult + Add`; `Add` has a range of +-10).
+  A test asserts no ramp node carries a `control` block - keep it.
+- **A ramp starts at 0**, so every new host faded dry->wet and a restart let
+  4 ms of +6 dB through (3/3 runs). One `fadeclock` ramp per chain rises
+  0 -> 50 ms and feeds every switch's Duration: a new host snaps to its state
+  in one sample. Verified: no blip on restart (3 runs), on the first sound
+  after the sink was SUSPENDED, or with the effect starting off.
+- **Lab captures: `parec --latency-msec=20` and wait before SIGINT.** Without
+  it the last ~1-2 s of a capture was missing, which read as "later switches
+  do nothing" and nearly sent the fade work down the wrong path.
+- An interactive `pw-cli` fed over stdin does NOT exit when stdin closes - it
+  hung a test for two minutes.
+- `pw-dump`'s `Props` readback did not show a live `set-param` change that was
+  audibly applied: measure the audio, do not trust the readback.
 - **Restarts are make-before-break** (`Channel.start(handover=...)`). The old
   way stopped the host first: measured, a stream fell back to the DEFAULT
   OUTPUT for ~110 ms - unprocessed sound on the speakers, even from the
@@ -334,7 +354,7 @@ generated from each plugin's ports: switches, lists, sliders (logarithmic where
 the plugin says so), linear gains shown in dB. CLI: `effects --plugins [search]`,
 `effects --plugin URI`, `effect add <slug> lv2 --plugin URI k=v`.
 
-**VST is phase 2 and cannot go through filter-chain** - PipeWire has no VST
+**VST is a FUTURE POSSIBILITY, not planned** (owner, 15 Sep 2026: the LV2 set is rich enough, and anything missing can be built ourselves, as with the noise suppression). It cannot go through filter-chain - PipeWire has no VST
 loader. The agreed route is a Carla host per channel (`Carla`, `Carla-vst` in
 the Nobara repos): sink -> Carla -> device, VST block at the end of the chain,
 each plugin's own editor window, state in a Carla project file.

@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 
 from audiorouter.effects import (
+    SWITCH_FADE_S,
     Effect,
     EffectError,
     db_to_linear,
@@ -81,19 +82,71 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(chain.outputs, ("sw0_switch_l:Out", "sw0_switch_r:Out"))
         for side in "lr":
             self.assertIn({"output": f"sw0_in_{side}:Out", "input": f"gain0_{side}:In 1"}, chain.links)
-            self.assertIn({"output": f"sw0_in_{side}:Out", "input": f"sw0_switch_{side}:In 2"}, chain.links)
-            self.assertIn({"output": f"gain0_{side}:Out", "input": f"sw0_switch_{side}:In 1"}, chain.links)
+            self.assertIn({"output": f"gain0_{side}:Out", "input": f"sw0_wet_{side}:In 1"}, chain.links)
+            self.assertIn({"output": f"sw0_in_{side}:Out", "input": f"sw0_dry_{side}:In 1"}, chain.links)
+            self.assertIn({"output": f"sw0_wet_{side}:Out", "input": f"sw0_switch_{side}:In 1"}, chain.links)
+            self.assertIn({"output": f"sw0_dry_{side}:Out", "input": f"sw0_switch_{side}:In 2"}, chain.links)
 
-    def test_an_effect_that_is_on_passes_only_the_processed_sound(self):
-        controls = render_chain([Effect("gain")]).controls()
-        self.assertEqual((controls["sw0_switch_l:Gain 1"], controls["sw0_switch_l:Gain 2"]), (1.0, 0.0))
+    def test_one_audio_rate_fade_drives_both_sides_and_the_dry_gain_is_its_complement(self):
+        # The dry gain is 1 - fade, so the two always add to exactly 1, and one
+        # ramp for both sides means left and right cannot drift apart.
+        chain = render_chain([Effect("gain")])
+        nodes = {n["name"]: n for n in chain.nodes}
+        self.assertEqual(nodes["sw0_fade"]["label"], "ramp")
+        self.assertEqual(nodes["sw0_drygain"]["label"], "linear")
+        self.assertEqual(nodes["sw0_drygain"]["control"], {"Mult": -1.0, "Add": 1.0})
+        self.assertIn({"output": "sw0_fade:Out", "input": "sw0_drygain:In"}, chain.links)
+        for side in "lr":
+            self.assertIn({"output": "sw0_fade:Out", "input": f"sw0_wet_{side}:In 2"}, chain.links)
+            self.assertIn({"output": "sw0_drygain:Out", "input": f"sw0_dry_{side}:In 2"}, chain.links)
+
+    def test_no_ramp_has_controls_of_its_own_because_they_would_be_clamped_to_zero(self):
+        # A ramp's ports declare no range and filter-graph clamps set values to
+        # it: measured, Start/Stop/Duration all read 0 and the fade never ran.
+        chain = render_chain([Effect("gain"), Effect("gain", enabled=False)])
+        ramps = [n for n in chain.nodes if n["label"] == "ramp"]
+        self.assertEqual(len(ramps), 3)  # one per switch, one clock
+        for ramp in ramps:
+            self.assertNotIn("control", ramp)
+            for port in ("Start", "Stop", "Duration (s)"):
+                feeds = [l for l in chain.links if l["input"] == f"{ramp['name']}:{port}"]
+                self.assertEqual(len(feeds), 1, f"{ramp['name']}:{port}")
+
+    def test_a_switch_fades_toward_its_target_from_the_opposite_end(self):
+        chain = render_chain([Effect("gain")])
+        nodes = {n["name"]: n for n in chain.nodes}
+        self.assertEqual(nodes["sw0_target"]["control"], {"Mult": 0.0, "Add": 1.0})
+        self.assertEqual(nodes["sw0_from"]["control"], {"Mult": -1.0, "Add": 1.0})
+        self.assertIn({"output": "sw0_target:Notify", "input": "sw0_fade:Stop"}, chain.links)
+        self.assertIn({"output": "sw0_target:Notify", "input": "sw0_from:Control"}, chain.links)
+        self.assertIn({"output": "sw0_from:Notify", "input": "sw0_fade:Start"}, chain.links)
+
+    def test_one_clock_starts_every_fade_at_zero_length_so_a_new_host_is_already_settled(self):
+        # A ramp starts at 0: without this, a restart let 4 ms of +6 dB through.
+        chain = render_chain([Effect("gain"), Effect("highpass", {"poles": 1})])
+        nodes = {n["name"]: n for n in chain.nodes}
+        self.assertEqual([n["name"] for n in chain.nodes].count("fadeclock"), 1)
+        self.assertEqual(nodes["fadeclock"]["label"], "ramp")
+        self.assertEqual(nodes["fadeclock_zero"]["control"], {"Mult": 0.0, "Add": 0.0})
+        self.assertEqual(nodes["fadeclock_len"]["control"], {"Mult": 0.0, "Add": SWITCH_FADE_S})
+        self.assertGreater(SWITCH_FADE_S, 0)
+        self.assertIn({"output": "fadeclock_zero:Notify", "input": "fadeclock:Start"}, chain.links)
+        self.assertIn({"output": "fadeclock_len:Notify", "input": "fadeclock:Stop"}, chain.links)
+        self.assertIn({"output": "fadeclock_len:Notify", "input": "fadeclock:Duration (s)"}, chain.links)
+        for index in (0, 1):
+            self.assertIn({"output": "fadeclock:Current", "input": f"sw{index}_fade:Duration (s)"}, chain.links)
+
+    def test_an_empty_chain_has_no_clock(self):
+        self.assertFalse(any(n["label"] == "ramp" for n in render_chain([]).nodes))
+
+    def test_an_effect_that_is_on_targets_the_processed_sound(self):
+        self.assertEqual(render_chain([Effect("gain")]).controls()["sw0_target:Add"], 1.0)
 
     def test_a_switched_off_effect_stays_in_the_graph_passing_only_the_dry_sound(self):
         on = render_chain([Effect("gain")])
         off = render_chain([Effect("gain", enabled=False)])
         self.assertEqual([n["name"] for n in on.nodes], [n["name"] for n in off.nodes])
-        controls = off.controls()
-        self.assertEqual((controls["sw0_switch_r:Gain 1"], controls["sw0_switch_r:Gain 2"]), (0.0, 1.0))
+        self.assertEqual(off.controls()["sw0_target:Add"], 0.0)
 
     def test_a_switched_off_effect_that_cannot_run_is_left_out(self):
         with mock.patch("audiorouter.plugins.available_loaders", return_value=frozenset({"builtin"})):

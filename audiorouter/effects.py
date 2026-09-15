@@ -594,37 +594,116 @@ def make_effect(kind: str, params: Mapping[str, Any] | None = None, plugin: str 
     return Effect(kind=kind, params=spec.normalise(params), plugin=plugin if kind == PLUGIN_KIND else "")
 
 
-def _with_bypass(fragment: Fragment, name: str, enabled: bool) -> Fragment:
-    """Wrap an effect in a switch that can be flipped on the running channel.
+#: How long switching an effect on or off crossfades between it and the dry
+#: sound. Long enough not to click on anything sustained, short enough to feel
+#: instant.
+SWITCH_FADE_S = 0.05
 
-    Each side's input is fanned out to the effect and to a mixer's second
-    input; the effect's output feeds the mixer's first. Switching the effect on
-    or off is then only a change of the two mixer gains - a live control
-    change - instead of a new graph and a restarted channel. Measured: a -20 dB
-    effect read -29.03 dB on and -9.03 dB bypassed, in the same process.
+
+def _with_bypass(fragment: Fragment, name: str, enabled: bool, clock: str) -> Fragment:
+    """Wrap an effect in a switch that crossfades on the running channel.
+
+    Each side's input is fanned out to the effect and to a dry path; the two
+    are multiplied by opposite gains and summed:
+
+        wet = effect * fade          dry = input * (1 - fade)
+
+    `fade` is a builtin `ramp`, which is AUDIO rate: it moves toward `Stop` a
+    little every sample, from wherever it is now, and holds there. `Start` only
+    sets the slope and the limits. The fade therefore runs inside the audio
+    thread, and flipping the switch back mid-fade reverses from the current
+    point with no jump. The dry gain is `linear(fade * -1 + 1)`, so the two
+    gains always add to exactly 1.
+
+    **A ramp's controls cannot be set directly.** Its ports declare no range,
+    and filter-graph clamps every value it sets to the port's range, so a conf
+    or a live `Props` change reads back as 0 (PipeWire 1.6.8, measured). Control
+    LINKS bypass that clamp, so each ramp control is fed from a `linear` node's
+    `Notify` output (`Control * Mult + Add`; `Add` has a real range):
+
+        target: Add = 1 on / 0 off  -> ramp Stop, and -> from
+        from:   1 - target          -> ramp Start
+        clock   (see `_fade_clock`) -> ramp Duration
+
+    Switching is then ONE live control change, `<name>_target:Add`. One ramp
+    serves both sides, so left and right can never drift apart.
+
+    A ramp starts at 0, which for an effect that is on means a fade from dry
+    to wet whenever a host starts. Measured: a restart's handover moves the
+    stream in under 50 ms and 4 ms of +6 dB got through. So the duration comes
+    from `clock`, which is 0 when the host starts - the switch snaps to its
+    state within one sample - and reaches `SWITCH_FADE_S` 50 ms later.
     """
     nodes = list(fragment.nodes)
     links = list(fragment.links)
+    fade = f"{name}_fade"
+    dry_gain = f"{name}_drygain"
+    target = f"{name}_target"
+    origin = f"{name}_from"
+    nodes.extend([
+        {"type": "builtin", "name": target, "label": "linear",
+         "control": {"Mult": 0.0, "Add": 1.0 if enabled else 0.0}},
+        {"type": "builtin", "name": origin, "label": "linear",
+         "control": {"Mult": -1.0, "Add": 1.0}},
+        {"type": "builtin", "name": fade, "label": "ramp"},
+        {"type": "builtin", "name": dry_gain, "label": "linear",
+         "control": {"Mult": -1.0, "Add": 1.0}},
+    ])
+    links.extend([
+        {"output": f"{target}:Notify", "input": f"{fade}:Stop"},
+        {"output": f"{target}:Notify", "input": f"{origin}:Control"},
+        {"output": f"{origin}:Notify", "input": f"{fade}:Start"},
+        {"output": clock, "input": f"{fade}:Duration (s)"},
+        {"output": f"{fade}:Out", "input": f"{dry_gain}:In"},
+    ])
     inputs: list[str] = []
     outputs: list[str] = []
     for side, effect_in, effect_out in zip(SIDES, fragment.inputs, fragment.outputs):
         entry = f"{name}_in_{side}"
+        wet = f"{name}_wet_{side}"
+        dry = f"{name}_dry_{side}"
         switch = f"{name}_switch_{side}"
         nodes.append({"type": "builtin", "name": entry, "label": "copy"})
-        nodes.append(
-            {
-                "type": "builtin",
-                "name": switch,
-                "label": "mixer",
-                "control": {"Gain 1": 1.0 if enabled else 0.0, "Gain 2": 0.0 if enabled else 1.0},
-            }
-        )
+        nodes.append({"type": "builtin", "name": wet, "label": "mult"})
+        nodes.append({"type": "builtin", "name": dry, "label": "mult"})
+        nodes.append({"type": "builtin", "name": switch, "label": "mixer"})
         links.append({"output": f"{entry}:Out", "input": effect_in})
-        links.append({"output": f"{entry}:Out", "input": f"{switch}:In 2"})
-        links.append({"output": effect_out, "input": f"{switch}:In 1"})
+        links.append({"output": effect_out, "input": f"{wet}:In 1"})
+        links.append({"output": f"{fade}:Out", "input": f"{wet}:In 2"})
+        links.append({"output": f"{entry}:Out", "input": f"{dry}:In 1"})
+        links.append({"output": f"{dry_gain}:Out", "input": f"{dry}:In 2"})
+        links.append({"output": f"{wet}:Out", "input": f"{switch}:In 1"})
+        links.append({"output": f"{dry}:Out", "input": f"{switch}:In 2"})
         inputs.append(f"{entry}:In")
         outputs.append(f"{switch}:Out")
     return Fragment(nodes, links, (inputs[0], inputs[1]), (outputs[0], outputs[1]))
+
+
+FADE_CLOCK = "fadeclock"
+
+
+def _fade_clock() -> tuple[list[dict[str, Any]], list[dict[str, str]], str]:
+    """A control that is 0 when the host starts and `SWITCH_FADE_S` from 50 ms on.
+
+    It is itself a ramp (0 -> SWITCH_FADE_S over SWITCH_FADE_S), whose
+    `Current` control output feeds every switch's fade duration. Its own
+    controls come through `linear` nodes for the same reason as the switches'.
+    With a duration of 0 a ramp's step is +-infinity and it clamps straight to
+    `Stop`; Start and Stop always differ, so the step is never 0/0.
+    """
+    zero, length = f"{FADE_CLOCK}_zero", f"{FADE_CLOCK}_len"
+    nodes = [
+        {"type": "builtin", "name": zero, "label": "linear", "control": {"Mult": 0.0, "Add": 0.0}},
+        {"type": "builtin", "name": length, "label": "linear",
+         "control": {"Mult": 0.0, "Add": SWITCH_FADE_S}},
+        {"type": "builtin", "name": FADE_CLOCK, "label": "ramp"},
+    ]
+    links = [
+        {"output": f"{zero}:Notify", "input": f"{FADE_CLOCK}:Start"},
+        {"output": f"{length}:Notify", "input": f"{FADE_CLOCK}:Stop"},
+        {"output": f"{length}:Notify", "input": f"{FADE_CLOCK}:Duration (s)"},
+    ]
+    return nodes, links, f"{FADE_CLOCK}:Current"
 
 
 def render_chain(effects: list[Effect]) -> Chain:
@@ -649,12 +728,11 @@ def render_chain(effects: list[Effect]) -> Chain:
             ("passthrough_l:Out", "passthrough_r:Out"),
         )
 
-    nodes: list[dict[str, Any]] = []
-    links: list[dict[str, str]] = []
+    nodes, links, clock = _fade_clock()
     first_in: tuple[str, str] | None = None
     previous_out: tuple[str, str] | None = None
     for index, effect in enumerate(active):
-        fragment = _with_bypass(effect.render(index), f"sw{index}", effect.enabled)
+        fragment = _with_bypass(effect.render(index), f"sw{index}", effect.enabled, clock)
         nodes.extend(fragment.nodes)
         links.extend(fragment.links)
         if previous_out is None:
