@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - PyQt6 is optional for the engine
 from audiorouter.channels import Channel
 from audiorouter.config import Config
 from audiorouter.effects import Effect
-from audiorouter.engine import Engine
+from audiorouter.engine import ApplyReport, Engine
 from audiorouter.pwgraph import Graph
 
 from .test_engine import live_graph
@@ -51,6 +51,9 @@ class GuiTestCase(unittest.TestCase):
             mock.patch("audiorouter.gui.monitor.GraphBridge.start", lambda self: False),
             mock.patch("audiorouter.gui.main.MainWindow._start_auto_router", lambda self: None),
             mock.patch("audiorouter.install.login_service_enabled", return_value=False),
+            # Closing the window runs any apply still queued, and each test's
+            # own apply mock has ended by then: never start real channel hosts.
+            mock.patch.object(Engine, "apply", return_value=ApplyReport()),
         ):
             target.start()
             self.addCleanup(target.stop)
@@ -66,6 +69,10 @@ class GuiTestCase(unittest.TestCase):
 
         self.window = MainWindow(self.engine)
         self.addCleanup(self.window.close)
+
+    def settle(self):
+        """Wait for the apply worker and deliver what it reported."""
+        self.window.applier.flush()
 
 
 class WindowTest(GuiTestCase):
@@ -111,11 +118,10 @@ class WindowTest(GuiTestCase):
         self.assertTrue(self.window._pending_apply.isActive())
 
     def test_the_scheduled_apply_eventually_runs(self):
-        from audiorouter.engine import ApplyReport
-
         with mock.patch.object(Engine, "apply", return_value=ApplyReport()) as apply:
             self.window._config_edited()
             self.window.apply_now()
+            self.settle()
         apply.assert_called_once()
 
     def test_moving_a_knob_updates_the_line_in_the_chain(self):
@@ -198,6 +204,7 @@ class WindowTest(GuiTestCase):
         report = ApplyReport(actions=[Action("tune", "speakers")])
         with mock.patch.object(Engine, "apply", return_value=report):
             self.window.apply_now()
+            self.settle()
         self.window.refresh()  # a graph event, as the live change itself causes
         self.assertIs(self.window.effects_panel.form._boxes["frequency"], box)
         self.assertEqual(Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 300)
@@ -218,6 +225,132 @@ class WindowTest(GuiTestCase):
              mock.patch.object(Engine, "delete_channel") as delete:
             self.window._remove_channel()
         delete.assert_not_called()
+
+
+class ApplyWorkerTest(GuiTestCase):
+    """Applying runs off the GUI thread; the window stays usable meanwhile."""
+
+    def blocking_apply(self, report=None):
+        """An apply that waits for `release`, recording what each run saw."""
+        import threading
+
+        self.release = threading.Event()
+        self.entered = threading.Event()
+        self.runs = []
+
+        def apply(engine, *args, **kwargs):
+            self.runs.append({
+                "thread": threading.current_thread(),
+                "frequency": engine.config.channel("speakers").effects[0].params["frequency"],
+                "config": engine.config,
+            })
+            self.entered.set()
+            self.assertTrue(self.release.wait(5), "apply was never released")
+            return report or ApplyReport()
+
+        # A plain function on the class, so each run receives its own engine.
+        patcher = mock.patch.object(Engine, "apply", new=apply)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.release.set)  # never leave a worker hanging
+
+    def test_apply_runs_on_another_thread_and_returns_at_once(self):
+        import threading
+
+        self.blocking_apply()
+        self.window.apply_now()  # would hang here if it ran on this thread
+        self.assertTrue(self.entered.wait(2))
+        self.assertTrue(self.window.applier.busy)
+        self.assertIsNot(self.runs[0]["thread"], threading.main_thread())
+        self.release.set()
+        self.settle()
+        self.assertFalse(self.window.applier.busy)
+
+    def test_the_window_can_be_edited_while_an_apply_runs(self):
+        self.blocking_apply()
+        self.window.channel_list.setCurrentRow(0)
+        self.window.apply_now()
+        self.assertTrue(self.entered.wait(2))
+        self.window.effects_panel.form._boxes["frequency"].spin.setValue(222)
+        self.window.refresh()
+        self.assertEqual(Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 222)
+        self.release.set()
+        self.settle()
+
+    def test_the_worker_applies_a_copy_that_edits_cannot_change_under_it(self):
+        self.blocking_apply()
+        self.window.channel_list.setCurrentRow(0)
+        self.window.apply_now()
+        self.assertTrue(self.entered.wait(2))
+        self.window.effects_panel.form._boxes["frequency"].spin.setValue(333)
+        running = self.runs[0]["config"]
+        self.assertIsNot(running, self.engine.config)
+        self.assertEqual(running.channel("speakers").effects[0].params["frequency"], 90)
+        self.release.set()
+        self.settle()
+
+    def test_edits_during_an_apply_become_exactly_one_more_with_the_newest_settings(self):
+        self.blocking_apply()
+        self.window.channel_list.setCurrentRow(0)
+        box = self.window.effects_panel.form._boxes["frequency"]
+        self.window.apply_now()
+        self.assertTrue(self.entered.wait(2))
+        for value in (150, 160, 170):
+            box.spin.setValue(value)
+            self.window.apply_now()
+        self.release.set()
+        self.settle()
+        self.assertEqual([run["frequency"] for run in self.runs], [90, 170])
+
+    def test_a_restart_shows_a_busy_cursor_until_it_is_over(self):
+        from PyQt6.QtGui import QGuiApplication
+
+        self.blocking_apply()
+        self.window._config_edited()
+        self.window.apply_now()
+        self.assertTrue(self.entered.wait(2))
+        self.assertIsNotNone(QGuiApplication.overrideCursor())
+        self.assertEqual(self.window.status_label.text(), "Updating...")
+        self.window.refresh()  # a graph event mid-restart must not clear it
+        self.assertEqual(self.window.status_label.text(), "Updating...")
+        self.release.set()
+        self.settle()
+        self.assertIsNone(QGuiApplication.overrideCursor())
+        self.assertNotEqual(self.window.status_label.text(), "Updating...")
+
+    def test_a_failure_on_the_worker_is_shown_in_the_window(self):
+        from audiorouter.engine import EngineError
+
+        with mock.patch.object(Engine, "apply", side_effect=EngineError("pipewire is gone")), \
+             mock.patch("audiorouter.gui.main.QMessageBox.warning") as warning:
+            self.window.apply_now()
+            self.settle()
+        warning.assert_called_once()
+        self.assertIn("pipewire is gone", warning.call_args.args[2])
+        self.assertFalse(self.window.applier.busy)
+
+    def test_an_unexpected_error_is_shown_too_and_does_not_wedge_the_worker(self):
+        with mock.patch.object(Engine, "apply", side_effect=KeyError("oops")), \
+             mock.patch("audiorouter.gui.main.QMessageBox.warning") as warning:
+            self.window.apply_now()
+            self.settle()
+        self.assertIn("KeyError", warning.call_args.args[2])
+        with mock.patch.object(Engine, "apply", return_value=ApplyReport()) as apply:
+            self.window.apply_now()
+            self.settle()
+        apply.assert_called_once()
+
+    def test_closing_finishes_the_running_apply_and_the_queued_edit(self):
+        self.blocking_apply()
+        self.window.channel_list.setCurrentRow(0)
+        self.window.apply_now()
+        self.assertTrue(self.entered.wait(2))
+        self.window.effects_panel.form._boxes["frequency"].spin.setValue(444)
+        self.assertTrue(self.window._pending_apply.isActive())
+        self.release.set()
+        self.window.close()
+        self.assertEqual([run["frequency"] for run in self.runs], [90, 444])
+        self.assertFalse(self.window.applier.busy)
 
 
 class StreamsTest(GuiTestCase):

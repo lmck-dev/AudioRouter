@@ -266,9 +266,22 @@ asks `Engine` to make reality match; it decides nothing about audio itself.
   nothing typed is lost) and `MainWindow._pending_apply` decides when to restart
   audio. An earlier version also debounced inside the effects panel, which made
   every change take 1.3s to be heard.
-- **`Engine.apply()` blocks the GUI thread** while it starts processes and waits
-  for each sink (up to 8s in the worst case, ~0.4s in practice). It runs under a
-  busy cursor. Moving it to a worker thread is the obvious next robustness step.
+- **`Engine.apply()` runs on a worker thread** (`gui/applier.py`, 15 Sep 2026).
+  It used to block the window for a whole restart (up to 8 s). Each run
+  applies a *copy* of the config (`to_dict`/`from_dict`) inside its own
+  `Engine`, because the panels edit `Channel`/`Effect` objects in place. Only
+  one run at a time; edits made meanwhile fold into ONE follow-up with the
+  newest settings. Closing the window runs any queued edit and waits (never two
+  hosts for one channel). Measured live in the lab: `apply_now()` returns in
+  0.2 ms, a 115 ms restart ran with the event loop never stalled over 11 ms.
+- **A queued call to a plain Python method goes through a hidden PyQt proxy
+  object**, so `QCoreApplication.sendPostedEvents(receiver)` never delivers it.
+  `Applier._on_done` is a `@pyqtSlot` for that reason, or `flush()` on close
+  silently skips the result.
+- **GUI tests: `GuiTestCase` mocks `Engine.apply` for the whole test**, because
+  closing the window (in cleanup, after a test's own mock has ended) runs any
+  queued apply, which would start real channel hosts. Call `self.settle()`
+  after `apply_now()` before asserting on results.
 - **The device list is hardware only.** `Graph.devices()` filters on `device.id`,
   so a virtual sink a channel targets is not in the list; the panel still shows
   it and asks `device_present` before calling anything "not connected".

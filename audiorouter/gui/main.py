@@ -7,7 +7,8 @@ edits the configuration and asks the engine to make reality match.
 
 Edits apply themselves. A channel has to be restarted to change its effects, so
 changes are collected for a moment and applied in one go rather than on every
-keystroke, and streams are put back where they were afterwards.
+keystroke, and streams are put back where they were afterwards. The apply runs
+on a worker thread (`applier.py`), so the window never freezes while it does.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from ..effects import EffectError
 from ..engine import AutoRouter, Engine, EngineError, daemon_pid
 from ..pwgraph import PwError
 from ..routing import RoutingError
+from .applier import Applier
 from .channel_panel import ChannelPanel
 from .effects_panel import EffectsPanel
 from .monitor import GraphBridge
@@ -83,6 +85,14 @@ class MainWindow(QMainWindow):
         self._pending_apply.setSingleShot(True)
         self._pending_apply.setInterval(APPLY_DELAY_MS)
         self._pending_apply.timeout.connect(self.apply_now)
+        self._structural_pending = False
+
+        self.applier = Applier(engine, USER_ERRORS, self)
+        self.applier.started.connect(self._apply_started)
+        self.applier.finished.connect(self._apply_finished)
+        self.applier.failed.connect(self._apply_failed)
+        self.applier.idle.connect(self._apply_idle)
+        self._busy_cursor = False
 
         # Volume goes straight to the sink, never through apply(); this only
         # batches a slider drag into a few wpctl calls a second.
@@ -232,6 +242,10 @@ class MainWindow(QMainWindow):
             self._set_status("No output devices - is anything plugged in?", warn=True)
         elif status["problems"]:
             self._set_status(status["problems"][0], warn=True)
+        elif self.applier.busy or self._pending_apply.isActive():
+            # A restart produces graph events mid-way; those refreshes must not
+            # announce that everything is settled while it is still happening.
+            self._set_status("Updating...")
         else:
             self._set_status("")
 
@@ -369,26 +383,38 @@ class MainWindow(QMainWindow):
             self._pending_apply.start(TUNE_DELAY_MS)
 
     def apply_now(self) -> None:
+        """Hand the current settings to the worker; results arrive as signals."""
         self._pending_apply.stop()
-        structural = getattr(self, "_structural_pending", False)
-        self._structural_pending = False
+        structural, self._structural_pending = self._structural_pending, False
+        self.applier.request(structural)
+
+    def _apply_started(self, structural: bool) -> None:
         # Only a restart is slow enough to deserve a busy cursor; flashing one
         # sixteen times a second during a slider drag would be worse than none.
-        if structural:
+        # BusyCursor, not WaitCursor: the window is still usable.
+        if structural and not self._busy_cursor:
             QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
-        try:
-            report = self.engine.apply()
-        except USER_ERRORS as exc:
-            self._error("Could not update the audio channels", str(exc))
-            return
-        finally:
-            if structural:
-                QGuiApplication.restoreOverrideCursor()
+            self._busy_cursor = True
+
+    def _apply_finished(self, report, structural: bool) -> None:
         if report.failures:
             self._set_status(report.failures[0].describe(), warn=True)
         elif not structural and not report.restarted:
             return  # knobs changed in place: nothing else on screen is different
         self.refresh()
+
+    def _apply_failed(self, message: str, expected: bool) -> None:
+        title = "Could not update the audio channels"
+        if not expected:
+            title += " (unexpected error)"
+        self._error(title, message)
+
+    def _apply_idle(self) -> None:
+        if self._busy_cursor:
+            QGuiApplication.restoreOverrideCursor()
+            self._busy_cursor = False
+        if self.status_label.text() == "Updating...":
+            self.refresh()
 
     def _add_channel(self) -> None:
         kinds = [NEW_OUTPUT, NEW_INPUT]
@@ -544,6 +570,11 @@ class MainWindow(QMainWindow):
         self._set_status(detail, warn=True)
 
     def closeEvent(self, event) -> None:
+        # Never leave a restart half done (two hosts for one channel), and
+        # never drop an edit that is saved but not yet heard.
+        if self._pending_apply.isActive():
+            self.apply_now()
+        self.applier.flush()
         self._stop_auto_router()
         self.bridge.stop()
         super().closeEvent(event)
