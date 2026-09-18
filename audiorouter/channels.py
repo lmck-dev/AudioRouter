@@ -48,6 +48,20 @@ KINDS = (OUTPUT, INPUT)
 #: that only recording apps hear.
 NOWHERE = "@nowhere"
 
+#: WebRTC echo cancellation, from pipewire-libs (every PipeWire install has it).
+AEC_LIBRARY = "aec/libspa-aec-webrtc"
+#: Noise suppression and gain control are the channel's own effects' job
+#: (RNNoise, a compressor), and doubling them up only fights those. Measured on
+#: the voice mic 18 Sep 2026 with these settings: a phrase played through the
+#: speakers scored 1.00 for a wake-word detector on the raw mic, 0.00 here.
+AEC_ARGS = {
+    "webrtc.high_pass_filter": True,
+    "webrtc.noise_suppression": False,
+    "webrtc.gain_control": False,
+    "webrtc.extended_filter": True,
+    "webrtc.delay_agnostic": True,
+}
+
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 #: Minimal module set a standalone filter-chain host needs. Verified working;
@@ -223,6 +237,9 @@ class Channel:
     recordable: bool = False
     #: Input channels: the slug of an output channel to play the sound through.
     listen: str = ""
+    #: Input channels: subtract whatever the speakers are playing from the mic
+    #: before the effects, so a call does not hear your video, music or game.
+    echo_cancel: bool = False
 
     def __post_init__(self) -> None:
         validate_slug(self.slug)
@@ -236,6 +253,7 @@ class Channel:
                 raise ChannelError(f"input channel {self.slug!r} needs something to record from")
         else:
             self.listen = ""
+            self.echo_cancel = False
             if self.device == NOWHERE:
                 # Playing nowhere only makes sense as a virtual cable.
                 self.recordable = True
@@ -273,6 +291,11 @@ class Channel:
         return f"{NODE_PREFIX}{self.slug}_out"
 
     @property
+    def echo_cancel_name(self) -> str:
+        """An input channel's echo-cancelled microphone, which its effects read."""
+        return f"{NODE_PREFIX}{self.slug}_ec"
+
+    @property
     def listen_name(self) -> str:
         """An input channel's stream playing into the channel it listens through."""
         return f"{NODE_PREFIX}{self.slug}_listen"
@@ -290,6 +313,7 @@ class Channel:
         }
         if self.is_input:
             data["listen"] = self.listen
+            data["echo_cancel"] = self.echo_cancel
         else:
             data["recordable"] = self.recordable
         return data
@@ -305,6 +329,7 @@ class Channel:
             kind=str(data.get("kind", OUTPUT)),
             recordable=bool(data.get("recordable", False)),
             listen=str(data.get("listen", "")),
+            echo_cancel=bool(data.get("echo_cancel", False)),
         )
 
     # -- rendering --------------------------------------------------------
@@ -340,7 +365,14 @@ class Channel:
                 "node.passive": True,
                 **stamp,
             }
-            if self.device:
+            if self.echo_cancel:
+                # mic -> echo canceller -> effects. The canceller is a second
+                # module in this same process, so it starts, stops and restarts
+                # with the channel and needs no service of its own.
+                modules.insert(0, self._echo_canceller(stamp))
+                args["capture.props"]["target.object"] = self.echo_cancel_name
+                args["capture.props"][NO_FALLBACK] = True
+            elif self.device:
                 args["capture.props"]["target.object"] = self.device
                 # A chosen mic that is unplugged must not be silently swapped
                 # for whichever other microphone happens to be the default.
@@ -403,6 +435,46 @@ class Channel:
                 "support.*": "support/libspa-support",
             },
             "context.modules": [*_CONTEXT_MODULES, *modules],
+        }
+
+    def _echo_canceller(self, stamp: dict[str, Any]) -> dict[str, Any]:
+        """PipeWire's echo-cancel module in monitor mode: the reference is the
+        monitor of the default output, so nothing is re-routed and no extra
+        sink appears. What reaches the speakers is subtracted from the mic."""
+        capture: dict[str, Any] = {
+            "node.name": f"{self.echo_cancel_name}_mic",
+            "node.description": f"{self.name} (microphone, before echo cancelling)",
+            "node.passive": True,
+            **stamp,
+        }
+        if self.device:
+            capture["target.object"] = self.device
+            capture[NO_FALLBACK] = True
+        return {
+            "name": "libpipewire-module-echo-cancel",
+            "args": {
+                "library.name": AEC_LIBRARY,
+                "monitor.mode": True,
+                "audio.channels": 1,
+                "audio.position": ["MONO"],
+                "aec.args": dict(AEC_ARGS),
+                "capture.props": capture,
+                "source.props": {
+                    "node.name": self.echo_cancel_name,
+                    "node.description": f"{self.name} (echo cancelled, internal)",
+                    # Never the default microphone: apps should pick the
+                    # channel's own virtual mic, which has the effects on it.
+                    "priority.session": 1,
+                    "priority.driver": 1,
+                    **stamp,
+                },
+                "sink.props": {
+                    "node.name": f"{self.echo_cancel_name}_ref",
+                    "node.description": f"{self.name} (echo reference)",
+                    "node.passive": True,
+                    **stamp,
+                },
+            },
         }
 
     def render_config_text(self) -> str:
@@ -687,6 +759,7 @@ class Channel:
             "kind": self.kind,
             "device": self.device,
             "listen": self.listen,
+            "echo_cancel": self.echo_cancel,
             "recordable": self.recordable,
             "recording_name": self.recording_name,
             "device_present": self.device_present(graph),

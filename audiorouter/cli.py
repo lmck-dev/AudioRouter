@@ -124,7 +124,7 @@ def cmd_status(engine: Engine, args: argparse.Namespace) -> int:
     for channel in status["channels"]:
         state = "running" if channel["running"] else ("off" if not channel["enabled"] else "stopped")
         if channel.get("kind") == "input":
-            state = f"input, {state}"
+            state = f"input, {'echo-cancelled, ' if channel.get('echo_cancel') else ''}{state}"
         elif channel.get("recordable"):
             state = f"cable, {state}"
         if channel["needs_restart"]:
@@ -197,6 +197,8 @@ def cmd_channel_add(engine: Engine, args: argparse.Namespace) -> int:
         engine.set_recordable(channel.slug, True)
     if args.listen:
         engine.set_listen(channel.slug, args.listen)
+    if args.echo_cancel:
+        engine.set_echo_cancel(channel.slug, True)
     default = "(default input)" if channel.is_input else "(default sink)"
     print(f"added {channel.kind} channel {channel.slug} ({channel.name}) -> {channel.device or default}")
     if channel.recording_name:
@@ -217,13 +219,16 @@ def cmd_channel_set(engine: Engine, args: argparse.Namespace) -> int:
         engine.set_recordable(args.slug, args.recordable)
     if args.listen is not None:
         engine.set_listen(args.slug, "" if args.listen.lower() == "off" else args.listen)
+    if args.echo_cancel is not None:
+        engine.set_echo_cancel(args.slug, args.echo_cancel == "on")
     if args.name is not None:
         engine.rename_channel(args.slug, args.name)
     if args.enabled is not None:
         engine.set_enabled(args.slug, args.enabled)
     channel = engine.channel(args.slug)
     print(f"{channel.slug}: {channel.name} -> {channel.device or '(default sink)'}"
-          f" {'enabled' if channel.enabled else 'disabled'}")
+          f" {'enabled' if channel.enabled else 'disabled'}"
+          f"{', echo cancelled' if channel.echo_cancel else ''}")
     return 0
 
 
@@ -432,6 +437,8 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--input", action="store_true", help="a microphone or line-in channel")
     add.add_argument("--recordable", action="store_true", help="output: apps can record it (virtual cable)")
     add.add_argument("--listen", metavar="OUTPUT", help="input: also play it through this output channel")
+    add.add_argument("--echo-cancel", action="store_true",
+                     help="input: remove what the speakers play from the mic")
     add.set_defaults(func=cmd_channel_add)
     remove = channel.add_parser("rm", help="delete a channel")
     remove.add_argument("slug")
@@ -445,6 +452,8 @@ def build_parser() -> argparse.ArgumentParser:
     change.add_argument("--recordable", dest="recordable", action="store_true", default=None)
     change.add_argument("--not-recordable", dest="recordable", action="store_false")
     change.add_argument("--listen", metavar="OUTPUT", help="input: an output channel, or 'off'")
+    change.add_argument("--echo-cancel", choices=("on", "off"), default=None,
+                        help="input: remove what the speakers play from the mic")
     change.set_defaults(func=cmd_channel_set)
     volume = channel.add_parser("volume", help="set a running channel's volume")
     volume.add_argument("slug")

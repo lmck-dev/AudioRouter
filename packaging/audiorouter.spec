@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        Apache-2.0
@@ -90,5 +90,8 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/applications/audiorouter.desktop
 
 %changelog
+* Fri Sep 18 2026 lmck-dev <lmck.dev@gmail.com> - 0.2.0-1
+- Echo cancellation per input channel: keep what the speakers play out of the mic
+
 * Tue Sep 15 2026 lmck-dev <lmck.dev@gmail.com> - 0.1.0-1
 - First package

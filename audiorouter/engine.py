@@ -241,6 +241,16 @@ class Engine:
         self.save()
         return channel
 
+    def set_echo_cancel(self, slug: str, on: bool) -> Channel:
+        """Subtract what the speakers play from an input channel's mic. A shape
+        change: the channel restarts on the next apply."""
+        channel = self.config.channel(slug)
+        if not channel.is_input:
+            raise EngineError(f"channel {slug!r} is an output; echo cancelling is for microphones")
+        channel.echo_cancel = bool(on)
+        self.save()
+        return channel
+
     def rename_channel(self, slug: str, name: str) -> Channel:
         channel = self.config.channel(slug)
         channel.name = name or channel.name

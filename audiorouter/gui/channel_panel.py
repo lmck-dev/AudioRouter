@@ -62,6 +62,13 @@ class ChannelPanel(QGroupBox):
         self.recordable.toggled.connect(self._recordable_toggled)
         self.listen = QComboBox(self)
         self.listen.activated.connect(self._listen_chosen)
+        self.echo_cancel = QCheckBox("Echo cancellation (keep the speakers out of this mic)", self)
+        self.echo_cancel.setToolTip(
+            "Subtracts whatever your speakers are playing - a video, music, a game - from "
+            "this microphone before its effects, so a call hears you and not them. "
+            "Not needed with headphones."
+        )
+        self.echo_cancel.toggled.connect(self._echo_cancel_toggled)
         self.hint = QLabel(self)
         self.hint.setWordWrap(True)
         self.enabled = QCheckBox("Switched on", self)
@@ -90,6 +97,7 @@ class ChannelPanel(QGroupBox):
         self.form.addRow("Plays through", self.device)
         self.form.addRow("", self.recordable)
         self.form.addRow("Listen through", self.listen)
+        self.form.addRow("", self.echo_cancel)
         self.form.addRow("", self.hint)
         self.form.addRow("", self.enabled)
         self.form.addRow("", self.status)
@@ -104,6 +112,7 @@ class ChannelPanel(QGroupBox):
             label.setText("Records from" if is_input else "Plays through")
         self.form.setRowVisible(self.recordable, channel is not None and not is_input)
         self.form.setRowVisible(self.listen, is_input)
+        self.form.setRowVisible(self.echo_cancel, is_input)
 
     def set_outputs(self, outputs: list[tuple[str, str]]) -> None:
         """The output channels an input can be listened through: (slug, name)."""
@@ -180,6 +189,10 @@ class ChannelPanel(QGroupBox):
             # Playing nowhere is only useful as a cable, so it cannot be unticked.
             self.recordable.setEnabled(channel.device != NOWHERE)
         self.recordable.blockSignals(False)
+
+        self.echo_cancel.blockSignals(True)
+        self.echo_cancel.setChecked(channel is not None and channel.is_input and channel.echo_cancel)
+        self.echo_cancel.blockSignals(False)
 
         text, colour = "", theme.dim
         if channel is not None and channel.is_input:
@@ -269,6 +282,14 @@ class ChannelPanel(QGroupBox):
             return
         if on != self.channel.recordable:
             self.channel.recordable = on
+            self._sync_options()
+            self.changed.emit()
+
+    def _echo_cancel_toggled(self, on: bool) -> None:
+        if self._loading or self.channel is None or not self.channel.is_input:
+            return
+        if on != self.channel.echo_cancel:
+            self.channel.echo_cancel = on
             self._sync_options()
             self.changed.emit()
 

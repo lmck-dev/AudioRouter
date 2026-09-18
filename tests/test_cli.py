@@ -143,6 +143,17 @@ class InputCliTest(unittest.TestCase):
         self.run_cli("channel", "set", "mic", "--listen", "off")
         self.assertEqual(self.config().channel("mic").listen, "")
 
+    def test_echo_cancel_on_and_off(self):
+        code, out, err = self.run_cli("channel", "add", "mic", "--input", "--echo-cancel")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.config().channel("mic").echo_cancel)
+        code, out, err = self.run_cli("channel", "set", "mic", "--echo-cancel", "off")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(self.config().channel("mic").echo_cancel)
+        self.run_cli("channel", "set", "mic", "--echo-cancel", "on")
+        self.assertTrue(self.config().channel("mic").echo_cancel)
+        self.assertIn("echo cancelled", self.run_cli("channel", "set", "mic")[1])
+
     def test_a_cable_to_nowhere(self):
         code, out, err = self.run_cli("channel", "add", "stream", "--device", "nowhere")
         self.assertEqual(code, 0, err)

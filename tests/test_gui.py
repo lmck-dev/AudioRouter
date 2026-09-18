@@ -814,6 +814,18 @@ class InputAndCableGuiTest(GuiTestCase):
         self.assertIn('microphone called "Desk mic"', self.panel.hint.text())
         self.assertIn("(input)", self.window.channel_list.item(2).text())
 
+    def test_echo_cancellation_is_offered_for_inputs_only_and_saved(self):
+        self.select("phones")
+        self.assertFalse(self.panel.form.isRowVisible(self.panel.echo_cancel))
+        self.select("mic")
+        self.assertTrue(self.panel.form.isRowVisible(self.panel.echo_cancel))
+        self.assertFalse(self.panel.echo_cancel.isChecked())
+        self.panel.echo_cancel.setChecked(True)
+        self.assertTrue(Config.load(self.engine.path).channel("mic").echo_cancel)
+        self.select("phones")
+        self.select("mic")
+        self.assertTrue(self.panel.echo_cancel.isChecked())
+
     def test_listen_offers_output_channels_only_and_warns_about_feedback(self):
         self.select("mic")
         names = [self.panel.listen.itemText(i) for i in range(self.panel.listen.count())]

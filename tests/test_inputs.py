@@ -66,6 +66,61 @@ class InputRenderTest(unittest.TestCase):
         self.assertEqual(Channel("out", "Out", "dev").control_name, "ar_out")
 
 
+class EchoCancelRenderTest(unittest.TestCase):
+    def aec(self, channel):
+        return next(m["args"] for m in channel.render_config()["context.modules"]
+                    if m["name"] == "libpipewire-module-echo-cancel")
+
+    def test_off_by_default_and_no_canceller_in_the_conf(self):
+        mic = Channel("mic", "Mic", "alsa_input.usb", kind=INPUT)
+        self.assertFalse(mic.echo_cancel)
+        names = [m["name"] for m in mic.render_config()["context.modules"]]
+        self.assertNotIn("libpipewire-module-echo-cancel", names)
+
+    def test_the_effects_read_the_cancelled_mic_and_the_canceller_reads_the_real_one(self):
+        mic = Channel("mic", "Mic", "alsa_input.usb", kind=INPUT, echo_cancel=True)
+        chain = modules(mic)["libpipewire-module-filter-chain"]
+        self.assertEqual(chain["capture.props"]["target.object"], "ar_mic_ec")
+        self.assertTrue(chain["capture.props"][NO_FALLBACK])
+        aec = self.aec(mic)
+        self.assertEqual(aec["capture.props"]["target.object"], "alsa_input.usb")
+        self.assertTrue(aec["capture.props"][NO_FALLBACK])
+        self.assertEqual(aec["source.props"]["node.name"], "ar_mic_ec")
+
+    def test_the_default_input_is_followed_when_no_mic_is_chosen(self):
+        aec = self.aec(Channel("mic", "Mic", "", kind=INPUT, echo_cancel=True))
+        self.assertNotIn("target.object", aec["capture.props"])
+        self.assertNotIn(NO_FALLBACK, aec["capture.props"])
+
+    def test_the_reference_is_the_speakers_monitor_and_nothing_is_rerouted(self):
+        aec = self.aec(Channel("mic", "Mic", "", kind=INPUT, echo_cancel=True))
+        self.assertTrue(aec["monitor.mode"])
+        self.assertEqual(aec["library.name"], "aec/libspa-aec-webrtc")
+
+    def test_noise_suppression_and_gain_are_left_to_the_channel_effects(self):
+        args = self.aec(Channel("mic", "Mic", "", kind=INPUT, echo_cancel=True))["aec.args"]
+        self.assertFalse(args["webrtc.noise_suppression"])
+        self.assertFalse(args["webrtc.gain_control"])
+
+    def test_the_cancelled_mic_can_never_become_the_default_microphone(self):
+        aec = self.aec(Channel("mic", "Mic", "", kind=INPUT, echo_cancel=True))
+        self.assertEqual(aec["source.props"]["priority.session"], 1)
+
+    def test_every_canceller_node_is_stamped_as_ours(self):
+        aec = self.aec(Channel("mic", "Mic", "", kind=INPUT, echo_cancel=True))
+        for side in ("capture.props", "source.props", "sink.props"):
+            self.assertEqual(aec[side]["audiorouter.channel"], "mic")
+
+    def test_outputs_never_cancel_echo(self):
+        self.assertFalse(Channel("out", "Out", "dev", echo_cancel=True).echo_cancel)
+
+    def test_round_trip_and_old_configs(self):
+        mic = Channel("mic", "Mic", "", kind=INPUT, echo_cancel=True)
+        self.assertTrue(Channel.from_dict(mic.to_dict()).echo_cancel)
+        old = {"slug": "mic", "name": "Mic", "kind": "input", "device": ""}
+        self.assertFalse(Channel.from_dict(old).echo_cancel)
+
+
 class CableRenderTest(unittest.TestCase):
     def test_a_plain_output_is_unchanged(self):
         mods = modules(Channel("out", "Out", "alsa_output.a"))
@@ -141,6 +196,19 @@ class EngineInputTest(EngineTestCase):
             self.engine.set_listen("mic", "mic2")
         with self.assertRaises(EngineError):
             self.engine.set_listen("speakers", "mic")
+
+    def test_echo_cancelling_is_for_inputs_and_restarts_the_channel(self):
+        self.engine.create_channel("mic", "Mic", kind=INPUT)
+        with self.assertRaises(EngineError):
+            self.engine.set_echo_cancel("speakers", True)
+        mic = self.engine.channel("mic")
+        before = mic.render_config_text()
+        self.engine.set_echo_cancel("mic", True)
+        self.assertTrue(Config.load(self.engine.path).channel("mic").echo_cancel)
+        # A shape change, not a knob: the rendered conf differs outside controls.
+        self.assertNotEqual(self.engine.channel("mic").render_config_text(), before)
+        self.engine.set_echo_cancel("mic", False)
+        self.assertEqual(self.engine.channel("mic").render_config_text(), before)
 
     def test_deleting_the_output_stops_inputs_listening_through_it(self):
         self.engine.create_channel("mic", "Mic", kind=INPUT)
