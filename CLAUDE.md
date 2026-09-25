@@ -26,6 +26,22 @@ needed, no dependencies).
 The GUI drives `Engine` directly. Anything that needs thinking
 belongs in the engine, never in the CLI.
 
+## Feature notes live in `docs/` — read the one you are touching
+
+| Working on | Read first |
+|---|---|
+| Effects, LV2 plugins, bypass/crossfade switches, RNNoise | `docs/effects.md` |
+| Anything in `audiorouter/gui/`, level meters | `docs/gui.md` |
+| `install.py`, launcher, login service, `packaging/` | `docs/packaging.md` |
+| Echo cancellation | `docs/echo-cancel.md` |
+
+These rules come from those files, and they apply even when you haven't opened them:
+- **The werman RNNoise LV2 is broken under filter-chain.** Use our own `urn:audiorouter:rnnoise`.
+- **Bump `lv2.CACHE_VERSION`** when `Plugin`/`Control` change shape or the hiding rules change.
+- **GUI colours come from `gui/theme.py`**, never hardcoded. Render the window and look at it (`QWidget.grab()` offscreen).
+- **The monitor thread never touches a widget.**
+- **Test the RPM in a fresh `fedora:44` container**, never by installing it on this box.
+
 ## Traps that have already cost time
 
 - **A filter graph must declare its `inputs` and `outputs` explicitly.**
@@ -43,10 +59,6 @@ belongs in the engine, never in the CLI.
 - **`log.level: 0` in a channel conf hides the reason it died.** Raise it to 2
   or 4 in the rendered conf when a channel will not start, then read
   `$XDG_RUNTIME_DIR/audiorouter/<slug>.log`.
-- **The LV2 loader is a separate package** (`pipewire-module-filter-chain-lv2`,
-  installed on this box 13/09/2026). Without it no LV2 effect can run;
-  `plugins.py` probes for it and the engine degrades with an installable message
-  instead of a crash.
 - **`application.process.binary` is the executable, not the command.** `paplay`
   reports `pacat`; a `binary` rule for "paplay" matches nothing. Prefer `app`.
 - **A filter-chain's own playback node has `media.class = Stream/Output/Audio`,
@@ -73,27 +85,6 @@ belongs in the engine, never in the CLI.
   a filter's steepness) -> restart. Measured: a live change lands in ~28 ms with
   the same pid. Anything that changes a node's `config` is a shape change, which
   is why the delay's `max-delay` is sized for the knob's whole range.
-- **Every effect sits behind a crossfading switch** (`effects._with_bypass`,
-  15 Sep 2026): wet = effect x `ramp`, dry = input x (1 - ramp), summed. The
-  builtin `ramp` is AUDIO rate and moves toward `Stop` from wherever it is, so
-  on/off is ONE live change (`sw<i>_target:Add` 1/0) and the 50 ms linear fade
-  (`SWITCH_FADE_S`) runs in the audio thread. Measured against the old
-  stepped `pw-cli` fade: sample-to-sample jumps 1.00x a clean sine (old
-  3.2-6.3x, i.e. clicks), 10-90% in 40.0 ms as a straight line (old: 20 ms
-  stairs), a switch reversed mid-fade turns round at -13 dB with no jump, and
-  apply is ~28 ms (old ~90 ms, sleeping between steps). A switched-off effect
-  still uses CPU.
-- **A `ramp`'s controls CANNOT be set from a conf or `Props`.** Its ports declare
-  no range and filter-graph's `port_set_control_value` clamps every value to
-  the range: Start/Stop/Duration all read 0 and the switch passed only the dry
-  sound. Control LINKS bypass the clamp, so each ramp control is fed from a
-  `linear` node's `Notify` (`Control*Mult + Add`; `Add` has a range of +-10).
-  A test asserts no ramp node carries a `control` block - keep it.
-- **A ramp starts at 0**, so every new host faded dry->wet and a restart let
-  4 ms of +6 dB through (3/3 runs). One `fadeclock` ramp per chain rises
-  0 -> 50 ms and feeds every switch's Duration: a new host snaps to its state
-  in one sample. Verified: no blip on restart (3 runs), on the first sound
-  after the sink was SUSPENDED, or with the effect starting off.
 - **Lab captures: `parec --latency-msec=20` and wait before SIGINT.** Without
   it the last ~1-2 s of a capture was missing, which read as "later switches
   do nothing" and nearly sent the fade work down the wrong path.
@@ -116,40 +107,6 @@ belongs in the engine, never in the CLI.
   our own children and reads `/proc/<pid>/stat` for anyone else's.
 - **`node.dont-reconnect=true` on a test stream blocks moves entirely**, so a
   handover measured with it proves nothing (the stream never moved).
-- **Every chain is an explicit stereo graph.** Mono nodes are placed per side
-  (`name_l`/`name_r`); a stereo plugin is one node fed both sides, which is what
-  makes its dynamics linked. PipeWire's own per-channel replication of a mono
-  graph would make stereo plugins impossible. Node control names follow the
-  node names, so the `_l`/`_r` suffixes are part of the live-update contract.
-- **LSP limiter defaults defeat a "ceiling".** `boost` (default on) turns the
-  level back up by what was taken off - a -20 dB ceiling changed the level by
-  0.5 dB - and `alr` (automatic level regulation) pulls peaks ~8 dB *below* the
-  ceiling. The curated limiter sets both to 0; measured peaks then sit exactly
-  at -20.00 / -12.00 dB.
-- **Turtle blank nodes must be tagged per parse with a counter, not `id()`.**
-  Python reuses ids as soon as a parser is freed, and every LSP plugin silently
-  received every other plugin's ports (a compressor with 15 audio inputs).
-- **The plugin catalogue is cached** at `~/.cache/audiorouter/lv2-catalogue.json`,
-  keyed by the mtime/size of every `.ttl`; a cold build reads ~16 MB of Turtle
-  and takes ~5 s. Bump `lv2.CACHE_VERSION` when `Plugin`/`Control` change shape
-  or the hiding rules change, or users keep stale data.
-- **LSP "link" controls do nothing here** (they need shared memory between
-  plugin instances); they are hidden with the UI-only toggles in `lv2._UI_ONLY`.
-  LSP impulse-response plugins load but need a sample file we cannot pass yet.
-- **"Is this LV2 plugin installed" is answered by the parsed catalogue**
-  (`plugins.lv2_installed`). A text search of manifests missed Rubber Band
-  (`rubberband:livestereo` against a prefix ending in `#`) and SWH plugins, and
-  their channels refused to start as "not installed".
-- **The effects toolbox** (installed 13/09/2026): `lv2-noise-suppression-for-voice
-  lv2-rubberband-plugins lv2-swh-plugins lv2-x42-plugins lv2-guitarix-plugins
-  lv2-vocoder-plugins lv2-abGate lv2-eq10q` -> 489 usable plugins. Measured live:
-  RNNoise, GxWah, GxTremolo, x42-Autotune, SWH Flanger all process; Rubber Band
-  +12 semitones turned 440 Hz into 880 Hz. Vocoders are unusable (they need a
-  second carrier input). The browser groups by `lv2.categorise()` (LV2 class,
-  then name) with the maker in a column; search prefers an effect's own name
-  over its group's name.
-- `~/.lv2/LV2` on this box is an empty directory; lilv logs a harmless
-  "failed to open .../manifest.ttl" for it in every channel log.
 - **A test `Engine.apply()` in the real runtime dir STOPS the user's channels**:
   every channel not in the test config is an orphan. Live experiments must set
   `XDG_RUNTIME_DIR=/run/user/1000/arlab PIPEWIRE_RUNTIME_DIR=/run/user/1000
@@ -159,29 +116,6 @@ belongs in the engine, never in the CLI.
   `apply` moves the owner's playing apps onto it; stopping it drops them onto
   the raw device. Done 14 Sep 2026 (Zen, sent back by hand). Add only
   `lab*` channels.
-- **The werman RNNoise LV2 plugin (`lv2-noise-suppression-for-voice` 1.10) is
-  broken under filter-chain.** Measured 14 Sep 2026 on natural speech (Kokoro)
-  through a fake mic: half level, ~63 ms late, residual +3.2 dB against the dry
-  signal, 3x the clicks; erratic at forced quanta of 480 and 1024 too. The same
-  audio through system `librnnoise.so.0` directly (ctypes, 480-sample frames) is
-  near-transparent: gain 0.99, residual -16.5 dB. Its settings are LV2 patch
-  parameters on an atom port, which filter-chain cannot send, so it also shows
-  no controls. Espeak is a poor test voice for RNNoise; use Kokoro
-  (`~/.claude/hooks/speak-kokoro.py`). `lv2.KNOWN_BROKEN` marks both unusable.
-- **Our own RNNoise plugin** (`audiorouter/native/`, URI
-  `urn:audiorouter:rnnoise`, "Voice noise suppression"). C with no headers:
-  the LV2 and librnnoise ABIs are declared in the file, linked with
-  `-l:librnnoise.so.0`. `native.ensure_rnnoise()` compiles it into
-  `~/.lv2/audiorouter-rnnoise.lv2` when missing or older than the source; the
-  GUI and `watch` call it at start, and it never raises. Latency is 1440
-  samples: 480 of frame buffering plus RNNoise's own 960, which the dry side of
-  "Amount" is delayed to match (a 50% mix measured closer to dry than 100%, so
-  no comb). Measured live through a fake mic: speech level unchanged and
-  residual -16.4 dB, the same as librnnoise run directly; 37 dB of fan/hum noise
-  removed; pauses at -90 dB, and digital silence with the voice gate on; knob
-  changes live. RNNoise can rate a steady sine as voice, so gate tests use noise.
-  Lab runs with a scratch plugin need `LV2_PATH` *and* `XDG_CACHE_HOME` set, or
-  the lab rebuilds the owner's catalogue cache.
 - **EasyEffects and Audio Router cannot run together.** EasyEffects relinks
   every app stream onto `easyeffects_sink`, so a "Send to" silently snaps back
   and the stream reads "not routed" (owner hit this 13/09/2026). Detected by
@@ -224,9 +158,11 @@ belongs in the engine, never in the CLI.
   "Lab mic (listening) output" is left in `~/.local/state/wireplumber/
   stream-properties`. The remaining blip: a listen-through doubles (+6 dB) for
   ~90 ms when the input channel restarts (adding/removing/moving an effect).
-- **The login service runs this checkout** (unless the RPM is installed and its window has been opened: see "The RPM"). Whatever branch is checked out is
-  what `audiorouter.service` loads the next time it restarts.
-
+- **On this box the login service runs the INSTALLED RPM (0.2.0), not this
+  checkout** (`/usr/lib/systemd/user/audiorouter.service` -> `/usr/bin/audiorouter
+  watch`). A code change is not live until you rebuild with
+  `packaging/build-rpm.sh` and reinstall. Without the package, the service
+  would run whatever branch is checked out. See `docs/packaging.md`.
 ## Testing audio without hardware
 
 The analog codec on this machine sometimes fails to initialise at boot
@@ -248,167 +184,6 @@ Measure the RMS of the capture against a reference played straight into
 `ar_testdev`. That is how `-6 dB` gain and a 3-stage 1 kHz highpass were both
 confirmed to within 0.05 dB.
 
-## The GUI
-
-`audiorouter/gui/` - PyQt6, entered at `gui/main.py`. It edits the config and
-asks `Engine` to make reality match; it decides nothing about audio itself.
-
-- **Colours come from the palette** (`gui/theme.py`), never hardcoded. A
-  hardcoded dark scheme in JoyCal made every label invisible on a light Plasma
-  theme. The two derived colours (warn, good) are the exception, and each has a
-  light and a dark value.
-- **Render it and look at it.** `QWidget.grab().save(path)` under
-  `QT_QPA_PLATFORM=offscreen`; `spectacle` is broken on this box. Doing that is
-  what caught the form bug below - the tests were all passing.
-- **A form inside a `QScrollArea` needs `setSizeConstraint(SetMinAndMaxSize)`**
-  or a 30-knob plugin is crushed into overlapping few-pixel rows instead of
-  scrolling. Offscreen, the scrollbar only appears after a few
-  `processEvents()` passes - a single pass renders a (false) missing scrollbar.
-- **`EffectsPanel.set_channel()` ignores the channel it already shows.** Every
-  apply and every graph event re-selects the channel, and a live knob change
-  *causes* a graph event: rebuilding then destroyed the slider mid-drag.
-- **Offscreen harnesses must process `DeferredDelete`** (`QCoreApplication.
-  sendPostedEvents(None, QEvent.Type.DeferredDelete.value)`), not only
-  `processEvents()`: replaced table cell widgets are `deleteLater()`-ed, and
-  without it a stale "Send to" combo rendered over the Application column - a
-  render bug that does not exist in the real event loop.
-- **The volume slider ignores graph readings for 0.8 s after a local edit**
-  (`VOLUME_SETTLE_S`): a refresh can carry the value from just before the change
-  and would yank the slider back. Switching channel resets that window.
-- **Two signals, two delays.** `EffectsPanel.changed` (shape) waits
-  `APPLY_DELAY_MS` and shows a busy cursor; `tuned` (knob) starts a
-  `TUNE_DELAY_MS` timer only if none is running, so a drag is heard while it
-  happens, and a tune-only apply skips the full window refresh.
-- **`QFormLayout.removeRow()`, never `takeAt()` + `deleteLater()`.** deleteLater
-  only schedules destruction, so the previous effect's labels stay painted
-  underneath the new ones and the text overlaps into gibberish.
-- **One debounce, in the window.** The panels report every edit immediately (so
-  nothing typed is lost) and `MainWindow._pending_apply` decides when to restart
-  audio. An earlier version also debounced inside the effects panel, which made
-  every change take 1.3s to be heard.
-- **`Engine.apply()` runs on a worker thread** (`gui/applier.py`, 15 Sep 2026).
-  It used to block the window for a whole restart (up to 8 s). Each run
-  applies a *copy* of the config (`to_dict`/`from_dict`) inside its own
-  `Engine`, because the panels edit `Channel`/`Effect` objects in place. Only
-  one run at a time; edits made meanwhile fold into ONE follow-up with the
-  newest settings. Closing the window runs any queued edit and waits (never two
-  hosts for one channel). Measured live in the lab: `apply_now()` returns in
-  0.2 ms, a 115 ms restart ran with the event loop never stalled over 11 ms.
-- **A queued call to a plain Python method goes through a hidden PyQt proxy
-  object**, so `QCoreApplication.sendPostedEvents(receiver)` never delivers it.
-  `Applier._on_done` is a `@pyqtSlot` for that reason, or `flush()` on close
-  silently skips the result.
-- **GUI tests: `GuiTestCase` mocks `Engine.apply` for the whole test**, because
-  closing the window (in cleanup, after a test's own mock has ended) runs any
-  queued apply, which would start real channel hosts. Call `self.settle()`
-  after `apply_now()` before asserting on results.
-- **The device list is hardware only.** `Graph.devices()` filters on `device.id`,
-  so a virtual sink a channel targets is not in the list; the panel still shows
-  it and asks `device_present` before calling anything "not connected".
-- The monitor thread must never touch a widget: `gui/monitor.py` turns each
-  graph callback into a Qt signal and coalesces bursts into one refresh.
-
-## Level meters (15 Sep 2026)
-
-`meter.py` (engine side, no Qt, no numpy) + `gui/meters.py`. The selected
-channel gets In (before effects) and Out (after) meters: one bar per ear with
-the average (~300 ms), the peak, a peak-hold tick and a clip marker - the
-owner's choice of style. Each side is a `parec --raw` *tap*:
-
-| channel | In | Out |
-|---|---|---|
-| output | `--device=ar_<slug>.monitor` | `--monitor-stream=<serial of ar_<slug>_out>` |
-| virtual cable | same | `--device=ar_<slug>_rec` |
-| input | the mic (`device` or `@DEFAULT_SOURCE@`) | `--device=ar_<slug>` |
-
-Measured live on a -20 dB channel: In -6.02, Out -26.02 dB, for all three
-kinds, through the real window. Two taps cost ~1.5% of one core.
-
-- **pipewire-pulse numbers sink inputs by `object.serial`** (checked against
-  `pactl -f json list sink-inputs`), so the graph snapshot gives the Out tap.
-- **Taps carry `node.dont-reconnect`/`node.dont-fallback`** (parec has no
-  no-move flag) so a meter never wanders onto the real mic or another device,
-  and **`audiorouter.meter=true`**, which `Engine._hand_over` skips: a
-  metadata "move" of a stream that refuses moves still reports success, and
-  the handover then waited its full timeout on every restart.
-- **A restart ends the Out tap** (its playback stream is replaced). `Tap.key`
-  includes the host pid so a graph event reopens taps, but after a restart
-  settles there may be NO further event - the Out meter stayed dark for good.
-  The panel therefore schedules its own retry and fetches a fresh graph
-  (`graph_source`): 0.3 s the first time, 2 s after repeated endings (a mic
-  that stays unplugged). Measured: Out back within 1 s of a restart.
-- **Meters run only while the window is shown** (`showEvent`/`hideEvent`,
-  which minimising also sends) and only for the selected channel. An input
-  channel's In meter opens the mic; the owner accepted the desktop's
-  "mic in use" indicator while one is selected.
-- **`LevelReader` must close its pipe** or every reopened meter leaks a file
-  descriptor. GUI tests replace `LevelReader` module-wide with `FakeReader`
-  (`GuiTestCase`), so no test can start a real parec even if a window is shown.
-- The two `ResourceWarning: subprocess ... still running` lines in a full run
-  come from `tests/test_channels.py` and predate the meters.
-
-## Launcher and login service
-
-`python -m audiorouter launcher` writes `~/.local/share/applications/audiorouter.desktop`;
-`python -m audiorouter login on|off|status` (or the window's "Keep routing with
-this window closed" box) writes `~/.config/systemd/user/audiorouter.service`,
-which runs `watch`. **Nothing is pip-installed**, so both files pin
-`sys.executable` and `PYTHONPATH=<checkout>` - moving the checkout means
-re-running `launcher` and toggling login off/on.
-
-- **The daemon's record is `routing.daemon`, NOT `daemon.pid`.** Every `*.pid`
-  in the runtime dir is taken to be a channel's, so `orphan_slugs()` (called by
-  every `status()`) deleted `daemon.pid` within a second of the GUI refreshing.
-  Found only by enabling the real service with the real GUI open.
-- **`KillMode=process`** - channels are children of whoever started them and
-  must survive a daemon restart. Verified: `systemctl --user restart` left both
-  channel pids unchanged.
-- **The daemon reloads the config on each graph event** (`follow_config=True`),
-  because the GUI edits it from another process. The GUI's own router never
-  reloads - its panels hold the objects a reload would replace. The GUI does
-  not start its own router while `daemon_pid()` finds one.
-- **`watch` exits 1 when `pw-dump` dies** (`GraphMonitor.ended`) so systemd
-  restarts it. Before this it sat forever routing nothing. Verified by killing
-  only the daemon's own `pw-dump` child: restart in 3s, channels untouched.
-- **`apply()` restarts a running channel whose sink is missing from the graph.**
-  A host process can outlive the PipeWire it was attached to; conf unchanged
-  plus pid alive used to count as healthy. Unit-tested only - verifying it live
-  means restarting the user's PipeWire.
-
-## The RPM (15 Sep 2026)
-
-`packaging/`: `audiorouter.spec`, the packaged `audiorouter.service` (runs
-`/usr/bin/audiorouter watch`) and `audiorouter.desktop` (runs `audiorouter-gui`),
-and `build-rpm.sh`, which tars the working tree (committed or not) and runs
-`rpmbuild` in a `fedora:44` podman container, `%check` included. Our noise
-plugin is compiled at build time into `/usr/lib64/lv2/audiorouter-rnnoise.lv2`,
-so users need no gcc. Bump the version in BOTH `pyproject.toml` and the spec
-(the script refuses a mismatch).
-
-- **`install.packaged()` is decided by location, not `sysconfig`.** Fedora's
-  `sysconfig.get_path("purelib")` says `/usr/local/lib/python3.x/site-packages`,
-  but the RPM installs to `/usr/lib/...`. Packaged = the system unit exists AND
-  this code lives under `/usr/lib*`, so a checkout on a machine that also has
-  the package still writes its own launcher and unit.
-- **A package cannot enable a user service in each session**, so
-  `install.set_up_for_user()` does it at the window's first start and writes
-  `~/.config/audiorouter/package-set-up`; later starts change nothing (switched
-  off stays off). It also removes a checkout's `~/.config/systemd/user` unit and
-  `~/.local` launcher, which would otherwise HIDE the package's copies and keep
-  running the checkout. The window then waits up to 3 s for the daemon record,
-  or it would start a second router.
-- **On a box that already ran the checkout, the menu still opens the CHECKOUT
-  after installing** - a `~/.local/share/applications` entry of the same name
-  wins over the system one, and the checkout's window never runs the set-up.
-  Start `/usr/bin/audiorouter-gui` once by hand (hit on the owner's box 15 Sep).
-- **`systemctl --user enable --now` without a running user manager** (e.g. a
-  container) creates the link, skips `--now`, and exits 0 - not a failure.
-- `PackageFilesTest` keeps the packaged unit and menu entry identical to the
-  generated ones apart from the command. Change both together.
-- Test the package with a fresh `fedora:44` container (`dnf install` the rpm,
-  `useradd`, `runuser` - the base image has no `su`), not by installing it on
-  the dev box: that swaps the owner's login service over to the packaged copy.
-
 ## Remembering apps (owner ruling 2026-09-12)
 
 **The first "Send to" for an app that no rule covers remembers it** on that
@@ -418,49 +193,19 @@ this app here" (`Engine.remember_app`) UPDATES the app's existing rule rather
 than appending one - rules are first-match-wins, so a second rule for the same
 app would be listed and never take effect.
 
-## Effects (13/09/2026)
-
-Owner chose **LV2 first, VST later**. The window's "Add effect..." opens a
-searchable browser: built-in effects, then every usable installed LV2 plugin
-grouped by maker (246 of 300 on this box: LSP, Calf, MDA, ZAM). Controls are
-generated from each plugin's ports: switches, lists, sliders (logarithmic where
-the plugin says so), linear gains shown in dB. CLI: `effects --plugins [search]`,
-`effects --plugin URI`, `effect add <slug> lv2 --plugin URI k=v`.
-
-**VST is a FUTURE POSSIBILITY, not planned** (owner, 15 Sep 2026: the LV2 set is rich enough, and anything missing can be built ourselves, as with the noise suppression). It cannot go through filter-chain - PipeWire has no VST
-loader. The agreed route is a Carla host per channel (`Carla`, `Carla-vst` in
-the Nobara repos): sink -> Carla -> device, VST block at the end of the chain,
-each plugin's own editor window, state in a Carla project file.
-
-Plugins with 1 in / 2 out (wideners), several ins/outs, or instruments are
-listed as unusable with the reason. Plugin windows (LV2 UIs) are not shown.
 
 ## State
 
-Engine, CLI, GUI, routing, auto-router, launcher and login service are built and
-verified against live PipeWire. The login service was verified routing a
-stream from a rule saved by a different process, with no window involved.
-Not yet verified: an actual logout/login cycle.
+Engine, CLI, GUI, routing, auto-router, launcher, login service, effects, input
+channels, meters, echo cancellation and the RPM are built and verified against
+live PipeWire. Login persistence across a real logout/login passed 15 Sep 2026.
+VST is a future possibility only (see `docs/effects.md`).
 
-## Echo cancellation (0.2.0, 18 Sep 2026)
-
-`Channel.echo_cancel` (inputs only; outputs are forced off): the channel's conf
-gains `libpipewire-module-echo-cancel` as a SECOND module in the same process,
-so it lives and dies with the channel and toggling it is an ordinary shape
-change (restart). mic -> `ar_<slug>_ec_mic` (capture) -> WebRTC AEC ->
-`ar_<slug>_ec` (source) -> the filter-chain's capture -> effects.
-
-- **`monitor.mode = true`**: the reference is the DEFAULT OUTPUT's monitor
-  (`ar_<slug>_ec_ref`), so no sink is created and nothing is re-routed. If the
-  default output is itself one of our channels, only that channel is cancelled.
-- NS and AGC are OFF in `AEC_ARGS`: the channel's own effects (RNNoise, a
-  compressor) do that; doubling up fights them.
-- `ar_<slug>_ec` has `priority.session = 1`. On the dev box the stored default
-  source was a dead `easyeffects_source`, so any new source could have become
-  the default mic; apps must pick the channel's own mic, which has the effects.
-- All three canceller nodes carry the owner stamp (`is_app_stream` excludes them).
-- The WebRTC library is in `pipewire-libs`: no new package dependency.
-- Measured live 18 Sep: "Marvin" + speech from the speakers scored 0.99 for a
-  wake-word detector on the raw mic and 0.00 on the echo-cancelled channel;
-  whisper heard "[inaudible]" raw and "[Silence]" through the channel.
-- Not yet tested on a real call with a remote listener.
+## Done means
+A change is not finished until all of these hold. Report any you could not do:
+- `python -m unittest discover -s tests -t .` passes
+- Audio changes are MEASURED in the lab runtime dir (see Traps), never judged by
+  `pw-dump` readback or by ear alone
+- GUI changes were rendered and looked at
+- If the owner is to try it: the RPM was rebuilt and reinstalled, because the
+  login service runs the package
