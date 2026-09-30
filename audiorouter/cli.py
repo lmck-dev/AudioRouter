@@ -350,7 +350,7 @@ def cmd_send(engine: Engine, args: argparse.Namespace) -> int:
 
 def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     """Start the channels and keep routing new streams until interrupted."""
-    native.ensure_rnnoise()  # before apply: a channel may use it
+    native.ensure_all()  # before apply: a channel may use them
     report = engine.apply()
     for line in report.describe():
         print(line)

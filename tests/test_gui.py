@@ -84,6 +84,9 @@ class GuiTestCase(unittest.TestCase):
             mock.patch.object(Engine, "apply", return_value=ApplyReport()),
             # Never start a real parec from a test, even if a window is shown.
             mock.patch("audiorouter.gui.meters.LevelReader", FakeReader),
+            mock.patch("audiorouter.gui.meters.FileLevelReader", FakeReader),
+            # Whether this machine has the level tap must not change a test.
+            mock.patch("audiorouter.gui.meters.taps_available", return_value=False),
             isolated_settings(self.tmp.name),
         ):
             target.start()
@@ -456,6 +459,52 @@ class MeterTest(GuiTestCase):
         reader.on_levels(Levels(1.0, 1.0, 0.5, 0.5))
         QCoreApplication.sendPostedEvents(None, 0)
         self.assertLess(left.state.hold_db, -50)
+
+    def effect_taps_on(self):
+        for target in (mock.patch("audiorouter.meter.host_has_taps", return_value=True),
+                       mock.patch("audiorouter.gui.meters.taps_available", return_value=True)):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def files(self):
+        return {r.tap.label: Path(r.tap.file).name for r in FakeReader.started if r.running}
+
+    def test_the_highlighted_effect_is_measured_between_its_taps(self):
+        self.effect_taps_on()
+        self.meters.set_active(True)
+        self.select(0)  # Speakers: one high-pass, highlighted
+        self.assertEqual(self.files(), {"In": "4242.0", "Out": "4242.1"})
+        self.assertEqual(self.meters.title(), "Levels - High-pass")
+        self.assertEqual(self.meters.titles["Out"].toolTip(), "What High-pass puts out")
+
+    def test_switching_following_off_measures_the_whole_channel_and_is_remembered(self):
+        self.effect_taps_on()
+        self.meters.set_active(True)
+        self.select(0)
+        self.meters.follow_effect.setChecked(False)
+        self.assertEqual(self.files(), {"In": "", "Out": ""})  # parec taps again
+        self.assertEqual(self.meters.title(), "Levels - whole channel")
+        self.assertEqual(self.window.settings.value("meters_follow_effect"), False)
+
+    def test_a_host_without_taps_falls_back_to_the_whole_channel_and_says_why(self):
+        with mock.patch("audiorouter.gui.meters.taps_available", return_value=True):
+            self.meters.set_active(True)
+            self.select(0)
+        self.assertEqual(self.running(), ["In", "Out"])
+        self.assertEqual(self.files(), {"In": "", "Out": ""})
+        self.assertIn("next restarts", self.meters.hint.text())
+
+    def test_a_channel_with_no_effects_offers_no_following(self):
+        self.effect_taps_on()
+        self.select(1)
+        self.assertTrue(self.meters.follow_effect.isHidden())
+        self.assertEqual(self.meters.title(), "Levels")
+
+    def test_without_the_level_tap_there_is_nothing_to_choose_and_no_nagging(self):
+        self.meters.set_active(True)
+        self.select(0)
+        self.assertTrue(self.meters.follow_effect.isHidden())
+        self.assertEqual(self.meters.hint.text(), "")
 
     def test_a_tap_that_ends_by_itself_is_not_retried_at_once(self):
         from PyQt6.QtCore import QCoreApplication

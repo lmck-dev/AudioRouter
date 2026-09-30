@@ -1,5 +1,11 @@
 """Level meters for the selected channel: before (In) and after (Out) its effects.
 
+With "Show the highlighted effect" on (the default), In and Out are instead
+what the effect highlighted in the chain receives and puts out, read from the
+level taps between effects (`meter.effect_taps`). Without taps - the plugin
+cannot be built here, or the host predates them - it falls back to the whole
+channel and says why.
+
 Each side has a bar per ear showing three things at once, as the owner chose:
 the average level (a solid bar, ~300 ms like a VU meter), the peak (a bright
 line that falls back slowly), a peak-hold tick, and a clip marker when a peak
@@ -18,10 +24,20 @@ import time
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QPainter, QPalette
-from PyQt6.QtWidgets import QGridLayout, QGroupBox, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QGridLayout, QGroupBox, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from ..channels import Channel
-from ..meter import BLOCK, RATE, LevelReader, Levels, Tap, channel_taps
+from ..effects import EffectError, taps_available
+from ..meter import (
+    BLOCK,
+    RATE,
+    FileLevelReader,
+    LevelReader,
+    Levels,
+    Tap,
+    channel_taps,
+    effect_taps,
+)
 from ..pwgraph import Graph, PwError
 from .theme import Theme
 
@@ -207,6 +223,8 @@ class MeterPanel(QGroupBox):
         # Looked up at call time, so tests can replace LevelReader module-wide.
         self.reader_factory = reader_factory
         self.channel: Channel | None = None
+        #: The effect highlighted in the chain, or None.
+        self.effect_index: int | None = None
         self.active = False
         self._readers: dict[str, LevelReader] = {}
         self._graph: Graph | None = None
@@ -248,8 +266,16 @@ class MeterPanel(QGroupBox):
         grid.setRowMinimumHeight(2, 0)
         self.hint = QLabel("", self)
         self.hint.setWordWrap(True)
+        self.follow_effect = QCheckBox("Show the highlighted effect", self)
+        self.follow_effect.setToolTip(
+            "On: In and Out are what the effect highlighted below receives and puts out.\n"
+            "Off: the whole channel, before and after all of its effects."
+        )
+        self.follow_effect.setChecked(True)
+        self.follow_effect.toggled.connect(lambda _on: self._retry_now())
         layout = QVBoxLayout(self)
         layout.addLayout(grid)
+        layout.addWidget(self.follow_effect)
         layout.addWidget(self.hint)
 
         self._retry = QTimer(self)
@@ -273,14 +299,30 @@ class MeterPanel(QGroupBox):
         self.channel = channel
         self._graph = graph
         taps: tuple[Tap | None, Tap | None] = (None, None)
-        if channel is not None and graph is not None:
+        effect = self._wanted_effect()
+        if channel is not None and effect is not None:
+            try:
+                taps = effect_taps(channel, effect)
+            except OSError:
+                taps = (None, None)
+        showing_effect = effect if any(taps) else None
+        if channel is not None and graph is not None and not any(taps):
             try:
                 taps = channel_taps(channel, graph)
             except (PwError, OSError):
                 taps = (None, None)
-        self._show_channel(channel, running=any(taps))
+        self._show_channel(channel, running=any(taps), effect=showing_effect,
+                           wanted=effect)
         if self.active:
             self._apply_taps(taps)
+
+    def show_effect(self, index: int | None, channel: Channel | None) -> None:
+        """Measure around the effect highlighted in `channel`'s chain (None: none)."""
+        self.effect_index = index if index is not None and index >= 0 else None
+        self.follow(channel, self._graph if channel is self.channel else self._current_graph())
+
+    def _wanted_effect(self) -> int | None:
+        return self.effect_index if self.follow_effect.isChecked() else None
 
     def set_active(self, active: bool) -> None:
         """Run taps only while the window is shown."""
@@ -331,7 +373,8 @@ class MeterPanel(QGroupBox):
                 if not self._retry.isActive():
                     self._retry.start(int(wait * 1000) + 50)
                 continue
-            reader = (self.reader_factory or LevelReader)(
+            factory = self.reader_factory or (FileLevelReader if tap.file else LevelReader)
+            reader = factory(
                 tap,
                 lambda levels, l=label: self._levels.emit(l, levels),
                 lambda l=label, k=tap.key: self._ended.emit(l, k),
@@ -396,23 +439,58 @@ class MeterPanel(QGroupBox):
 
     # -- presentation ------------------------------------------------------
 
-    def _show_channel(self, channel: Channel | None, running: bool) -> None:
-        if channel is not None and channel.is_input:
-            self.titles["In"].setToolTip("The microphone itself, before any effects")
-            self.titles["Out"].setToolTip("The processed microphone apps record")
+    def _show_channel(
+        self,
+        channel: Channel | None,
+        running: bool,
+        effect: int | None = None,
+        wanted: int | None = None,
+    ) -> None:
+        name = self._effect_name(channel, effect)
+        # Where taps can never run there is nothing to choose, and no nagging.
+        self.follow_effect.setHidden(channel is None or not channel.effects or not taps_available())
+        if name is not None:
+            self.setTitle(f"Levels - {name}")
+            self.titles["In"].setToolTip(f"What {name} receives")
+            self.titles["Out"].setToolTip(f"What {name} puts out")
         else:
-            self.titles["In"].setToolTip("What apps play into this channel, before its effects")
-            self.titles["Out"].setToolTip("The sound after this channel's effects")
+            self.setTitle("Levels - whole channel" if channel is not None and channel.effects else "Levels")
+            if channel is not None and channel.is_input:
+                self.titles["In"].setToolTip("The microphone itself, before any effects")
+                self.titles["Out"].setToolTip("The processed microphone apps record")
+            else:
+                self.titles["In"].setToolTip("What apps play into this channel, before its effects")
+                self.titles["Out"].setToolTip("The sound after this channel's effects")
+        lines = []
         if channel is None:
-            self.hint.setText("")
+            pass
         elif not running:
-            self.hint.setText("Not running - nothing to measure.")
-        elif channel.is_input:
-            self.hint.setText("Measuring opens the microphone while this channel is selected.")
+            lines.append("Not running - nothing to measure.")
         else:
-            self.hint.setText("")
+            if wanted is not None and effect is None and taps_available():
+                lines.append(self._why_no_effect_levels(channel, wanted))
+            if channel.is_input and effect is None:
+                lines.append("Measuring opens the microphone while this channel is selected.")
+        self.hint.setText("\n".join(lines))
         self.hint.setStyleSheet(Theme(self).css(Theme(self).dim))
         self.hint.setHidden(not self.hint.text())
+
+    @staticmethod
+    def _effect_name(channel: Channel | None, index: int | None) -> str | None:
+        if channel is None or index is None or not 0 <= index < len(channel.effects):
+            return None
+        try:
+            return channel.effects[index].spec.label
+        except EffectError:
+            return channel.effects[index].kind
+
+    @staticmethod
+    def _why_no_effect_levels(channel: Channel, index: int) -> str:
+        effect = channel.effects[index] if 0 <= index < len(channel.effects) else None
+        if effect is not None and not effect.enabled and effect.spec.unsatisfied():
+            return "Showing the whole channel: this effect cannot run here."
+        return ("Showing the whole channel: per-effect levels start when this channel "
+                "next restarts (any change to its effects does that).")
 
     def _reset_bars(self) -> None:
         for left, right in self.bars.values():

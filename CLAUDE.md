@@ -41,6 +41,7 @@ These rules come from those files, and they apply even when you haven't opened t
 - **GUI colours come from `gui/theme.py`**, never hardcoded. Render the window and look at it (`QWidget.grab()` offscreen).
 - **The monitor thread never touches a widget.**
 - **Test the RPM in a fresh `fedora:44` container**, never by installing it on this box.
+- **A tapped chain ends in copy nodes**: a graph output port that also feeds a level tap makes the channel pass silence. See `docs/gui.md`.
 
 ## Traps that have already cost time
 

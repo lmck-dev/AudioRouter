@@ -38,6 +38,7 @@ from .channels import (
 )
 from .config import Config, ConfigError, config_path, default_config
 from .effects import Effect, EffectError, make_effect
+from .meter import sweep_stale
 from .pwgraph import Graph, GraphMonitor, Node, PwError
 from .routing import Placement, Router, Rule, RuleSet, plan
 
@@ -605,6 +606,8 @@ class Engine:
         because a restart takes the sink out from under them.
         """
         report = ApplyReport()
+        if not self.dry_run:
+            sweep_stale()  # level-tap files of hosts that were killed outright
         live = None if self.dry_run else self._live_graph()
         occupants = self._occupants(live) if restore and live is not None else {}
         # Channels whose sink is in the graph. A host process can outlive the

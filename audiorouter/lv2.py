@@ -33,7 +33,7 @@ PP = "http://lv2plug.in/ns/ext/port-props#"
 ATOM = "http://lv2plug.in/ns/ext/atom#"
 
 #: Bump when the cached catalogue's shape changes.
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 #: Plugins that load but do not work in a channel, measured. The werman RNNoise
 #: build (1.10) came out at half level, ~63 ms late and more distortion than
@@ -47,6 +47,9 @@ KNOWN_BROKEN = {
         "distorts speech under PipeWire; use Voice noise suppression instead"
     ),
 }
+
+#: Our own plumbing, never offered as an effect: the level tap between effects.
+INTERNAL = frozenset({"urn:audiorouter:meter"})
 
 #: Host features PipeWire's LV2 loader provides (from the strings in
 #: libspa-filter-graph-plugin-lv2.so, PipeWire 1.6). A plugin that *requires*
@@ -451,10 +454,14 @@ class Catalogue:
         return self.plugins.get(uri)
 
     def usable(self) -> list[Plugin]:
-        return sorted((p for p in self.plugins.values() if p.usable), key=lambda p: (p.vendor, p.name.lower()))
+        return [p for p in self.all() if p.usable]
 
     def all(self) -> list[Plugin]:
-        return sorted(self.plugins.values(), key=lambda p: (p.vendor, p.name.lower()))
+        """Everything a person could choose; `get` still finds INTERNAL plugins."""
+        return sorted(
+            (p for p in self.plugins.values() if p.uri not in INTERNAL),
+            key=lambda p: (p.vendor, p.name.lower()),
+        )
 
 
 def build(bundles: list[Path] | None = None) -> Catalogue:

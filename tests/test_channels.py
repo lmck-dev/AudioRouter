@@ -34,6 +34,15 @@ class RenderTest(unittest.TestCase):
         config = (channel or self.channel).render_config()
         return config["context.modules"][-1]["args"]
 
+    def test_a_channel_gets_level_taps_where_the_plugin_is_installed(self):
+        self.channel.effects.append(Effect("gain"))
+        with mock.patch("audiorouter.channels.taps_available", return_value=True):
+            graph = self.args()["filter.graph"]
+            controls = self.channel.controls()
+        self.assertEqual(graph["outputs"], ["tail_l:Out", "tail_r:Out"])
+        self.assertEqual([n["name"] for n in graph["nodes"] if n["type"] == "lv2"], ["tap0", "tap1"])
+        self.assertEqual(controls["tap1:slot"], 1.0)
+
     def test_the_sink_is_named_and_prefixed(self):
         self.assertEqual(self.channel.sink_name, "ar_headphones")
         self.assertEqual(self.channel.playback_name, "ar_headphones_out")

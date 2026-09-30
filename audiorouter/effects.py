@@ -706,7 +706,45 @@ def _fade_clock() -> tuple[list[dict[str, Any]], list[dict[str, str]], str]:
     return nodes, links, f"{FADE_CLOCK}:Current"
 
 
-def render_chain(effects: list[Effect]) -> Chain:
+#: The level tap (`native/meter/`), placed at every boundary of a chain.
+TAP_URI = "urn:audiorouter:meter"
+
+
+def taps_available() -> bool:
+    """Can a channel host the level tap here? Without it, no per-effect meters."""
+    from . import plugins
+
+    return plugins.backend_available(PLUGIN_KIND) and plugins.lv2_installed(TAP_URI)
+
+
+def _active(effects: list[Effect]) -> list[Effect]:
+    """The effects that are rendered: all but a switched-off one that cannot run."""
+    return [e for e in effects if e.enabled or not e.spec.unsatisfied()]
+
+
+def tap_slots(effects: list[Effect]) -> list[tuple[int, int] | None]:
+    """For each configured effect, the (before, after) tap slots around it.
+
+    Slot k is the boundary before the k-th *rendered* effect; slot n (n
+    rendered effects) is the chain's output. An effect that is not rendered
+    has no taps (None), which is why the slots are not simply its index.
+    """
+    active = _active(effects)
+    slots: list[tuple[int, int] | None] = []
+    for effect in effects:
+        index = next((i for i, e in enumerate(active) if e is effect), None)
+        slots.append(None if index is None else (index, index + 1))
+    return slots
+
+
+def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    name = f"tap{slot}"
+    node = {"type": "lv2", "name": name, "plugin": TAP_URI, "control": {"slot": float(slot)}}
+    links = [{"output": port, "input": f"{name}:in_{side}"} for side, port in zip(SIDES, ports)]
+    return node, links
+
+
+def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
     """Render effects into one series stereo graph.
 
     Every effect sits behind a bypass switch (see `_with_bypass`), so a
@@ -715,8 +753,16 @@ def render_chain(effects: list[Effect]) -> Chain:
     (its plugin was uninstalled): it is left out rather than breaking the
     channel. An empty chain yields a `copy` node per side so the channel still
     exists and passes audio through untouched.
+
+    With `taps`, a level tap listens at every boundary - before the first
+    effect and after each one - so the window can show what any effect
+    receives and puts out (`tap_slots`). Taps only listen, and are always in
+    the graph, so choosing which one to show never restarts the channel.
+    **The chain's last output cannot also feed a tap**: filter-graph refuses
+    ("already used by link, use copy"), the graph fails to start and the
+    channel passes silence. A `copy` per side therefore ends a tapped chain.
     """
-    active = [e for e in effects if e.enabled or not e.spec.unsatisfied()]
+    active = _active(effects)
     if not active:
         return Chain(
             [
@@ -737,11 +783,28 @@ def render_chain(effects: list[Effect]) -> Chain:
         links.extend(fragment.links)
         if previous_out is None:
             first_in = fragment.inputs
+            if taps:
+                # The switch's entry copy already fans out; one more listener
+                # there hears exactly what the first effect receives.
+                node, tap_links = _tap(0, (f"sw{index}_in_l:Out", f"sw{index}_in_r:Out"))
+                nodes.append(node)
+                links.extend(tap_links)
         else:
             for out_port, in_port in zip(previous_out, fragment.inputs):
                 links.append({"output": out_port, "input": in_port})
         previous_out = fragment.outputs
+        if taps:
+            node, tap_links = _tap(index + 1, fragment.outputs)
+            nodes.append(node)
+            links.extend(tap_links)
     assert first_in is not None and previous_out is not None
+    if taps:
+        tail = []
+        for side, port in zip(SIDES, previous_out):
+            nodes.append({"type": "builtin", "name": f"tail_{side}", "label": "copy"})
+            links.append({"output": port, "input": f"tail_{side}:In"})
+            tail.append(f"tail_{side}:Out")
+        previous_out = (tail[0], tail[1])
     return Chain(nodes, links, first_in, previous_out)
 
 

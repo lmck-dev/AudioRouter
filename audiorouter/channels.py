@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .effects import Effect, render_chain, unsatisfied_requirements
+from .effects import Effect, render_chain, taps_available, unsatisfied_requirements
 from .pwgraph import OWNER_KEY, Graph, Node, PwError, require_tools
 
 #: Prefix on every node we create, so our nodes are recognisable in the graph
@@ -336,7 +336,7 @@ class Channel:
 
     def render_config(self) -> dict[str, Any]:
         """The complete conf structure for this channel's host process."""
-        chain = render_chain(self.effects)
+        chain = render_chain(self.effects, taps=taps_available())
         stamp = {OWNER_KEY: self.slug}
         args: dict[str, Any] = {
             "node.description": self.name,
@@ -484,7 +484,7 @@ class Channel:
 
     def controls(self) -> dict[str, float]:
         """Every knob value in the rendered graph, as `node:control`."""
-        return render_chain(self.effects).controls()
+        return render_chain(self.effects, taps=taps_available()).controls()
 
     def running_config(self) -> dict[str, Any] | None:
         """The conf the running host was started with (or last updated to)."""

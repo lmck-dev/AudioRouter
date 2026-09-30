@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audiorouter"
-version = "0.2.0"
+version = "0.3.0"
 description = "Route each application's audio to its own channel, with its own effects"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,7 @@ audiorouter-gui = "audiorouter.gui.main:_entry"
 include = ["audiorouter*"]
 
 [tool.setuptools.package-data]
-"audiorouter.native" = ["rnnoise/*.c", "rnnoise/*.ttl"]
+"audiorouter.native" = ["rnnoise/*.c", "rnnoise/*.ttl", "meter/*.c", "meter/*.ttl"]
 
 [tool.ruff]
 line-length = 100

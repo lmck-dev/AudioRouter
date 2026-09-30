@@ -19,19 +19,30 @@ Taps never follow a vanished target (`node.dont-reconnect`, `node.dont-fallback`
 with `METER_KEY` so a restart's handover does not try to move them (a move of a
 stream that refuses moves would make every restart wait its full timeout).
 Whoever shows the levels reopens a tap when its `Tap.key` changes.
+
+Inside a chain, levels come from our own level tap plugin (`native/meter/`)
+instead: one listens at every boundary between effects, and each publishes a
+ring of readings in a small file, `<runtime>/meters/<host pid>.<slot>`
+(`FileLevelReader`). PipeWire lists a plugin's output controls but never
+refreshes them (measured 30 Sep 2026), so a file is the way out. Measured on a
+-20 dB tone through gain -6 / compressor / gain -10: -20.00, -26.00, -26.00,
+-36.00 dB, and the host's CPU did not change.
 """
 
 from __future__ import annotations
 
 import array
 import math
+import struct
 import subprocess
 import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
-from .channels import Channel
+from .channels import Channel, _pid_alive, runtime_dir
+from .effects import TAP_URI, tap_slots
 from .pwgraph import METER_KEY, Graph, require_tools
 
 RATE = 48000
@@ -80,10 +91,12 @@ class Tap:
     args: tuple[str, ...]
     #: The channel's host pid: a restart replaces every node a tap reads.
     host: int | None
+    #: A level tap's file inside the chain; empty for a `parec` tap.
+    file: str = ""
 
     @property
     def key(self) -> tuple:
-        return (self.args, self.host)
+        return (self.args, self.host, self.file)
 
 
 def channel_taps(channel: Channel, graph: Graph) -> tuple[Tap | None, Tap | None]:
@@ -104,6 +117,159 @@ def channel_taps(channel: Channel, graph: Graph) -> tuple[Tap | None, Tap | None
             return tap_in, None
         tap_out = Tap("Out", (f"--monitor-stream={playback.serial}",), host)
     return tap_in, tap_out
+
+
+def meter_dir() -> Path:
+    """Where level taps publish; the plugin builds the same path from its env."""
+    return runtime_dir() / "meters"
+
+
+def host_has_taps(channel: Channel) -> bool:
+    """Was the running host started with level taps in its chain?
+
+    Not the same as "could it have them": a host started before the plugin was
+    built, or by an older version, has none until its next restart, and its
+    files would simply never appear.
+    """
+    conf = channel.running_config()
+    if conf is None:
+        return False
+    for module in conf.get("context.modules", []):
+        graph = (module.get("args") or {}).get("filter.graph") or {}
+        if any(node.get("plugin") == TAP_URI for node in graph.get("nodes", [])):
+            return True
+    return False
+
+
+def effect_taps(channel: Channel, index: int) -> tuple[Tap | None, Tap | None]:
+    """(In, Out) around the channel's `index`-th effect, read from level taps.
+
+    None for both when the channel is not running, its host has no taps, or
+    that effect is not rendered. Needs no graph: the host pid names the files.
+    A tap's file only appears once audio has flowed through it, which the
+    reader waits for.
+    """
+    host = channel.pid()
+    slots = tap_slots(channel.effects)
+    if host is None or not 0 <= index < len(slots) or slots[index] is None:
+        return None, None
+    if not host_has_taps(channel):
+        return None, None
+    before, after = slots[index]
+    return tuple(  # type: ignore[return-value]
+        Tap(label, (), host, str(meter_dir() / f"{host}.{slot}"))
+        for label, slot in (("In", before), ("Out", after))
+    )
+
+
+def sweep_stale(directory: Path | None = None) -> None:
+    """Remove the files of hosts that died without cleaning up (SIGKILL)."""
+    directory = directory or meter_dir()
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        pid = entry.name.split(".", 1)[0]
+        if pid.isdigit() and not _pid_alive(int(pid)):
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+#: The plugin's file: magic, entries written, then a ring of readings
+#: {peak_l, peak_r, ms_l, ms_r}, one per 1024 frames. See audiorouter_meter.c.
+TAP_MAGIC = 0x4D525241
+TAP_RING = 64
+_TAP_HEADER = struct.Struct("<II")
+_TAP_ENTRY = struct.Struct("<4f")
+TAP_FILE_SIZE = _TAP_HEADER.size + TAP_RING * _TAP_ENTRY.size
+#: How often a file is read: faster than the ~21 ms blocks arrive is pointless.
+POLL_S = 0.03
+
+
+def read_tap(data: bytes, after: int) -> tuple[int, list[Levels]]:
+    """The readings written since entry `after`, and the new count.
+
+    A reader that fell more than a ring behind gets the newest ring's worth.
+    A file that is not (yet) a tap's reads as nothing new.
+    """
+    if len(data) < TAP_FILE_SIZE:
+        return after, []
+    magic, seq = _TAP_HEADER.unpack_from(data, 0)
+    if magic != TAP_MAGIC:
+        return after, []
+    if seq < after:  # a new file under the same name: start over
+        after = 0
+    first = max(after, seq - TAP_RING)
+    levels = []
+    for k in range(first, seq):
+        peak_l, peak_r, ms_l, ms_r = _TAP_ENTRY.unpack_from(
+            data, _TAP_HEADER.size + (k % TAP_RING) * _TAP_ENTRY.size
+        )
+        levels.append(Levels(peak_l, peak_r, ms_l, ms_r))
+    return seq, levels
+
+
+class FileLevelReader:
+    """Reads a level tap's file from its own thread; same contract as LevelReader.
+
+    A missing file is silence, not an ending: the plugin creates it the first
+    time audio flows, and a suspended channel has none. The tap has ended when
+    its host has.
+    """
+
+    def __init__(
+        self,
+        tap: Tap,
+        on_levels: Callable[[Levels], None],
+        on_ended: Callable[[], None] | None = None,
+    ) -> None:
+        self.tap = tap
+        self.on_levels = on_levels
+        self.on_ended = on_ended
+        self._thread: threading.Thread | None = None
+        self._stopping = threading.Event()
+
+    def start(self) -> None:
+        self._stopping.clear()
+        self._thread = threading.Thread(target=self._read, name=f"tap-{self.tap.label}", daemon=True)
+        self._thread.start()
+
+    def _read(self) -> None:
+        # Readings already in the file are history, not news.
+        seq = self._current_seq()
+        while not self._stopping.wait(POLL_S):
+            if self.tap.host is not None and not _pid_alive(self.tap.host):
+                if self.on_ended is not None:
+                    self.on_ended()
+                return
+            try:
+                with open(self.tap.file, "rb") as fh:
+                    data = fh.read(TAP_FILE_SIZE)
+            except OSError:
+                continue
+            seq, levels = read_tap(data, seq)
+            for reading in levels:
+                self.on_levels(reading)
+
+    def _current_seq(self) -> int:
+        try:
+            with open(self.tap.file, "rb") as fh:
+                return read_tap(fh.read(TAP_FILE_SIZE), 0)[0]
+        except OSError:
+            return 0
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def stop(self) -> None:
+        self._stopping.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+        self._thread = None
 
 
 class LevelReader:

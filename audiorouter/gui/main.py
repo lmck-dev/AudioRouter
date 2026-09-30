@@ -210,6 +210,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.streams_panel, 1)
         self.setCentralWidget(central)
         self._streams_folded(self._setting_bool("streams_expanded", True))
+        self.meters.follow_effect.setChecked(self._setting_bool("meters_follow_effect", True))
 
         quit_action = QAction("Quit", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -230,6 +231,12 @@ class MainWindow(QMainWindow):
         self.channel_panel.mute_changed.connect(self._mute_changed)
         self.effects_panel.changed.connect(self._config_edited)
         self.effects_panel.tuned.connect(self._config_tuned)
+        self.effects_panel.highlighted.connect(
+            lambda row: self.meters.show_effect(row, self.selected_channel)
+        )
+        self.meters.follow_effect.toggled.connect(
+            lambda on: self.settings.setValue("meters_follow_effect", on)
+        )
         self.auto_route.toggled.connect(self._auto_route_toggled)
         self.background.toggled.connect(self._background_toggled)
         self.streams_panel.send_requested.connect(self._send_stream)
@@ -687,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         QMessageBox.critical(None, "Audio Router", f"Your settings could not be read:\n\n{exc}")
         return 2
-    native.ensure_rnnoise()  # well under a second, and only when missing or stale
+    native.ensure_all()  # well under a second each, and only when missing or stale
     _set_up_package()
     window = MainWindow(engine)
     window.show()

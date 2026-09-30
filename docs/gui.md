@@ -117,3 +117,38 @@ kinds, through the real window. Two taps cost ~1.5% of one core.
   is view state, so it lives in `QSettings` (`~/.config/audiorouter/gui.conf`),
   never in `config.json` (the daemon's file). **Tests must use
   `isolated_settings(tmp)`** or they write to the real `gui.conf`.
+
+## Levels follow the highlighted effect (30 Sep 2026)
+
+With "Show the highlighted effect" ticked (default, remembered in `gui.conf`),
+In/Out are what the effect highlighted in the chain receives and puts out.
+Unticked, or where no tap can be read, they are the whole channel as before.
+
+- **Our own level tap** (`native/meter/`, `urn:audiorouter:meter`) listens at
+  every boundary: slot 0 before the first rendered effect, slot k after the
+  k-th (`effects.tap_slots` maps config positions to slots - a switched-off
+  effect whose plugin is missing is not rendered and has none). Taps are
+  always in the graph when `effects.taps_available()`, so changing the
+  highlight never restarts anything.
+- **PipeWire lists a plugin's output controls in `Props` but never refreshes
+  them** (an LSP compressor's `ilv_l` stayed 1.0 with a tone playing). So the
+  tap writes a ring of 64 {peak_l, peak_r, ms_l, ms_r} readings, one per 1024
+  frames, to `$XDG_RUNTIME_DIR/audiorouter/meters/<host pid>.<slot>`
+  (mmap), and `meter.FileLevelReader` polls it every 30 ms. The file appears
+  only once audio flows (a suspended channel has none: silence, not an
+  error); the plugin unlinks it on cleanup, and `Engine.apply` sweeps files
+  of killed hosts.
+- **A graph output port cannot also feed a tap**: "output port ... already
+  used by link, use copy", the graph fails and the channel passes SILENCE.
+  A tapped chain therefore ends in `tail_l`/`tail_r` copy nodes.
+- **A host started without taps has none** (older version, plugin built
+  later): `meter.host_has_taps` reads the running conf, and the panel says
+  per-effect levels start at the next restart. Where taps can never run (no
+  compiler), the tick box is hidden and nothing nags.
+- Tests: `tests/__init__.py` pins `channels.taps_available` to False for
+  the whole suite, and `GuiTestCase` pins the panel's copy, so whether this
+  machine built the plugin cannot change a test. Patch them to True to test taps.
+- Measured live (lab, 30 Sep 2026): -20 dB tone through gain -6 / compressor
+  / gain -10 read -20/-26, -26/-26, -26/-36 per effect through the window's own
+  code, device -36.00 unchanged; a knob change stayed live (same pid, Out
+  -36 -> -30); host CPU 0.25% of a core with or without four taps.

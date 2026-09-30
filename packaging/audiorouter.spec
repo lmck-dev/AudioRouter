@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        Apache-2.0
@@ -60,6 +60,8 @@ channel can be recorded after its effects.
 gcc %{optflags} -shared -fPIC -fvisibility=hidden %{build_ldflags} \
     -o audiorouter_rnnoise.so audiorouter/native/rnnoise/audiorouter_rnnoise.c \
     -l:librnnoise.so.0 -lm
+gcc %{optflags} -shared -fPIC -fvisibility=hidden %{build_ldflags} \
+    -o audiorouter_meter.so audiorouter/native/meter/audiorouter_meter.c -lm
 
 %install
 %pyproject_install
@@ -67,6 +69,9 @@ gcc %{optflags} -shared -fPIC -fvisibility=hidden %{build_ldflags} \
 bundle=%{buildroot}%{_libdir}/lv2/audiorouter-rnnoise.lv2
 install -Dpm755 audiorouter_rnnoise.so "$bundle/audiorouter_rnnoise.so"
 install -pm644 audiorouter/native/rnnoise/*.ttl "$bundle/"
+bundle=%{buildroot}%{_libdir}/lv2/audiorouter-meter.lv2
+install -Dpm755 audiorouter_meter.so "$bundle/audiorouter_meter.so"
+install -pm644 audiorouter/native/meter/*.ttl "$bundle/"
 install -Dpm644 packaging/audiorouter.service %{buildroot}%{_userunitdir}/audiorouter.service
 desktop-file-install --dir=%{buildroot}%{_datadir}/applications packaging/audiorouter.desktop
 
@@ -86,10 +91,15 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_bindir}/audiorouter
 %{_bindir}/audiorouter-gui
 %{_libdir}/lv2/audiorouter-rnnoise.lv2/
+%{_libdir}/lv2/audiorouter-meter.lv2/
 %{_userunitdir}/audiorouter.service
 %{_datadir}/applications/audiorouter.desktop
 
 %changelog
+* Wed Sep 30 2026 lmck-dev <lmck.dev@gmail.com> - 0.3.0-1
+- Levels follow the highlighted effect: what it receives and what it puts out
+- Separate lists for outputs and inputs; Playing now and Remembered apps fold away
+
 * Fri Sep 18 2026 lmck-dev <lmck.dev@gmail.com> - 0.2.0-1
 - Echo cancellation per input channel: keep what the speakers play out of the mic
 

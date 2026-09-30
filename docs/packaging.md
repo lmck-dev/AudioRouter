@@ -38,8 +38,8 @@ re-running `launcher` and toggling login off/on.
 `/usr/bin/audiorouter watch`) and `audiorouter.desktop` (runs `audiorouter-gui`),
 and `build-rpm.sh`, which tars the working tree (committed or not) and runs
 `rpmbuild` in a `fedora:44` podman container, `%check` included. Our noise
-plugin is compiled at build time into `/usr/lib64/lv2/audiorouter-rnnoise.lv2`,
-so users need no gcc. Bump the version in BOTH `pyproject.toml` and the spec
+plugin and level tap are compiled at build time into `/usr/lib64/lv2/audiorouter-rnnoise.lv2`
+and `audiorouter-meter.lv2`, so users need no gcc. Bump the version in BOTH `pyproject.toml` and the spec
 (the script refuses a mismatch).
 
 - **`install.packaged()` is decided by location, not `sysconfig`.** Fedora's

@@ -436,6 +436,8 @@ class EffectsPanel(QGroupBox):
     changed = pyqtSignal()
     #: Only settings changed: they can be applied to the running channel.
     tuned = pyqtSignal()
+    #: The highlighted effect's position in the chain, or -1 for none.
+    highlighted = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Effects", parent)
@@ -564,6 +566,7 @@ class EffectsPanel(QGroupBox):
 
     def _selection_changed(self, row: int) -> None:
         effect = self._current()
+        self.highlighted.emit(row if effect is not None else -1)
         self.form.show_effect(effect)
         dim = Theme(self).dim
         if effect is None:
