@@ -40,8 +40,14 @@ class RenderTest(unittest.TestCase):
             graph = self.args()["filter.graph"]
             controls = self.channel.controls()
         self.assertEqual(graph["outputs"], ["tail_l:Out", "tail_r:Out"])
-        self.assertEqual([n["name"] for n in graph["nodes"] if n["type"] == "lv2"], ["tap0", "tap1"])
+        self.assertEqual([n["name"] for n in graph["nodes"] if n["type"] == "lv2"], ["tap0", "tap1", "tap2"])
         self.assertEqual(controls["tap1:slot"], 1.0)
+
+    def test_the_fader_is_saved_and_rendered(self):
+        self.channel.fader_db = -12.0
+        again = Channel.from_dict(self.channel.to_dict())
+        self.assertEqual(again.fader_db, -12.0)
+        self.assertAlmostEqual(again.controls()["fader_l:Gain 1"], 0.251189, places=5)
 
     def test_the_sink_is_named_and_prefixed(self):
         self.assertEqual(self.channel.sink_name, "ar_headphones")
@@ -70,7 +76,7 @@ class RenderTest(unittest.TestCase):
         channel = Channel("x", "X", "dev", effects=[Effect("gain", {"gain_db": -3})])
         graph = self.args(channel)["filter.graph"]
         self.assertEqual(graph["inputs"], ["sw0_in_l:In", "sw0_in_r:In"])
-        self.assertEqual(graph["outputs"], ["sw0_switch_l:Out", "sw0_switch_r:Out"])
+        self.assertEqual(graph["outputs"], ["fader_l:Out", "fader_r:Out"])
 
     def test_the_rendered_config_is_valid_json(self):
         self.assertEqual(

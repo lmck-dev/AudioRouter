@@ -738,8 +738,20 @@ def tap_slots(effects: list[Effect]) -> list[tuple[int, int] | None]:
 
 
 def output_slot(effects: list[Effect]) -> int:
-    """The tap slot after the whole chain: what the channel puts out."""
-    return len(_active(effects))
+    """The tap slot after the fader: what the channel puts out."""
+    return len(_active(effects)) + 1
+
+
+#: The channel fader's range (a console's: off at the bottom, +10 dB at the top).
+FADER_MAX_DB = 10.0
+#: At or below this the fader is off: a gain of exactly 0.
+FADER_OFF_DB = -90.0
+
+
+def fader_gain(db: float) -> float:
+    if db <= FADER_OFF_DB:
+        return 0.0
+    return round(db_to_linear(min(db, FADER_MAX_DB)), 6)
 
 
 def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -749,7 +761,7 @@ def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[s
     return node, links
 
 
-def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
+def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.0) -> Chain:
     """Render effects into one series stereo graph.
 
     Every effect sits behind a bypass switch (see `_with_bypass`), so a
@@ -760,9 +772,16 @@ def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
     exists and passes audio through untouched (tapped too, so every channel
     has an output tap for the mixer).
 
+    The chain always ends in the channel's fader (`fader_l`/`fader_r`), a
+    post-insert gain like a console's, so moving it is a live control change
+    and never reaches the compressors before it. The desktop's volume for
+    the channel acts before the effects, as a trim (measured: 50% is -18 dB
+    already at the first tap).
+
     With `taps`, a level tap listens at every boundary - before the first
     effect and after each one - so the window can show what any effect
-    receives and puts out (`tap_slots`). Taps only listen, and are always in
+    receives and puts out (`tap_slots`), and one more after the fader
+    (`output_slot`) for the mixer's meters. Taps only listen, and are always in
     the graph, so choosing which one to show never restarts the channel.
     **The chain's last output cannot also feed a tap**: filter-graph refuses
     ("already used by link, use copy"), the graph fails to start and the
@@ -770,18 +789,16 @@ def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
     """
     active = _active(effects)
     if not active:
-        nodes = [
-            {"type": "builtin", "name": "passthrough_l", "label": "copy"},
-            {"type": "builtin", "name": "passthrough_r", "label": "copy"},
-        ]
+        nodes: list[dict[str, Any]] = []
         links: list[dict[str, str]] = []
-        outputs = ("passthrough_l:Out", "passthrough_r:Out")
+        entry = _fader(nodes, links, None, fader_db)
+        outputs = ("fader_l:Out", "fader_r:Out")
         if taps:
-            node, tap_links = _tap(0, outputs)
+            node, tap_links = _tap(output_slot(effects), outputs)
             nodes.append(node)
             links.extend(tap_links)
             outputs = _tail(nodes, links, outputs)
-        return Chain(nodes, links, ("passthrough_l:In", "passthrough_r:In"), outputs)
+        return Chain(nodes, links, entry, outputs)
 
     nodes, links, clock = _fade_clock()
     first_in: tuple[str, str] | None = None
@@ -807,9 +824,26 @@ def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
             nodes.append(node)
             links.extend(tap_links)
     assert first_in is not None and previous_out is not None
+    _fader(nodes, links, previous_out, fader_db)
+    previous_out = ("fader_l:Out", "fader_r:Out")
     if taps:
+        node, tap_links = _tap(output_slot(effects), previous_out)
+        nodes.append(node)
+        links.extend(tap_links)
         previous_out = _tail(nodes, links, previous_out)
     return Chain(nodes, links, first_in, previous_out)
+
+
+def _fader(nodes: list[dict[str, Any]], links: list[dict[str, str]],
+           source: tuple[str, str] | None, db: float) -> tuple[str, str]:
+    """Append the fader, fed from `source`; returns its inputs."""
+    for side in SIDES:
+        nodes.append({"type": "builtin", "name": f"fader_{side}", "label": "mixer",
+                      "control": {"Gain 1": fader_gain(db)}})
+    if source is not None:
+        for side, port in zip(SIDES, source):
+            links.append({"output": port, "input": f"fader_{side}:In 1"})
+    return ("fader_l:In 1", "fader_r:In 1")
 
 
 def _tail(nodes: list[dict[str, Any]], links: list[dict[str, str]],

@@ -124,6 +124,17 @@ def meter_dir() -> Path:
     return runtime_dir() / "meters"
 
 
+def _running_nodes(channel: Channel) -> list[dict]:
+    conf = channel.running_config()
+    if conf is None:
+        return []
+    nodes: list[dict] = []
+    for module in conf.get("context.modules", []):
+        graph = (module.get("args") or {}).get("filter.graph") or {}
+        nodes.extend(graph.get("nodes", []))
+    return nodes
+
+
 def host_has_taps(channel: Channel) -> bool:
     """Was the running host started with level taps in its chain?
 
@@ -131,14 +142,7 @@ def host_has_taps(channel: Channel) -> bool:
     built, or by an older version, has none until its next restart, and its
     files would simply never appear.
     """
-    conf = channel.running_config()
-    if conf is None:
-        return False
-    for module in conf.get("context.modules", []):
-        graph = (module.get("args") or {}).get("filter.graph") or {}
-        if any(node.get("plugin") == TAP_URI for node in graph.get("nodes", [])):
-            return True
-    return False
+    return any(node.get("plugin") == TAP_URI for node in _running_nodes(channel))
 
 
 def effect_taps(channel: Channel, index: int) -> tuple[Tap | None, Tap | None]:
@@ -170,9 +174,16 @@ def output_tap(channel: Channel) -> Tap | None:
     something records it (its capture is passive until then).
     """
     host = channel.pid()
-    if host is None or not host_has_taps(channel):
+    nodes = _running_nodes(channel)
+    taps = [n for n in nodes if n.get("plugin") == TAP_URI]
+    if host is None or not taps:
         return None
-    return Tap("Out", (), host, str(meter_dir() / f"{host}.{output_slot(channel.effects)}"))
+    # The last tap of the running host: one started by 0.4.0 had no fader,
+    # so its output tap sits one slot earlier than a current chain's.
+    slot = int(max(n.get("control", {}).get("slot", 0) for n in taps))
+    if not any(n.get("name") == "fader_l" for n in nodes):
+        slot = min(slot, output_slot(channel.effects) - 1)
+    return Tap("Out", (), host, str(meter_dir() / f"{host}.{slot}"))
 
 
 def sweep_stale(directory: Path | None = None) -> None:

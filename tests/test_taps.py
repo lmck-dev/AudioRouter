@@ -42,8 +42,10 @@ class ChainTest(unittest.TestCase):
 
     def test_a_tap_listens_before_the_chain_and_after_every_effect(self):
         chain = self.chain([Effect("gain"), Effect("highpass"), Effect("gain")])
-        self.assertEqual([n["control"]["slot"] for n in self.taps(chain)], [0.0, 1.0, 2.0, 3.0])
+        # ...and one more after the fader, for the mixer.
+        self.assertEqual([n["control"]["slot"] for n in self.taps(chain)], [0.0, 1.0, 2.0, 3.0, 4.0])
         feeds = {l["input"]: l["output"] for l in chain.links if l["input"].startswith("tap")}
+        self.assertEqual(feeds["tap4:in_l"], "fader_l:Out")
         self.assertEqual(feeds["tap0:in_l"], "sw0_in_l:Out")
         self.assertEqual(feeds["tap1:in_r"], "sw0_switch_r:Out")
         self.assertEqual(feeds["tap3:in_l"], "sw2_switch_l:Out")
@@ -60,16 +62,16 @@ class ChainTest(unittest.TestCase):
         linked_out = {l["output"] for l in chain.links}
         self.assertFalse(set(chain.outputs) & linked_out)
 
-    def test_without_taps_the_chain_is_unchanged(self):
+    def test_without_taps_there_are_none(self):
         plain = render_chain([Effect("gain")])
         self.assertFalse(self.taps(plain))
-        self.assertEqual(plain.outputs, ("sw0_switch_l:Out", "sw0_switch_r:Out"))
+        self.assertEqual(plain.outputs, ("fader_l:Out", "fader_r:Out"))
 
     def test_an_empty_chain_is_tapped_at_its_output_too(self):
         chain = self.chain([])
-        self.assertEqual([n["control"]["slot"] for n in self.taps(chain)], [0.0])
+        self.assertEqual([n["control"]["slot"] for n in self.taps(chain)], [1.0])
         self.assertEqual(chain.outputs, ("tail_l:Out", "tail_r:Out"))
-        self.assertEqual(render_chain([]).outputs, ("passthrough_l:Out", "passthrough_r:Out"))
+        self.assertEqual(render_chain([]).outputs, ("fader_l:Out", "fader_r:Out"))
 
     def test_tap_slots_skip_an_effect_that_is_not_rendered(self):
         missing = Effect("lv2", plugin="http://example.org/uninstalled", enabled=False)
@@ -124,12 +126,24 @@ class EffectTapsTest(unittest.TestCase):
         self.assertTrue(tap_out.file.endswith("/meters/77.2"))
         self.assertEqual((tap_in.label, tap_out.label), ("In", "Out"))
 
-    def test_the_output_tap_is_after_the_last_rendered_effect(self):
+    def test_the_output_tap_is_after_the_fader(self):
         self.conf(taps=True)
         with mock.patch.object(Channel, "pid", return_value=77):
-            self.assertTrue(meter.output_tap(self.channel).file.endswith("/meters/77.2"))
+            self.assertTrue(meter.output_tap(self.channel).file.endswith("/meters/77.3"))
             self.channel.effects.clear()
-            self.assertTrue(meter.output_tap(self.channel).file.endswith("/meters/77.0"))
+            self.conf(taps=True)
+            self.assertTrue(meter.output_tap(self.channel).file.endswith("/meters/77.1"))
+
+    def test_a_host_from_before_the_fader_is_read_at_its_own_last_tap(self):
+        # 0.4.0 chains ended at the last effect's tap; until such a host
+        # restarts, its meter must not wait for a file that never comes.
+        chain = render_chain(self.channel.effects, taps=True)
+        nodes = [n for n in chain.nodes if not n["name"].startswith("fader")
+                 and n.get("control", {}).get("slot") != 3.0]
+        self.channel.config_path.write_text(__import__("json").dumps(
+            {"context.modules": [{"args": {"filter.graph": {"nodes": nodes}}}]}))
+        with mock.patch.object(Channel, "pid", return_value=77):
+            self.assertTrue(meter.output_tap(self.channel).file.endswith("/meters/77.2"))
 
     def test_a_host_started_without_taps_has_none_to_read(self):
         self.conf(taps=False)

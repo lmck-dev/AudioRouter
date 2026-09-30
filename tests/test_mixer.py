@@ -55,20 +55,38 @@ class MixerTest(GuiTestCase):
         self.assertTrue(self.window._pending_apply.isActive())
         self.assertFalse(self.window._structural_pending)  # a tune, not a restart
 
-    def test_the_fader_sets_that_channels_volume(self):
+    def test_trim_sets_that_channels_desktop_volume(self):
         with mock.patch.object(Engine, "set_channel_volume") as set_volume:
-            self.strip("phones").fader.setValue(50)
+            self.strip("phones").trim.setValue(50)
             self.window._write_volume()
         set_volume.assert_called_once_with("phones", 0.5)
-        self.assertEqual(self.strip("phones").volume_label.text(), "-18.1 dB")
+        self.assertEqual(self.strip("phones").trim_label.text(), "-18.1 dB")
 
-    def test_two_faders_moved_together_both_land(self):
+    def test_two_trims_moved_together_both_land(self):
         with mock.patch.object(Engine, "set_channel_volume") as set_volume:
-            self.strip("phones").fader.setValue(50)
-            self.strip("speakers").fader.setValue(25)
+            self.strip("phones").trim.setValue(50)
+            self.strip("speakers").trim.setValue(25)
             self.window._write_volume()
         self.assertEqual([c.args for c in set_volume.call_args_list],
                          [("phones", 0.5), ("speakers", 0.25)])
+
+    def test_the_fader_is_saved_and_applied_live(self):
+        from audiorouter.gui.mixer import db_to_fader
+
+        with mock.patch.object(Engine, "apply"):
+            self.strip("speakers").fader.setValue(db_to_fader(-6.0))
+        self.assertEqual(Config.load(self.engine.path).channel("speakers").fader_db, -6.0)
+        self.assertEqual(self.strip("speakers").volume_label.text(), "fader -6.0 dB")
+        self.assertTrue(self.window._pending_apply.isActive())
+        self.assertFalse(self.window._structural_pending)  # a live change, not a restart
+
+    def test_the_fader_starts_where_it_was_left_and_goes_off_at_the_bottom(self):
+        from audiorouter.gui.mixer import db_to_fader, fader_text, fader_to_db
+
+        self.assertEqual(self.strip("phones").fader.value(), db_to_fader(0.0))
+        self.assertEqual(fader_text(fader_to_db(0)), "off")
+        for db in (-60.0, -20.0, -6.0, 0.0, 10.0):
+            self.assertAlmostEqual(fader_to_db(db_to_fader(db)), db, places=1)
 
     def test_mute_mutes_that_channel(self):
         with mock.patch.object(Engine, "set_channel_muted") as set_muted:

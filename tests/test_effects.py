@@ -70,16 +70,33 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(chain.outputs, ("highpass0_2_l:Out", "highpass0_2_r:Out"))
         self.assertTrue(all(n["label"] == "bq_highpass" for n in chain.nodes))
 
-    def test_empty_chain_passes_audio_through(self):
+    def test_empty_chain_is_just_the_fader(self):
         chain = render_chain([])
-        self.assertEqual(chain.nodes[0]["label"], "copy")
-        self.assertEqual(chain.inputs, ("passthrough_l:In", "passthrough_r:In"))
-        self.assertEqual(chain.outputs, ("passthrough_l:Out", "passthrough_r:Out"))
+        self.assertEqual([n["name"] for n in chain.nodes], ["fader_l", "fader_r"])
+        self.assertEqual(chain.inputs, ("fader_l:In 1", "fader_r:In 1"))
+        self.assertEqual(chain.outputs, ("fader_l:Out", "fader_r:Out"))
+        self.assertEqual(chain.controls()["fader_l:Gain 1"], 1.0)
+
+    def test_the_fader_follows_the_last_effect_and_goes_fully_off(self):
+        from audiorouter.effects import FADER_MAX_DB
+
+        chain = render_chain([Effect("gain")], fader_db=-6.0)
+        self.assertIn({"output": "sw0_switch_l:Out", "input": "fader_l:In 1"}, chain.links)
+        self.assertEqual(chain.outputs, ("fader_l:Out", "fader_r:Out"))
+        self.assertAlmostEqual(chain.controls()["fader_r:Gain 1"], 0.501187, places=5)
+        self.assertEqual(render_chain([], fader_db=-200).controls()["fader_l:Gain 1"], 0.0)
+        self.assertAlmostEqual(render_chain([], fader_db=99).controls()["fader_l:Gain 1"],
+                               10 ** (FADER_MAX_DB / 20), places=4)
+
+    def test_moving_the_fader_keeps_the_graph_shape(self):
+        # So a fader move is a live control change, never a restart.
+        a, b = render_chain([Effect("gain")], fader_db=0), render_chain([Effect("gain")], fader_db=-20)
+        self.assertEqual(a.links, b.links)
+        self.assertEqual([n["name"] for n in a.nodes], [n["name"] for n in b.nodes])
 
     def test_every_effect_sits_behind_a_switch_that_feeds_it_and_the_dry_path(self):
         chain = render_chain([Effect("gain")])
         self.assertEqual(chain.inputs, ("sw0_in_l:In", "sw0_in_r:In"))
-        self.assertEqual(chain.outputs, ("sw0_switch_l:Out", "sw0_switch_r:Out"))
         for side in "lr":
             self.assertIn({"output": f"sw0_in_{side}:Out", "input": f"gain0_{side}:In 1"}, chain.links)
             self.assertIn({"output": f"gain0_{side}:Out", "input": f"sw0_wet_{side}:In 1"}, chain.links)
@@ -151,7 +168,7 @@ class RenderTest(unittest.TestCase):
     def test_a_switched_off_effect_that_cannot_run_is_left_out(self):
         with mock.patch("audiorouter.plugins.available_loaders", return_value=frozenset({"builtin"})):
             chain = render_chain([Effect("limiter", enabled=False)])
-        self.assertEqual(chain.nodes[0]["label"], "copy")
+        self.assertEqual([n["name"] for n in chain.nodes], ["fader_l", "fader_r"])
 
     def test_effects_are_chained_in_order(self):
         chain = render_chain([Effect("highpass", {"poles": 1}), Effect("gain")])
@@ -159,7 +176,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn({"output": "sw0_switch_r:Out", "input": "sw1_in_r:In"}, chain.links)
         self.assertIn({"output": "sw1_in_l:Out", "input": "gain1_l:In 1"}, chain.links)
         self.assertEqual(chain.inputs, ("sw0_in_l:In", "sw0_in_r:In"))
-        self.assertEqual(chain.outputs, ("sw1_switch_l:Out", "sw1_switch_r:Out"))
+        self.assertIn({"output": "sw1_switch_r:Out", "input": "fader_r:In 1"}, chain.links)
 
     def test_delay_declares_enough_buffer_for_its_setting(self):
         for node in Effect("delay", {"delay_ms": 200}).render(0).nodes:

@@ -175,6 +175,21 @@ and a stereo meter, volume in dB.
   Only the visible view's meters run (`MainWindow._update_meters`).
 - **Inserts scroll inside the strip** and names are elided in the middle;
   otherwise a long chain pushed the fader off the bottom of the desk.
-- **The fader is the sink's volume, which acts BEFORE the effects** (measured:
-  50% = -18.06 dB already at tap 0). A console fader sits after the inserts;
-  a post-insert fader would be a gain node at the end of the chain.
+- **Two levels, like a console** (owner asked, 30 Sep 2026). TRIM (small,
+  near the top) is the sink's volume - the desktop's - which acts BEFORE the
+  effects (measured: 50% = -18.06 dB already at tap 0), so it sets how hard
+  they are driven. The big FADER is `Channel.fader_db`, a `mixer` gain pair
+  (`fader_l`/`fader_r`) that ends every chain, AFTER the effects; moving it
+  is a live control change (measured: same pid, 0/-6/+6/off gave exactly
+  -48.06/-54.06/-42.06/silence while the last effect's output stayed -48.06).
+  Law: `mixer.FADER_LAW`, +10 dB top, 0 dB at 76% of travel, off at the bottom.
+  The Channels view does not show the fader.
+- **The output tap is after the fader** (`effects.output_slot` = rendered
+  effects + 1). `meter.output_tap` reads the slot from the RUNNING host's
+  conf, so a host started by 0.4.0 (no fader) still meters until it restarts.
+- **Meters are LED segments in zones**: green below -18 dBFS, amber to -6,
+  red above (`meters.AMBER_FROM_DB`, `RED_FROM_DB`); lit to the average,
+  half-lit to the peak, faint above. Zone colours are theme-derived with a
+  light and a dark value (`Theme.meter_*`), like warn/good.
+- **Lit inserts are a 30% tint of the highlight behind the normal text**, with
+  a solid left bar. A full highlight with white text was hard to read (owner).

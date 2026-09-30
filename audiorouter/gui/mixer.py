@@ -5,6 +5,12 @@ in signal order: where the sound comes from, the inserts (the effect chain,
 each one lit while it is on), where it goes, then the fader, the mute and a
 meter of what the channel puts out.
 
+Like a console there are two levels. TRIM, near the top, is the channel's
+desktop volume - it acts before the effects, so it sets how hard they are
+driven. The big FADER is after the effects (`Channel.fader_db`, a gain at the
+end of the chain), so it changes the level without changing how a compressor
+behaves. Both move live.
+
 The strips are another view of the same settings as the Channels view - they
 edit the same `Channel` objects and report through the same signals, so the
 window's one debounce still decides when audio restarts. Anything that needs
@@ -32,13 +38,15 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QStyle,
+    QStyleOptionSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..channels import NOWHERE, Channel
-from ..effects import EffectError
+from ..effects import FADER_MAX_DB, FADER_OFF_DB, EffectError
 from ..meter import FileLevelReader, Levels, Tap, output_tap
 from .meters import FLOOR_DB, FRAME_MS, SCALE_MARKS, LevelBar, bar_span, fraction
 from .theme import Theme
@@ -59,6 +67,76 @@ def volume_db(volume: float) -> str:
     if volume <= 0:
         return "-inf dB"
     return f"{60 * math.log10(volume):+.1f} dB"
+
+
+#: The fader's law: (travel 0..1000, dB), as a console scale is printed -
+#: more travel near 0 dB, where fine moves matter, and off at the bottom.
+FADER_TRAVEL = 1000
+FADER_LAW = ((40, -60.0), (160, -40.0), (300, -30.0), (440, -20.0),
+             (600, -10.0), (760, 0.0), (FADER_TRAVEL, FADER_MAX_DB))
+FADER_MARKS = (10, 0, -10, -20, -30, -40, -60)
+#: Below -60 the last stretch of travel runs down to -90, then off.
+BOTTOM_DB = -90.0
+
+
+def fader_to_db(position: int) -> float:
+    if position <= 0:
+        return FADER_OFF_DB
+    first_pos, first_db = FADER_LAW[0]
+    if position <= first_pos:
+        return BOTTOM_DB + (first_db - BOTTOM_DB) * position / first_pos
+    for (p0, d0), (p1, d1) in zip(FADER_LAW, FADER_LAW[1:]):
+        if position <= p1:
+            return d0 + (d1 - d0) * (position - p0) / (p1 - p0)
+    return FADER_MAX_DB
+
+
+def db_to_fader(db: float) -> int:
+    if db <= FADER_OFF_DB or db <= BOTTOM_DB:
+        return 0
+    first_pos, first_db = FADER_LAW[0]
+    if db <= first_db:
+        return max(1, round(first_pos * (db - BOTTOM_DB) / (first_db - BOTTOM_DB)))
+    for (p0, d0), (p1, d1) in zip(FADER_LAW, FADER_LAW[1:]):
+        if db <= d1:
+            return round(p0 + (p1 - p0) * (db - d0) / (d1 - d0))
+    return FADER_TRAVEL
+
+
+def fader_text(db: float) -> str:
+    return "off" if db <= FADER_OFF_DB else f"{db:+.1f} dB"
+
+
+class FaderScale(QWidget):
+    """The fader's dB marks beside it, level with the handle's centre."""
+
+    def __init__(self, fader: QSlider, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.fader = fader
+        self.setFixedWidth(self.fontMetrics().horizontalAdvance("-60") + 2)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+    def paintEvent(self, _event) -> None:
+        theme = Theme(self)
+        painter = QPainter(self)
+        font = painter.font()
+        font.setPointSizeF(max(6.0, font.pointSizeF() * 0.8))
+        painter.setFont(font)
+        painter.setPen(theme.dim)
+        option = QStyleOptionSlider()
+        self.fader.initStyleOption(option)
+        handle = self.fader.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self.fader)
+        travel = self.fader.height() - handle.height()
+        top = self.fader.y() - self.y()  # the two sit side by side in one row
+        metrics = painter.fontMetrics()
+        for mark in FADER_MARKS:
+            fraction = db_to_fader(mark) / self.fader.maximum()
+            y = top + handle.height() / 2 + travel * (1 - fraction)
+            text = f"+{mark}" if mark > 0 else str(mark)
+            painter.drawText(self.width() - metrics.horizontalAdvance(text) - 1,
+                             int(y + metrics.ascent() / 2 - 1), text)
+        painter.end()
 
 
 class VerticalScale(QWidget):
@@ -91,6 +169,7 @@ class ChannelStrip(QFrame):
     """One channel as a console strip. Emits what the user did; decides nothing."""
 
     volume_changed = pyqtSignal(str, float)
+    fader_changed = pyqtSignal(str, float)
     mute_toggled = pyqtSignal(str, bool)
     effect_toggled = pyqtSignal(str, int, bool)
     effect_opened = pyqtSignal(str, int)
@@ -168,11 +247,24 @@ class ChannelStrip(QFrame):
             self.route.setToolTip("Plays through")
             self.route.activated.connect(self._device_chosen)
 
+        # TRIM: the desktop's volume for this channel, before the effects.
+        self.trim = QSlider(Qt.Orientation.Horizontal, self)
+        self.trim.setRange(0, 100)
+        self.trim.setToolTip("Trim: the channel's volume before its effects - the same one the "
+                             "desktop's sound settings show. Sets how hard the effects are driven.")
+        self.trim.valueChanged.connect(self._trim_moved)
+        self.trim_label = caption("")
+        self.trim_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # FADER: after the effects, like a console's.
         self.fader = QSlider(Qt.Orientation.Vertical, self)
-        self.fader.setRange(0, 100)
-        self.fader.setToolTip("Channel volume - the same one the desktop's sound settings show")
+        self.fader.setRange(0, FADER_TRAVEL)
+        self.fader.setPageStep(40)
+        self.fader.setToolTip("Fader: the channel's level after its effects")
         self.fader.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.fader.setValue(db_to_fader(channel.fader_db))
         self.fader.valueChanged.connect(self._fader_moved)
+        self.fader_scale = FaderScale(self.fader, self)
         self.meter_l = LevelBar(self, vertical=True)
         self.meter_r = LevelBar(self, vertical=True)
         self.meter_l.setToolTip("What this channel puts out, after its effects")
@@ -195,13 +287,20 @@ class ChannelStrip(QFrame):
         self.edit.clicked.connect(lambda: self.open_settings.emit(self.slug))
 
         faders = QHBoxLayout()
-        faders.setSpacing(3)
+        faders.setSpacing(2)
         faders.addStretch(1)
+        faders.addWidget(self.fader_scale)
         faders.addWidget(self.fader)
-        faders.addWidget(self.scale)
+        faders.addSpacing(4)
         faders.addWidget(self.meter_l)
         faders.addWidget(self.meter_r)
+        faders.addWidget(self.scale)
         faders.addStretch(1)
+
+        trim_row = QHBoxLayout()
+        trim_row.setSpacing(3)
+        trim_row.addWidget(caption("TRIM"))
+        trim_row.addWidget(self.trim, 1)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.mute)
@@ -217,6 +316,8 @@ class ChannelStrip(QFrame):
         if self.source is not None:
             layout.addWidget(self.source)
         layout.addWidget(self.apps)
+        layout.addLayout(trim_row)
+        layout.addWidget(self.trim_label)
         layout.addWidget(caption("INSERTS"))
         layout.addWidget(self.insert_area, 2)
         layout.addWidget(caption("LISTEN" if channel.is_input else "OUT"))
@@ -247,14 +348,18 @@ class ChannelStrip(QFrame):
         button.setMinimumWidth(0)
         button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        # Lit while on, like an insert's LED: the palette's highlight, so it
-        # reads on light and dark themes alike.
+        # Lit while on: a soft tint of the palette's highlight behind the
+        # ordinary text colour, and a solid bar on the left like an LED. (A
+        # full highlight with white text was hard to read - owner, 30 Sep.)
         palette = self.palette()
+        accent = palette.highlight().color()
+        tint = Theme.blend(accent, palette.button().color(), 0.3)
         button.setStyleSheet(
-            "QToolButton { padding: 2px; }"
-            f"QToolButton:checked {{ background: {palette.highlight().color().name()};"
-            f" color: {palette.highlightedText().color().name()};"
-            f" border: 1px solid {palette.highlight().color().darker(130).name()}; border-radius: 3px; }}"
+            "QToolButton { padding: 2px 2px 2px 6px; }"
+            f"QToolButton:checked {{ background: {tint.name()};"
+            f" color: {palette.buttonText().color().name()};"
+            f" border: 1px solid {accent.name()}; border-left: 5px solid {accent.name()};"
+            " border-radius: 3px; }"
         )
         tip = f"{label}\nClick: switch on or off.  Double-click: open its settings."
         if unavailable:
@@ -286,20 +391,25 @@ class ChannelStrip(QFrame):
         self.apps.setHidden(not self.apps.text())
         volume = entry.get("volume") if entry else None
         running = bool(entry and entry.get("running"))
-        self.fader.setEnabled(volume is not None)
+        self.trim.setEnabled(volume is not None)
         self.mute.setEnabled(volume is not None)
         if volume is None:
-            self.volume_label.setText("off" if entry and not entry.get("enabled") else "not running")
-        elif not self.fader.isSliderDown() and time.monotonic() - self._last_local_edit >= VOLUME_SETTLE_S:
+            self.trim_label.setText("off" if entry and not entry.get("enabled") else "not running")
+        elif not self.trim.isSliderDown() and time.monotonic() - self._last_local_edit >= VOLUME_SETTLE_S:
             percent = round(volume * 100)
-            self.fader.blockSignals(True)
-            self.fader.setMaximum(150 if percent > 100 else 100)
-            self.fader.setValue(percent)
-            self.fader.blockSignals(False)
-            self.volume_label.setText(volume_db(volume))
+            self.trim.blockSignals(True)
+            self.trim.setMaximum(150 if percent > 100 else 100)
+            self.trim.setValue(percent)
+            self.trim.blockSignals(False)
+            self.trim_label.setText(volume_db(volume))
             self.mute.blockSignals(True)
             self.mute.setChecked(bool(entry.get("muted")))
             self.mute.blockSignals(False)
+        if not self.fader.isSliderDown():
+            self.fader.blockSignals(True)
+            self.fader.setValue(db_to_fader(self.channel.fader_db))
+            self.fader.blockSignals(False)
+        self.volume_label.setText(f"fader {fader_text(self.channel.fader_db)}")
         self._show_mute()
         self.name.setEnabled(running)
 
@@ -336,10 +446,15 @@ class ChannelStrip(QFrame):
 
     # -- user actions --------------------------------------------------------
 
-    def _fader_moved(self, value: int) -> None:
+    def _trim_moved(self, value: int) -> None:
         self._last_local_edit = time.monotonic()
-        self.volume_label.setText(volume_db(value / 100))
+        self.trim_label.setText(volume_db(value / 100))
         self.volume_changed.emit(self.slug, value / 100)
+
+    def _fader_moved(self, value: int) -> None:
+        db = round(fader_to_db(value), 1)
+        self.volume_label.setText(f"fader {fader_text(db)}")
+        self.fader_changed.emit(self.slug, db)
 
     def _mute_toggled(self, on: bool) -> None:
         self._show_mute()
@@ -369,7 +484,7 @@ class ChannelStrip(QFrame):
         theme = Theme(self)
         if self.meter_l.state.clipped(now) or self.meter_r.state.clipped(now):
             self.level_label.setText("CLIP")
-            self.level_label.setStyleSheet(theme.css(theme.warn))
+            self.level_label.setStyleSheet(theme.css(theme.meter_red))
         else:
             self.level_label.setText("" if hold <= FLOOR_DB else f"peak {hold:.1f}")
             self.level_label.setStyleSheet(theme.css(theme.dim))
@@ -385,6 +500,7 @@ class MixerView(QWidget):
     """All channels as strips; the meters run only while the view is on screen."""
 
     volume_changed = pyqtSignal(str, float)
+    fader_changed = pyqtSignal(str, float)
     mute_toggled = pyqtSignal(str, bool)
     effect_toggled = pyqtSignal(str, int, bool)
     effect_opened = pyqtSignal(str, int)
@@ -475,7 +591,7 @@ class MixerView(QWidget):
             self.row.addWidget(self._group_header(title, is_input))
             for channel in group:
                 strip = ChannelStrip(channel, self.desk)
-                for name in ("volume_changed", "mute_toggled", "effect_toggled", "effect_opened",
+                for name in ("volume_changed", "fader_changed", "mute_toggled", "effect_toggled", "effect_opened",
                              "add_effect", "device_chosen", "listen_chosen", "open_settings"):
                     getattr(strip, name).connect(getattr(self, name).emit)
                 self.strips[channel.slug] = strip

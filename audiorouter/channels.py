@@ -240,6 +240,9 @@ class Channel:
     #: Input channels: subtract whatever the speakers are playing from the mic
     #: before the effects, so a call does not hear your video, music or game.
     echo_cancel: bool = False
+    #: The post-insert fader, in dB (the mixer's big fader). The desktop's
+    #: volume for the channel is separate and acts before the effects.
+    fader_db: float = 0.0
 
     def __post_init__(self) -> None:
         validate_slug(self.slug)
@@ -310,6 +313,7 @@ class Channel:
             "device": self.device,
             "enabled": self.enabled,
             "effects": [e.to_dict() for e in self.effects],
+            "fader_db": self.fader_db,
         }
         if self.is_input:
             data["listen"] = self.listen
@@ -330,13 +334,14 @@ class Channel:
             recordable=bool(data.get("recordable", False)),
             listen=str(data.get("listen", "")),
             echo_cancel=bool(data.get("echo_cancel", False)),
+            fader_db=float(data.get("fader_db", 0.0)),
         )
 
     # -- rendering --------------------------------------------------------
 
     def render_config(self) -> dict[str, Any]:
         """The complete conf structure for this channel's host process."""
-        chain = render_chain(self.effects, taps=taps_available())
+        chain = render_chain(self.effects, taps=taps_available(), fader_db=self.fader_db)
         stamp = {OWNER_KEY: self.slug}
         args: dict[str, Any] = {
             "node.description": self.name,
@@ -484,7 +489,7 @@ class Channel:
 
     def controls(self) -> dict[str, float]:
         """Every knob value in the rendered graph, as `node:control`."""
-        return render_chain(self.effects, taps=taps_available()).controls()
+        return render_chain(self.effects, taps=taps_available(), fader_db=self.fader_db).controls()
 
     def running_config(self) -> dict[str, Any] | None:
         """The conf the running host was started with (or last updated to)."""

@@ -236,6 +236,7 @@ class MainWindow(QMainWindow):
         self.streams_panel.expanded_changed.connect(self._streams_folded)
         self.views.currentChanged.connect(lambda _i: self._update_meters())
         self.mixer.volume_changed.connect(self._set_volume)
+        self.mixer.fader_changed.connect(self._set_fader)
         self.mixer.mute_toggled.connect(self._set_muted)
         self.mixer.effect_toggled.connect(self._toggle_effect)
         self.mixer.effect_opened.connect(self._open_effect)
@@ -487,6 +488,13 @@ class MainWindow(QMainWindow):
         if effect.spec.unsatisfied():
             self._config_edited()
         else:
+            self._config_tuned()
+
+    def _set_fader(self, slug: str, db: float) -> None:
+        """The post-insert fader: a live control change, like a knob."""
+        channel = self.engine.config.channel(slug)
+        if db != channel.fader_db:
+            channel.fader_db = db
             self._config_tuned()
 
     def _open_effect(self, slug: str, index: int) -> None:

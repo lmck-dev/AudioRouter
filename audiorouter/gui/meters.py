@@ -123,6 +123,21 @@ def fraction(db: float) -> float:
     return min(1.0, max(0.0, (db - FLOOR_DB) / -FLOOR_DB))
 
 
+#: Meter zones, as on a studio meter: green below, amber up to, red above.
+AMBER_FROM_DB = -18.0
+RED_FROM_DB = -6.0
+#: Segment pitch along the bar in pixels, one pixel of it a gap.
+SEGMENT_PX = 4.0
+
+
+def zone_colour(theme: Theme, db: float) -> QColor:
+    if db >= RED_FROM_DB:
+        return theme.meter_red
+    if db >= AMBER_FROM_DB:
+        return theme.meter_amber
+    return theme.meter_green
+
+
 #: dB marks printed under the meters.
 SCALE_MARKS = (-48, -36, -24, -12, -6, 0)
 
@@ -165,24 +180,27 @@ class LevelBar(QWidget):
             rect = QRectF(0, 0, self.height(), self.width()).adjusted(0.5, 0.5, -0.5, -0.5)
         else:
             rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        width = rect.width()
         painter.fillRect(rect, palette.color(QPalette.ColorRole.Base))
 
         bar = bar_span(rect)
         clip_w = rect.width() - bar.width() - 2
 
+        # LED segments, lit up to the average, half-lit up to the peak, and
+        # faintly visible above it so the zones always show.
         average = fraction(self.state.average_db)
-        fill = QColor(theme.accent)
-        painter.fillRect(QRectF(bar.left(), bar.top(), bar.width() * average, bar.height()), fill)
-
         peak = fraction(self.state.peak_db)
-        if peak > average:
-            brighter = QColor(theme.accent)
-            brighter.setAlpha(110)
+        count = max(1, int(bar.width() // SEGMENT_PX))
+        pitch = bar.width() / count
+        for index in range(count):
+            middle = (index + 0.5) / count
+            colour = QColor(zone_colour(theme, FLOOR_DB * (1 - middle)))
+            if middle > peak:
+                colour.setAlpha(38)
+            elif middle > average:
+                colour.setAlpha(150)
             painter.fillRect(
-                QRectF(bar.left() + bar.width() * average, bar.top(),
-                       bar.width() * (peak - average), bar.height()),
-                brighter,
+                QRectF(bar.left() + index * pitch, bar.top(), max(1.0, pitch - 1), bar.height()),
+                colour,
             )
         if self.state.hold_db > FLOOR_DB:
             painter.setPen(theme.text)
@@ -190,7 +208,7 @@ class LevelBar(QWidget):
             painter.drawLine(int(x), int(bar.top()), int(x), int(bar.bottom()))
 
         clip = QRectF(rect.right() - clip_w, rect.top(), clip_w, rect.height())
-        painter.fillRect(clip, theme.warn if self.state.clipped(now) else palette.color(QPalette.ColorRole.Mid))
+        painter.fillRect(clip, theme.meter_red if self.state.clipped(now) else palette.color(QPalette.ColorRole.Mid))
         painter.end()
 
 
@@ -446,7 +464,7 @@ class MeterPanel(QGroupBox):
                 self.readouts[label].setText("")
             elif clipped:
                 self.readouts[label].setText("CLIP")
-                self.readouts[label].setStyleSheet(Theme(self).css(Theme(self).warn))
+                self.readouts[label].setStyleSheet(Theme(self).css(Theme(self).meter_red))
             else:
                 self.readouts[label].setText("-inf dB" if hold <= FLOOR_DB else f"{hold:.1f} dB")
                 self.readouts[label].setStyleSheet(Theme(self).css(Theme(self).dim))
