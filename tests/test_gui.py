@@ -910,6 +910,7 @@ class PlayingNowFoldTest(GuiTestCase):
         streams.toggle.click()
         self.assertFalse(streams.expanded)
         self.assertTrue(streams.body.isHidden())
+        self.assertFalse(self.window.rules_list.isVisibleTo(self.window))  # folds along
         self.assertEqual(self.window.settings.value("streams_expanded"), False)
 
         from audiorouter.gui.main import MainWindow

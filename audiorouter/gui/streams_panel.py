@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFrame,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -70,17 +71,25 @@ class StreamsPanel(QWidget):
         self.remember.clicked.connect(self._remember)
         self.table.itemSelectionChanged.connect(self._selection_changed)
 
-        body = QVBoxLayout(self.body)
-        body.setContentsMargins(0, 0, 0, 0)
-        body.addWidget(self.empty)
-        body.addWidget(self.table, 1)
-        body.addWidget(self.remember)
+        streams = QVBoxLayout()
+        streams.addWidget(self.empty)
+        streams.addWidget(self.table, 1)
+        streams.addWidget(self.remember)
+        # Anything placed beside the table folds away with it.
+        self._body = QHBoxLayout(self.body)
+        self._body.setContentsMargins(0, 0, 0, 0)
+        self._body.addLayout(streams, 3)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.body, 1)
         self._show_heading()
+
+    def add_beside(self, widget: QWidget) -> None:
+        """Show `widget` to the right of the table, folding along with it."""
+        widget.setParent(self.body)
+        self._body.addWidget(widget, 1)
 
     # -- folding -----------------------------------------------------------
 

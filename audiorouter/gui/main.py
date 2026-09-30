@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -156,10 +157,15 @@ class MainWindow(QMainWindow):
         input_buttons.addWidget(self.add_input_button)
         input_buttons.addWidget(self.remove_input_button)
 
-        self.rules_list = QListWidget(self)
-        self.rules_list.setMaximumHeight(120)
-        self.forget_button = QPushButton("Forget", self)
-        rules_label = QLabel("Remembered apps", self)
+        # Remembered apps sit beside Playing now and fold away with it.
+        self.rules = QWidget(self)
+        self.rules_list = QListWidget(self.rules)
+        self.forget_button = QPushButton("Forget", self.rules)
+        rules_layout = QVBoxLayout(self.rules)
+        rules_layout.setContentsMargins(0, 0, 0, 0)
+        rules_layout.addWidget(QLabel("Remembered apps", self.rules))
+        rules_layout.addWidget(self.rules_list, 1)
+        rules_layout.addWidget(self.forget_button)
 
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
@@ -170,9 +176,6 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(QLabel("Inputs - microphones and line-in", left))
         left_layout.addWidget(self.input_list, 1)
         left_layout.addLayout(input_buttons)
-        left_layout.addWidget(rules_label)
-        left_layout.addWidget(self.rules_list)
-        left_layout.addWidget(self.forget_button)
 
         self.channel_panel = ChannelPanel(self)
         self.effects_panel = EffectsPanel(self)
@@ -181,6 +184,11 @@ class MainWindow(QMainWindow):
         right = QWidget(self)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
+        # These two never scroll, so they must never be squeezed: an input's
+        # extra rows once overlapped into each other when the window was short.
+        # The effects list and Playing now scroll, so they give way instead.
+        for fixed in (self.channel_panel, self.meters):
+            fixed.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         right_layout.addWidget(self.channel_panel)
         right_layout.addWidget(self.meters)
         right_layout.addWidget(self.effects_panel, 1)
@@ -192,6 +200,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
 
         self.streams_panel = StreamsPanel(self.engine, self)
+        self.streams_panel.add_beside(self.rules)
 
         central = QWidget(self)
         self._layout = layout = QVBoxLayout(central)
