@@ -12,6 +12,7 @@ from audiorouter.cli import main
 from audiorouter.pwgraph import Graph
 
 from . import fakes
+from .test_gui import isolated_settings
 from .test_engine import live_graph
 
 try:
@@ -81,6 +82,7 @@ class BannerTest(unittest.TestCase):
             # blocks forever under the offscreen platform.
             mock.patch("audiorouter.gui.main.MainWindow._offer_first_run", lambda self: None),
             mock.patch("audiorouter.install.login_service_enabled", return_value=False),
+            isolated_settings(self.tmp.name),
         ):
             target.start()
             self.addCleanup(target.stop)

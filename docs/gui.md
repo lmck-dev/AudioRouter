@@ -102,3 +102,16 @@ kinds, through the real window. Two taps cost ~1.5% of one core.
   (`GuiTestCase`), so no test can start a real parec even if a window is shown.
 - The two `ResourceWarning: subprocess ... still running` lines in a full run
   come from `tests/test_channels.py` and predate the meters.
+
+## Two channel lists and a foldable Playing now (30 Sep 2026)
+
+- **Outputs and inputs are separate lists** (`output_list`, `input_list`),
+  each item carrying its slug in `UserRole`. The selection is a slug
+  (`MainWindow._selected_slug`), not a row: select with
+  `MainWindow.select_channel(slug)`, which also clears the other list. Tests
+  select by slug for the same reason.
+- "New output" / "New input" replace the old "what kind?" question.
+- **Playing now folds** behind its heading, which counts the streams. The state
+  is view state, so it lives in `QSettings` (`~/.config/audiorouter/gui.conf`),
+  never in `config.json` (the daemon's file). **Tests must use
+  `isolated_settings(tmp)`** or they write to the real `gui.conf`.

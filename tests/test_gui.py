@@ -34,6 +34,15 @@ if QApplication is not None:
     REAL_START_AUTO_ROUTER = _MainWindow._start_auto_router
 
 
+def isolated_settings(folder):
+    """A patch that keeps the window's view state out of the real ~/.config."""
+    from PyQt6.QtCore import QSettings
+
+    path = str(Path(folder) / "gui.conf")
+    return mock.patch("audiorouter.gui.main.QSettings",
+                      lambda *args: QSettings(path, QSettings.Format.IniFormat))
+
+
 class FakeReader:
     """Stands in for meter.LevelReader: records what was started and stopped."""
 
@@ -75,6 +84,7 @@ class GuiTestCase(unittest.TestCase):
             mock.patch.object(Engine, "apply", return_value=ApplyReport()),
             # Never start a real parec from a test, even if a window is shown.
             mock.patch("audiorouter.gui.meters.LevelReader", FakeReader),
+            isolated_settings(self.tmp.name),
         ):
             target.start()
             self.addCleanup(target.stop)
@@ -98,20 +108,21 @@ class GuiTestCase(unittest.TestCase):
 
 class WindowTest(GuiTestCase):
     def test_channels_are_listed_with_their_state(self):
-        labels = [self.window.channel_list.item(i).text()
-                  for i in range(self.window.channel_list.count())]
+        outputs = self.window.output_list
+        labels = [outputs.item(i).text() for i in range(outputs.count())]
         self.assertEqual(labels, ["Speakers  (not running)", "Headphones  (not running)"])
+        self.assertEqual(self.window.input_list.count(), 0)
 
     def test_selecting_a_channel_loads_its_settings_and_effects(self):
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.assertEqual(self.window.channel_panel.name.text(), "Speakers")
         self.assertEqual(self.window.effects_panel.list.count(), 1)
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         self.assertEqual(self.window.channel_panel.name.text(), "Headphones")
         self.assertEqual(self.window.effects_panel.list.count(), 0)
 
     def test_an_unplugged_output_is_still_offered_so_it_is_not_silently_changed(self):
-        self.window.channel_list.setCurrentRow(1)  # targets alsa_output.b, not in the graph
+        self.window.select_channel("phones")  # targets alsa_output.b, not in the graph
         self.assertIn("not connected", self.window.channel_panel.device.currentText())
 
     def test_a_virtual_target_that_exists_is_not_called_disconnected(self):
@@ -119,20 +130,20 @@ class WindowTest(GuiTestCase):
         # any sink; saying a working one is unplugged would be a lie.
         self.engine.channel("phones").device = "ar_speakers"
         self.window.refresh()
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         self.assertEqual(self.window.channel_panel.device.currentText(), "ar_speakers")
 
     def test_renaming_a_channel_saves_and_reaches_the_list(self):
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.channel_panel.name.setText("Desk")
         self.window.channel_panel.name.editingFinished.emit()
         self.assertEqual(Config.load(self.engine.path).channel("speakers").name, "Desk")
-        self.assertIn("Desk", self.window.channel_list.item(0).text())
+        self.assertIn("Desk", self.window.output_list.item(0).text())
 
     def test_an_edit_schedules_one_apply_instead_of_restarting_at_once(self):
         # Every keystroke restarting the audio would be unusable.
         with mock.patch.object(Engine, "apply") as apply:
-            self.window.channel_list.setCurrentRow(0)
+            self.window.select_channel(self.engine.config.channels[0].slug)
             self.window.effects_panel.form._boxes["frequency"].spin.setValue(120)
             self.window.effects_panel.form._boxes["frequency"].spin.setValue(130)
         apply.assert_not_called()
@@ -146,13 +157,13 @@ class WindowTest(GuiTestCase):
         apply.assert_called_once()
 
     def test_moving_a_knob_updates_the_line_in_the_chain(self):
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         panel = self.window.effects_panel
         panel.form._boxes["frequency"].spin.setValue(250)
         self.assertIn("250", panel.list.item(0).text())
 
     def test_effect_edits_reach_the_saved_config(self):
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.effects_panel.form._boxes["frequency"].spin.setValue(120)
         self.assertEqual(
             Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 120
@@ -163,7 +174,7 @@ class WindowTest(GuiTestCase):
 
         from audiorouter.gui.main import TUNE_DELAY_MS
 
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         with mock.patch.object(Engine, "apply"):
             self.window.effects_panel.list.item(0).setCheckState(Qt.CheckState.Unchecked)
             self.assertEqual(self.window._pending_apply.interval(), TUNE_DELAY_MS)
@@ -171,14 +182,14 @@ class WindowTest(GuiTestCase):
     def test_switching_an_effect_off_keeps_it_in_the_chain(self):
         from PyQt6.QtCore import Qt
 
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.effects_panel.list.item(0).setCheckState(Qt.CheckState.Unchecked)
         saved = Config.load(self.engine.path).channel("speakers").effects
         self.assertEqual(len(saved), 1)
         self.assertFalse(saved[0].enabled)
 
     def test_adding_an_effect_selects_it_so_its_knobs_are_visible(self):
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         panel = self.window.effects_panel
         panel.add_effect("gain")
         self.assertEqual(panel.list.currentRow(), 0)
@@ -187,7 +198,7 @@ class WindowTest(GuiTestCase):
     def test_changing_effects_does_not_leave_the_previous_knobs_behind(self):
         # Orphaned rows stayed painted over the new ones when they were only
         # scheduled for deletion.
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         panel = self.window.effects_panel
         panel.add_effect("gain")
         self.assertEqual(set(panel.form._boxes), {"gain_db"})
@@ -196,7 +207,7 @@ class WindowTest(GuiTestCase):
     def test_an_edit_that_reshapes_the_chain_waits_longer_than_a_knob(self):
         from audiorouter.gui.main import APPLY_DELAY_MS, TUNE_DELAY_MS
 
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         panel = self.window.effects_panel
         with mock.patch.object(Engine, "apply"):
             panel.form._boxes["frequency"].spin.setValue(150)
@@ -208,7 +219,7 @@ class WindowTest(GuiTestCase):
     def test_a_slider_drag_is_heard_during_the_drag_not_only_after_it(self):
         # Restarting the short timer on every value would postpone the update
         # until the mouse stopped moving.
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         box = self.window.effects_panel.form._boxes["frequency"]
         with mock.patch.object(Engine, "apply"):
             box.slider.setValue(400)
@@ -219,7 +230,7 @@ class WindowTest(GuiTestCase):
     def test_a_live_knob_change_does_not_rebuild_the_form_under_the_mouse(self):
         from audiorouter.engine import Action, ApplyReport
 
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         box = self.window.effects_panel.form._boxes["frequency"]
         box.spin.setValue(300)
         report = ApplyReport(actions=[Action("tune", "speakers")])
@@ -231,7 +242,7 @@ class WindowTest(GuiTestCase):
         self.assertEqual(Config.load(self.engine.path).channel("speakers").effects[0].params["frequency"], 300)
 
     def test_reset_puts_the_settings_back_to_defaults(self):
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         panel = self.window.effects_panel
         panel.reset_button.click()
         self.assertEqual(panel.form._boxes["frequency"].value(), 100.0)
@@ -240,7 +251,7 @@ class WindowTest(GuiTestCase):
     def test_deleting_a_channel_asks_first(self):
         from PyQt6.QtWidgets import QMessageBox
 
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         with mock.patch.object(QMessageBox, "question",
                                return_value=QMessageBox.StandardButton.No), \
              mock.patch.object(Engine, "delete_channel") as delete:
@@ -289,7 +300,7 @@ class ApplyWorkerTest(GuiTestCase):
 
     def test_the_window_can_be_edited_while_an_apply_runs(self):
         self.blocking_apply()
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.apply_now()
         self.assertTrue(self.entered.wait(2))
         self.window.effects_panel.form._boxes["frequency"].spin.setValue(222)
@@ -300,7 +311,7 @@ class ApplyWorkerTest(GuiTestCase):
 
     def test_the_worker_applies_a_copy_that_edits_cannot_change_under_it(self):
         self.blocking_apply()
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.apply_now()
         self.assertTrue(self.entered.wait(2))
         self.window.effects_panel.form._boxes["frequency"].spin.setValue(333)
@@ -312,7 +323,7 @@ class ApplyWorkerTest(GuiTestCase):
 
     def test_edits_during_an_apply_become_exactly_one_more_with_the_newest_settings(self):
         self.blocking_apply()
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         box = self.window.effects_panel.form._boxes["frequency"]
         self.window.apply_now()
         self.assertTrue(self.entered.wait(2))
@@ -363,7 +374,7 @@ class ApplyWorkerTest(GuiTestCase):
 
     def test_closing_finishes_the_running_apply_and_the_queued_edit(self):
         self.blocking_apply()
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.apply_now()
         self.assertTrue(self.entered.wait(2))
         self.window.effects_panel.form._boxes["frequency"].spin.setValue(444)
@@ -389,7 +400,7 @@ class MeterTest(GuiTestCase):
         return sorted(r.tap.label for r in FakeReader.started if r.running)
 
     def select(self, row):
-        self.window.channel_list.setCurrentRow(row)
+        self.window.select_channel(self.engine.config.channels[row].slug)
 
     def test_nothing_is_measured_until_the_window_is_shown(self):
         self.select(0)
@@ -750,7 +761,7 @@ class PluginGuiTest(GuiTestCase):
 
         from .test_plugin_effects import STEREO
 
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         panel = self.window.effects_panel
         browser = self.browser()
         browser.search.setText("example compressor")
@@ -766,7 +777,7 @@ class PluginGuiTest(GuiTestCase):
     def test_a_linear_gain_is_shown_and_edited_in_db(self):
         from .test_plugin_effects import STEREO
 
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         panel = self.window.effects_panel
         panel.add_effect("lv2", STEREO)
         box = panel.form._boxes["al"]
@@ -777,13 +788,13 @@ class PluginGuiTest(GuiTestCase):
         self.assertAlmostEqual(effect.params["al"], 0.501, places=3)
 
     def test_a_logarithmic_slider_puts_the_middle_of_its_travel_at_the_geometric_middle(self):
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         box = self.window.effects_panel.form._boxes["frequency"]  # 20 Hz .. 20 kHz, log
         box.slider.setValue(500)
         self.assertAlmostEqual(box.value(), 632.5, delta=2)
 
     def test_a_plugin_that_is_no_longer_installed_is_shown_as_unavailable(self):
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         panel = self.window.effects_panel
         self.engine.config.channel("phones").effects.append(
             Effect("lv2", plugin="http://example.org/uninstalled"))
@@ -803,7 +814,7 @@ class InputAndCableGuiTest(GuiTestCase):
         self.panel = self.window.channel_panel
 
     def select(self, slug):
-        self.window.channel_list.setCurrentRow(self.engine.config.channel_slugs.index(slug))
+        self.window.select_channel(slug)
 
     def test_an_input_shows_records_from_and_listen_instead_of_the_cable_box(self):
         self.select("mic")
@@ -812,7 +823,8 @@ class InputAndCableGuiTest(GuiTestCase):
         self.assertTrue(self.panel.form.isRowVisible(self.panel.listen))
         self.assertFalse(self.panel.form.isRowVisible(self.panel.recordable))
         self.assertIn('microphone called "Desk mic"', self.panel.hint.text())
-        self.assertIn("(input)", self.window.channel_list.item(2).text())
+        self.assertEqual(self.window.input_list.item(0).text(), "Desk mic  (not running)")
+        self.assertEqual(self.window.output_list.count(), 2)
 
     def test_echo_cancellation_is_offered_for_inputs_only_and_saved(self):
         self.select("phones")
@@ -856,12 +868,52 @@ class InputAndCableGuiTest(GuiTestCase):
         self.assertNotIn("mic", options)
         self.assertIn("speakers", options)
 
-    def test_new_channel_asks_what_kind_and_creates_an_input_on_the_default_mic(self):
-        from audiorouter.gui.main import NEW_INPUT
+    def test_inputs_and_outputs_select_across_the_two_lists(self):
+        self.select("mic")
+        self.assertIs(self.window.input_list.currentItem(), self.window.input_list.item(0))
+        self.assertIsNone(self.window.output_list.currentItem())
+        self.assertTrue(self.window.remove_input_button.isEnabled())
+        self.assertFalse(self.window.remove_output_button.isEnabled())
+        self.window.output_list.setCurrentRow(1)  # a click in the other list
+        self.assertEqual(self.window.selected_channel.slug, "phones")
+        self.assertIsNone(self.window.input_list.currentItem())
+        self.assertEqual(self.panel.name.text(), "Headphones")
 
-        with mock.patch("audiorouter.gui.main.QInputDialog.getItem", return_value=(NEW_INPUT, True)), \
-             mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Streaming mic", True)), \
+    def test_the_selection_survives_a_refresh(self):
+        self.select("mic")
+        self.window.refresh()
+        self.assertEqual(self.window.selected_channel.slug, "mic")
+
+    def test_new_input_creates_an_input_on_the_default_mic_and_selects_it(self):
+        with mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Streaming mic", True)), \
              mock.patch.object(Engine, "apply"):
-            self.window._add_channel()
+            self.window.add_input_button.click()
         created = self.engine.config.channels[-1]
         self.assertEqual((created.name, created.kind, created.device), ("Streaming mic", "input", ""))
+        self.assertEqual(self.window.selected_channel.slug, created.slug)
+
+    def test_new_output_needs_no_kind_question(self):
+        with mock.patch("audiorouter.gui.main.QInputDialog.getItem") as ask_kind, \
+             mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Game", True)), \
+             mock.patch.object(Engine, "apply"):
+            self.window.add_output_button.click()
+        ask_kind.assert_not_called()
+        self.assertEqual(self.engine.config.channels[-1].kind, "output")
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class PlayingNowFoldTest(GuiTestCase):
+    def test_folding_hides_the_table_counts_streams_and_is_remembered(self):
+        streams = self.window.streams_panel
+        self.assertTrue(streams.expanded)
+        self.assertRegex(streams.toggle.text(), r"^Playing now \(\d+\)$")
+        streams.toggle.click()
+        self.assertFalse(streams.expanded)
+        self.assertTrue(streams.body.isHidden())
+        self.assertEqual(self.window.settings.value("streams_expanded"), False)
+
+        from audiorouter.gui.main import MainWindow
+
+        again = MainWindow(self.engine, settings=self.window.settings)
+        self.addCleanup(again.close)
+        self.assertFalse(again.streams_panel.expanded)

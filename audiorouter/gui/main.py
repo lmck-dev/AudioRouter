@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 import time
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSettings, Qt, QTimer
 from PyQt6.QtGui import QAction, QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication,
@@ -50,9 +50,6 @@ from .streams_panel import StreamsPanel
 from .theme import Theme
 
 #: Collecting edits for this long turns a burst of typing into one restart.
-NEW_OUTPUT = "Output - apps play into it"
-NEW_INPUT = "Input - a microphone or line-in"
-
 APPLY_DELAY_MS = 700
 #: A knob change is applied to the running channel, so it can be heard almost
 #: at once; this only batches the flood of values a slider drag produces.
@@ -71,10 +68,16 @@ def slug_for(name: str, taken: set[str]) -> str:
     return candidate
 
 
+#: Where view state (not audio settings) is kept: ~/.config/audiorouter/gui.conf.
+SETTINGS = ("audiorouter", "gui")
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, settings: QSettings | None = None) -> None:
         super().__init__()
         self.engine = engine
+        self.settings = settings if settings is not None else QSettings(*SETTINGS)
+        self._selected_slug: str | None = None
         self.setWindowTitle("Audio Router")
         self.resize(920, 720)
 
@@ -138,13 +141,20 @@ class MainWindow(QMainWindow):
         top.addStretch(1)
         top.addWidget(self.status_label)
 
-        self.channel_list = QListWidget(self)
-        self.add_channel_button = QPushButton("New channel", self)
-        self.remove_channel_button = QPushButton("Delete", self)
+        # Outputs and inputs behave nothing alike, so they get a list each.
+        self.output_list = QListWidget(self)
+        self.input_list = QListWidget(self)
+        self.add_output_button = QPushButton("New output", self)
+        self.add_input_button = QPushButton("New input", self)
+        self.remove_output_button = QPushButton("Delete", self)
+        self.remove_input_button = QPushButton("Delete", self)
 
-        list_buttons = QHBoxLayout()
-        list_buttons.addWidget(self.add_channel_button)
-        list_buttons.addWidget(self.remove_channel_button)
+        output_buttons = QHBoxLayout()
+        output_buttons.addWidget(self.add_output_button)
+        output_buttons.addWidget(self.remove_output_button)
+        input_buttons = QHBoxLayout()
+        input_buttons.addWidget(self.add_input_button)
+        input_buttons.addWidget(self.remove_input_button)
 
         self.rules_list = QListWidget(self)
         self.rules_list.setMaximumHeight(120)
@@ -154,9 +164,12 @@ class MainWindow(QMainWindow):
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(QLabel("Channels", left))
-        left_layout.addWidget(self.channel_list, 1)
-        left_layout.addLayout(list_buttons)
+        left_layout.addWidget(QLabel("Outputs - apps play into these", left))
+        left_layout.addWidget(self.output_list, 2)
+        left_layout.addLayout(output_buttons)
+        left_layout.addWidget(QLabel("Inputs - microphones and line-in", left))
+        left_layout.addWidget(self.input_list, 1)
+        left_layout.addLayout(input_buttons)
         left_layout.addWidget(rules_label)
         left_layout.addWidget(self.rules_list)
         left_layout.addWidget(self.forget_button)
@@ -181,12 +194,13 @@ class MainWindow(QMainWindow):
         self.streams_panel = StreamsPanel(self.engine, self)
 
         central = QWidget(self)
-        layout = QVBoxLayout(central)
+        self._layout = layout = QVBoxLayout(central)
         layout.addWidget(self.conflict_banner)
         layout.addLayout(top)
         layout.addWidget(splitter, 2)
         layout.addWidget(self.streams_panel, 1)
         self.setCentralWidget(central)
+        self._streams_folded(self._setting_bool("streams_expanded", True))
 
         quit_action = QAction("Quit", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -194,9 +208,13 @@ class MainWindow(QMainWindow):
         self.addAction(quit_action)
 
     def _connect(self) -> None:
-        self.channel_list.currentRowChanged.connect(self._channel_selected)
-        self.add_channel_button.clicked.connect(self._add_channel)
-        self.remove_channel_button.clicked.connect(self._remove_channel)
+        self.output_list.currentItemChanged.connect(self._list_item_changed)
+        self.input_list.currentItemChanged.connect(self._list_item_changed)
+        self.add_output_button.clicked.connect(lambda: self._add_channel(is_input=False))
+        self.add_input_button.clicked.connect(lambda: self._add_channel(is_input=True))
+        self.remove_output_button.clicked.connect(self._remove_channel)
+        self.remove_input_button.clicked.connect(self._remove_channel)
+        self.streams_panel.expanded_changed.connect(self._streams_folded)
         self.channel_panel.changed.connect(self._config_edited)
         self.channel_panel.renamed.connect(self._refresh_channel_list)
         self.channel_panel.volume_changed.connect(self._volume_changed)
@@ -213,9 +231,38 @@ class MainWindow(QMainWindow):
 
     @property
     def selected_channel(self):
-        row = self.channel_list.currentRow()
-        channels = self.engine.config.channels
-        return channels[row] if 0 <= row < len(channels) else None
+        return next(
+            (c for c in self.engine.config.channels if c.slug == self._selected_slug), None
+        )
+
+    def select_channel(self, slug: str | None) -> None:
+        """Select a channel in whichever list holds it, and load it."""
+        self._selected_slug = slug
+        for lst in (self.output_list, self.input_list):
+            lst.blockSignals(True)
+            match = None
+            for i in range(lst.count()):
+                if lst.item(i).data(Qt.ItemDataRole.UserRole) == slug:
+                    match = lst.item(i)
+            lst.setCurrentItem(match)
+            if match is None:
+                lst.clearSelection()
+            lst.blockSignals(False)
+        self._channel_selected()
+
+    def _list_item_changed(self, item, _previous) -> None:
+        if item is not None:
+            self.select_channel(item.data(Qt.ItemDataRole.UserRole))
+
+    def _setting_bool(self, key: str, default: bool) -> bool:
+        value = self.settings.value(key, default)
+        return value if isinstance(value, bool) else str(value).lower() == "true"
+
+    def _streams_folded(self, expanded: bool) -> None:
+        self.streams_panel.set_expanded(expanded)
+        # Folded, the table's share of the height goes to the channel editor.
+        self._layout.setStretchFactor(self.streams_panel, 1 if expanded else 0)
+        self.settings.setValue("streams_expanded", expanded)
 
     def refresh(self) -> None:
         """Redraw everything from one engine status reading."""
@@ -260,25 +307,28 @@ class MainWindow(QMainWindow):
         running = (
             {c["slug"] for c in status["channels"] if c["running"]} if status else set()
         )
-        row = self.channel_list.currentRow()
-        self.channel_list.blockSignals(True)
-        self.channel_list.clear()
+        for lst in (self.output_list, self.input_list):
+            lst.blockSignals(True)
+            lst.clear()
         for channel in self.engine.config.channels:
             label = channel.name
-            if channel.is_input:
-                label += "  (input)"
-            elif channel.recordable:
+            if not channel.is_input and channel.recordable:
                 label += "  (cable)"
             if not channel.enabled:
                 label += "  (off)"
             elif channel.slug not in running:
                 label += "  (not running)"
-            QListWidgetItem(label, self.channel_list)
-        self.channel_list.blockSignals(False)
-        if self.channel_list.count():
-            self.channel_list.setCurrentRow(min(max(row, 0), self.channel_list.count() - 1))
-        else:
-            self._channel_selected(-1)
+            item = QListWidgetItem(label, self.input_list if channel.is_input else self.output_list)
+            item.setData(Qt.ItemDataRole.UserRole, channel.slug)
+        for lst in (self.output_list, self.input_list):
+            lst.blockSignals(False)
+        slugs = self.engine.config.channel_slugs
+        if self._selected_slug not in slugs:
+            # The first output, else the first input, else nothing.
+            first = [c.slug for c in self.engine.config.channels if not c.is_input]
+            first += [c.slug for c in self.engine.config.channels if c.is_input]
+            self._selected_slug = first[0] if first else None
+        self.select_channel(self._selected_slug)
 
     def _refresh_rules(self) -> None:
         self.rules_list.clear()
@@ -316,7 +366,7 @@ class MainWindow(QMainWindow):
         key = "input_devices" if channel is not None and channel.is_input else "devices"
         return [(d["name"], d["label"]) for d in status.get(key, [])]
 
-    def _channel_selected(self, row: int) -> None:
+    def _channel_selected(self) -> None:
         channel = self.selected_channel
         status = getattr(self, "_status", {})
         devices = self._device_choices(status, channel)
@@ -336,7 +386,8 @@ class MainWindow(QMainWindow):
         except PwError:
             graph = None
         self.meters.follow(channel, graph)
-        self.remove_channel_button.setEnabled(channel is not None)
+        self.remove_output_button.setEnabled(channel is not None and not channel.is_input)
+        self.remove_input_button.setEnabled(channel is not None and channel.is_input)
 
     # -- actions -----------------------------------------------------------
 
@@ -427,14 +478,9 @@ class MainWindow(QMainWindow):
         if self.status_label.text() == "Updating...":
             self.refresh()
 
-    def _add_channel(self) -> None:
-        kinds = [NEW_OUTPUT, NEW_INPUT]
-        kind_label, ok = QInputDialog.getItem(self, "New channel", "What kind of channel?", kinds, 0, False)
-        if not ok:
-            return
-        is_input = kind_label == NEW_INPUT
+    def _add_channel(self, is_input: bool) -> None:
         name, ok = QInputDialog.getText(
-            self, "New channel",
+            self, "New input" if is_input else "New output",
             "What is this microphone or input for?" if is_input else "What is this channel for?",
         )
         if not ok or not name.strip():
@@ -453,8 +499,8 @@ class MainWindow(QMainWindow):
         except USER_ERRORS as exc:
             self._error("Could not create that channel", str(exc))
             return
+        self._selected_slug = slug
         self._refresh_channel_list()
-        self.channel_list.setCurrentRow(len(self.engine.config.channels) - 1)
         self._config_edited()
 
     def _remove_channel(self) -> None:

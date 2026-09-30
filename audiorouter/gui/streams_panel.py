@@ -12,12 +12,13 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
-    QGroupBox,
+    QFrame,
     QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,18 +29,32 @@ from .theme import Theme
 UNROUTED = "-"
 
 
-class StreamsPanel(QGroupBox):
-    """One row per playing application, with the channel it is going to."""
+class StreamsPanel(QWidget):
+    """One row per playing application, with the channel it is going to.
+
+    It folds away behind its heading: once apps remember their channels the
+    table is rarely needed, and the heading still counts what is playing.
+    """
 
     send_requested = pyqtSignal(int, str)
     remember_requested = pyqtSignal(int, str)
+    expanded_changed = pyqtSignal(bool)
 
     def __init__(self, engine: Engine, parent: QWidget | None = None) -> None:
-        super().__init__("Playing now", parent)
+        super().__init__(parent)
         self.engine = engine
         self._rebuilding = False
+        self._count = 0
 
-        self.table = QTableWidget(0, 3, self)
+        self.toggle = QToolButton(self)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(True)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setAutoRaise(True)
+        self.toggle.toggled.connect(self._toggled)
+        self.body = QFrame(self)
+
+        self.table = QTableWidget(0, 3, self.body)
         self.table.setHorizontalHeaderLabels(["Application", "Playing", "Send to"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -49,16 +64,43 @@ class StreamsPanel(QGroupBox):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
-        self.empty = QLabel("Nothing is playing.", self)
-        self.remember = QPushButton("Always send this app here", self)
+        self.empty = QLabel("Nothing is playing.", self.body)
+        self.remember = QPushButton("Always send this app here", self.body)
         self.remember.setEnabled(False)
         self.remember.clicked.connect(self._remember)
         self.table.itemSelectionChanged.connect(self._selection_changed)
 
+        body = QVBoxLayout(self.body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.addWidget(self.empty)
+        body.addWidget(self.table, 1)
+        body.addWidget(self.remember)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(self.empty)
-        layout.addWidget(self.table, 1)
-        layout.addWidget(self.remember)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.body, 1)
+        self._show_heading()
+
+    # -- folding -----------------------------------------------------------
+
+    @property
+    def expanded(self) -> bool:
+        return self.toggle.isChecked()
+
+    def set_expanded(self, on: bool) -> None:
+        self.toggle.setChecked(on)
+
+    def _toggled(self, on: bool) -> None:
+        self.body.setVisible(on)
+        self._show_heading()
+        self.expanded_changed.emit(on)
+
+    def _show_heading(self) -> None:
+        self.toggle.setArrowType(
+            Qt.ArrowType.DownArrow if self.expanded else Qt.ArrowType.RightArrow
+        )
+        self.toggle.setText(f"Playing now ({self._count})" if self._count else "Playing now")
 
     # -- population --------------------------------------------------------
 
@@ -74,6 +116,8 @@ class StreamsPanel(QGroupBox):
                 return
 
         streams = status["streams"]
+        self._count = len(streams)
+        self._show_heading()
         running = [c["slug"] for c in status["channels"] if c["running"]]
         selected = self._selected_stream_id()
 

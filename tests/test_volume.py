@@ -14,6 +14,7 @@ from audiorouter.cli import main
 from audiorouter.pwgraph import Graph
 
 from . import fakes
+from .test_gui import isolated_settings
 from .test_engine import EngineTestCase, live_graph
 
 try:
@@ -147,6 +148,7 @@ class WindowVolumeTest(unittest.TestCase):
             mock.patch("audiorouter.gui.main.MainWindow._start_auto_router", lambda self: None),
             mock.patch("audiorouter.gui.main.MainWindow._offer_first_run", lambda self: None),
             mock.patch("audiorouter.install.login_service_enabled", return_value=False),
+            isolated_settings(self.tmp.name),
         ):
             target.start()
             self.addCleanup(target.stop)
@@ -156,7 +158,7 @@ class WindowVolumeTest(unittest.TestCase):
         ]), path=Path(self.tmp.name) / "c.json")
         self.window = MainWindow(self.engine)
         self.addCleanup(self.window.close)
-        self.window.channel_list.setCurrentRow(0)
+        self.window.select_channel(self.engine.config.channels[0].slug)
         self.panel = self.window.channel_panel
 
     def test_the_slider_shows_the_sinks_volume(self):
@@ -165,7 +167,7 @@ class WindowVolumeTest(unittest.TestCase):
         self.assertTrue(self.panel.volume.isEnabled())
 
     def test_a_channel_that_is_not_running_has_its_volume_greyed_out(self):
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         self.assertFalse(self.panel.volume.isEnabled())
         self.assertFalse(self.panel.mute.isEnabled())
 
@@ -208,7 +210,7 @@ class WindowVolumeTest(unittest.TestCase):
         with mock.patch.object(type(self.engine), "set_channel_volume"):
             self.panel.volume.setValue(20)
         self.window.refresh()
-        self.window.channel_list.setCurrentRow(1)
+        self.window.select_channel(self.engine.config.channels[1].slug)
         self.assertEqual(self.panel.volume.value(), 70)
 
 
