@@ -597,6 +597,10 @@ class EffectsPanel(QGroupBox):
         self.down_button.setEnabled(0 <= row < count - 1)
 
     def _add(self) -> None:
+        self.choose_effect()
+
+    def choose_effect(self) -> None:
+        """Open the effect browser and append the chosen effect (also from the mixer)."""
         if self.channel is None:
             return
         # Reading every plugin description takes ~5 s when the cache is stale

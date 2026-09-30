@@ -65,8 +65,11 @@ class ChainTest(unittest.TestCase):
         self.assertFalse(self.taps(plain))
         self.assertEqual(plain.outputs, ("sw0_switch_l:Out", "sw0_switch_r:Out"))
 
-    def test_an_empty_chain_has_no_taps(self):
-        self.assertFalse(self.taps(self.chain([])))
+    def test_an_empty_chain_is_tapped_at_its_output_too(self):
+        chain = self.chain([])
+        self.assertEqual([n["control"]["slot"] for n in self.taps(chain)], [0.0])
+        self.assertEqual(chain.outputs, ("tail_l:Out", "tail_r:Out"))
+        self.assertEqual(render_chain([]).outputs, ("passthrough_l:Out", "passthrough_r:Out"))
 
     def test_tap_slots_skip_an_effect_that_is_not_rendered(self):
         missing = Effect("lv2", plugin="http://example.org/uninstalled", enabled=False)
@@ -120,6 +123,13 @@ class EffectTapsTest(unittest.TestCase):
         self.assertTrue(tap_in.file.endswith("/meters/77.1"))
         self.assertTrue(tap_out.file.endswith("/meters/77.2"))
         self.assertEqual((tap_in.label, tap_out.label), ("In", "Out"))
+
+    def test_the_output_tap_is_after_the_last_rendered_effect(self):
+        self.conf(taps=True)
+        with mock.patch.object(Channel, "pid", return_value=77):
+            self.assertTrue(meter.output_tap(self.channel).file.endswith("/meters/77.2"))
+            self.channel.effects.clear()
+            self.assertTrue(meter.output_tap(self.channel).file.endswith("/meters/77.0"))
 
     def test_a_host_started_without_taps_has_none_to_read(self):
         self.conf(taps=False)

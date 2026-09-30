@@ -152,3 +152,29 @@ Unticked, or where no tap can be read, they are the whole channel as before.
   / gain -10 read -20/-26, -26/-26, -26/-36 per effect through the window's own
   code, device -36.00 unchanged; a knob change stayed live (same pid, Out
   -36 -> -30); host CPU 0.25% of a core with or without four taps.
+
+## The mixer (30 Sep 2026)
+
+`gui/mixer.py`, the first tab and the default view (owner: an extra view AND
+the default; the Channels tab keeps every setting). One `ChannelStrip` per
+channel, inputs left, outputs right, top to bottom in signal order: name,
+kind, source (mic combo / apps playing), INSERTS (one lit toggle per effect;
+double-click opens it in Channels; "+ Insert" opens the browser via
+`EffectsPanel.choose_effect`), OUT or LISTEN, M + Edit, fader with dB scale
+and a stereo meter, volume in dB.
+
+- **Strips emit, the window decides**: `MainWindow._set_volume/_set_muted/
+  _toggle_effect/_set_device/_set_listen` work by slug and go through the same
+  save + debounce as the Channels view. Two faders dragged at once both land
+  (`_set_volume` flushes another channel's pending value).
+- **Rebuilt only when the desk's shape changes** (a signature of channels and
+  effects); a plain refresh updates values, or a fader would vanish mid-drag.
+- **Strip meters read each channel's last level tap** (`meter.output_tap`):
+  no parec, and an input moves only while something records it (its capture
+  is passive). Every tapped chain, even an empty one, has an output tap.
+  Only the visible view's meters run (`MainWindow._update_meters`).
+- **Inserts scroll inside the strip** and names are elided in the middle;
+  otherwise a long chain pushed the fader off the bottom of the desk.
+- **The fader is the sink's volume, which acts BEFORE the effects** (measured:
+  50% = -18.06 dB already at tap 0). A console fader sits after the inserts;
+  a post-insert fader would be a gain node at the end of the chain.

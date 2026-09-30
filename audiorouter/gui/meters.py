@@ -137,20 +137,34 @@ def bar_span(rect: QRectF) -> QRectF:
 
 
 class LevelBar(QWidget):
-    """One ear's bar. Colours come from the palette (see theme.py)."""
+    """One ear's bar. Colours come from the palette (see theme.py).
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    `vertical` stands it up for a mixer strip, rising from the bottom; it is
+    painted as the same bar, turned.
+    """
+
+    def __init__(self, parent: QWidget | None = None, vertical: bool = False) -> None:
         super().__init__(parent)
         self.state = Ballistics()
-        self.setFixedHeight(9)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.vertical = vertical
+        if vertical:
+            self.setFixedWidth(7)
+            self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        else:
+            self.setFixedHeight(9)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def paintEvent(self, _event) -> None:
         now = time.monotonic()
         theme = Theme(self)
         palette = self.palette()
         painter = QPainter(self)
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        if self.vertical:
+            painter.translate(0, self.height())
+            painter.rotate(-90)
+            rect = QRectF(0, 0, self.height(), self.width()).adjusted(0.5, 0.5, -0.5, -0.5)
+        else:
+            rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         width = rect.width()
         painter.fillRect(rect, palette.color(QPalette.ColorRole.Base))
 

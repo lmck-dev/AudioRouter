@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .channels import Channel, _pid_alive, runtime_dir
-from .effects import TAP_URI, tap_slots
+from .effects import TAP_URI, output_slot, tap_slots
 from .pwgraph import METER_KEY, Graph, require_tools
 
 RATE = 48000
@@ -160,6 +160,19 @@ def effect_taps(channel: Channel, index: int) -> tuple[Tap | None, Tap | None]:
         Tap(label, (), host, str(meter_dir() / f"{host}.{slot}"))
         for label, slot in (("In", before), ("Out", after))
     )
+
+
+def output_tap(channel: Channel) -> Tap | None:
+    """What the channel puts out, after all its effects, read from its last tap.
+
+    A mixer strip's meter. No `parec`, so metering every strip at once costs
+    nothing and never opens a microphone: an input channel reads only while
+    something records it (its capture is passive until then).
+    """
+    host = channel.pid()
+    if host is None or not host_has_taps(channel):
+        return None
+    return Tap("Out", (), host, str(meter_dir() / f"{host}.{output_slot(channel.effects)}"))
 
 
 def sweep_stale(directory: Path | None = None) -> None:

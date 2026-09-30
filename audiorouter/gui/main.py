@@ -31,12 +31,13 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import install, native
-from ..channels import INPUT, ChannelError, validate_slug
+from ..channels import INPUT, NOWHERE, ChannelError, validate_slug
 from ..config import ConfigError
 from ..effects import EffectError
 from ..engine import AutoRouter, Engine, EngineError, daemon_pid
@@ -46,6 +47,7 @@ from .applier import Applier
 from .channel_panel import ChannelPanel
 from .effects_panel import EffectsPanel
 from .meters import MeterPanel
+from .mixer import MixerView
 from .monitor import GraphBridge
 from .streams_panel import StreamsPanel
 from .theme import Theme
@@ -199,6 +201,13 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
 
+        # The mixer is the default view (owner, 30 Sep 2026); Channels keeps
+        # every setting, and both edit the same channels.
+        self.mixer = MixerView(self)
+        self.views = QTabWidget(self)
+        self.views.addTab(self.mixer, "Mixer")
+        self.views.addTab(splitter, "Channels")
+
         self.streams_panel = StreamsPanel(self.engine, self)
         self.streams_panel.add_beside(self.rules)
 
@@ -206,7 +215,7 @@ class MainWindow(QMainWindow):
         self._layout = layout = QVBoxLayout(central)
         layout.addWidget(self.conflict_banner)
         layout.addLayout(top)
-        layout.addWidget(splitter, 2)
+        layout.addWidget(self.views, 2)
         layout.addWidget(self.streams_panel, 1)
         self.setCentralWidget(central)
         self._streams_folded(self._setting_bool("streams_expanded", True))
@@ -225,6 +234,16 @@ class MainWindow(QMainWindow):
         self.remove_output_button.clicked.connect(self._remove_channel)
         self.remove_input_button.clicked.connect(self._remove_channel)
         self.streams_panel.expanded_changed.connect(self._streams_folded)
+        self.views.currentChanged.connect(lambda _i: self._update_meters())
+        self.mixer.volume_changed.connect(self._set_volume)
+        self.mixer.mute_toggled.connect(self._set_muted)
+        self.mixer.effect_toggled.connect(self._toggle_effect)
+        self.mixer.effect_opened.connect(self._open_effect)
+        self.mixer.add_effect.connect(self._add_effect_to)
+        self.mixer.device_chosen.connect(self._set_device)
+        self.mixer.listen_chosen.connect(self._set_listen)
+        self.mixer.open_settings.connect(lambda slug: self._open_effect(slug, -1))
+        self.mixer.new_channel.connect(lambda is_input: self._add_channel(is_input=is_input))
         self.channel_panel.changed.connect(self._config_edited)
         self.channel_panel.renamed.connect(self._refresh_channel_list)
         self.channel_panel.volume_changed.connect(self._volume_changed)
@@ -300,6 +319,7 @@ class MainWindow(QMainWindow):
             None,
         )
         self.channel_panel.show_status(entry)
+        self.mixer.refresh(self.engine.config.channels, status)
         # A restart replaces the nodes a meter reads; this reopens its taps.
         self.meters.follow(self.selected_channel, self.engine.graph())
         self.channel_panel.set_outputs(self._output_choices())
@@ -421,9 +441,13 @@ class MainWindow(QMainWindow):
 
     def _volume_changed(self, volume: float) -> None:
         channel = self.selected_channel
-        if channel is None:
-            return
-        self._pending_volume = (channel.slug, volume)
+        if channel is not None:
+            self._set_volume(channel.slug, volume)
+
+    def _set_volume(self, slug: str, volume: float) -> None:
+        if self._pending_volume is not None and self._pending_volume[0] != slug:
+            self._write_volume()  # another channel's drag: do not drop it
+        self._pending_volume = (slug, volume)
         if not self._volume_timer.isActive():
             self._volume_timer.start()
 
@@ -439,12 +463,68 @@ class MainWindow(QMainWindow):
 
     def _mute_changed(self, muted: bool) -> None:
         channel = self.selected_channel
-        if channel is None:
-            return
+        if channel is not None:
+            self._set_muted(channel.slug, muted)
+
+    def _set_muted(self, slug: str, muted: bool) -> None:
         try:
-            self.engine.set_channel_muted(channel.slug, muted)
+            self.engine.set_channel_muted(slug, muted)
         except USER_ERRORS as exc:
             self._set_status(str(exc), warn=True)
+
+    # -- from the mixer ----------------------------------------------------
+
+    def _toggle_effect(self, slug: str, index: int, on: bool) -> None:
+        channel = self.engine.config.channel(slug)
+        if not 0 <= index < len(channel.effects) or channel.effects[index].enabled == on:
+            return
+        effect = channel.effects[index]
+        effect.enabled = on
+        if channel is self.selected_channel:
+            self.effects_panel.refresh()
+        # On/off is live behind the bypass switch, unless the effect cannot run
+        # here: then it is left out of the graph, which changes its shape.
+        if effect.spec.unsatisfied():
+            self._config_edited()
+        else:
+            self._config_tuned()
+
+    def _open_effect(self, slug: str, index: int) -> None:
+        """Show a channel (and one of its effects) in the Channels view."""
+        self.select_channel(slug)
+        self.views.setCurrentIndex(1)
+        if 0 <= index < self.effects_panel.list.count():
+            self.effects_panel.list.setCurrentRow(index)
+
+    def _add_effect_to(self, slug: str) -> None:
+        self.select_channel(slug)
+        self.effects_panel.choose_effect()
+
+    def _set_device(self, slug: str, device: str) -> None:
+        channel = self.engine.config.channel(slug)
+        if device == channel.device:
+            return
+        channel.device = device
+        if device == NOWHERE:
+            channel.recordable = True  # as the Channels view does: it must go somewhere
+        if channel is self.selected_channel:
+            self._channel_selected()
+        self._config_edited()
+
+    def _set_listen(self, slug: str, through: str) -> None:
+        channel = self.engine.config.channel(slug)
+        if through != channel.listen:
+            channel.listen = through
+            if channel is self.selected_channel:
+                self._channel_selected()
+            self._config_edited()
+
+    def _update_meters(self) -> None:
+        """Run only the meters that can be seen."""
+        shown = self.isVisible() and not self.isMinimized()
+        mixer = self.views.currentWidget() is self.mixer
+        self.mixer.set_active(shown and mixer)
+        self.meters.set_active(shown and not mixer)
 
     def _config_tuned(self) -> None:
         """A knob moved: save now, and apply it live very soon.
@@ -649,11 +729,12 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self.meters.set_active(True)
+        self._update_meters()
 
     def hideEvent(self, event) -> None:
         # Also minimising: no meter runs - or holds a microphone open - unseen.
         super().hideEvent(event)
+        self.mixer.set_active(False)
         self.meters.set_active(False)
 
     def closeEvent(self, event) -> None:
@@ -663,6 +744,7 @@ class MainWindow(QMainWindow):
             self.apply_now()
         self.applier.flush()
         self.meters.stop()
+        self.mixer.stop()
         self._stop_auto_router()
         self.bridge.stop()
         super().closeEvent(event)

@@ -737,6 +737,11 @@ def tap_slots(effects: list[Effect]) -> list[tuple[int, int] | None]:
     return slots
 
 
+def output_slot(effects: list[Effect]) -> int:
+    """The tap slot after the whole chain: what the channel puts out."""
+    return len(_active(effects))
+
+
 def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[str, str]]]:
     name = f"tap{slot}"
     node = {"type": "lv2", "name": name, "plugin": TAP_URI, "control": {"slot": float(slot)}}
@@ -752,7 +757,8 @@ def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
     at once. The one exception is a switched-off effect that cannot run here
     (its plugin was uninstalled): it is left out rather than breaking the
     channel. An empty chain yields a `copy` node per side so the channel still
-    exists and passes audio through untouched.
+    exists and passes audio through untouched (tapped too, so every channel
+    has an output tap for the mixer).
 
     With `taps`, a level tap listens at every boundary - before the first
     effect and after each one - so the window can show what any effect
@@ -764,15 +770,18 @@ def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
     """
     active = _active(effects)
     if not active:
-        return Chain(
-            [
-                {"type": "builtin", "name": "passthrough_l", "label": "copy"},
-                {"type": "builtin", "name": "passthrough_r", "label": "copy"},
-            ],
-            [],
-            ("passthrough_l:In", "passthrough_r:In"),
-            ("passthrough_l:Out", "passthrough_r:Out"),
-        )
+        nodes = [
+            {"type": "builtin", "name": "passthrough_l", "label": "copy"},
+            {"type": "builtin", "name": "passthrough_r", "label": "copy"},
+        ]
+        links: list[dict[str, str]] = []
+        outputs = ("passthrough_l:Out", "passthrough_r:Out")
+        if taps:
+            node, tap_links = _tap(0, outputs)
+            nodes.append(node)
+            links.extend(tap_links)
+            outputs = _tail(nodes, links, outputs)
+        return Chain(nodes, links, ("passthrough_l:In", "passthrough_r:In"), outputs)
 
     nodes, links, clock = _fade_clock()
     first_in: tuple[str, str] | None = None
@@ -799,13 +808,19 @@ def render_chain(effects: list[Effect], taps: bool = False) -> Chain:
             links.extend(tap_links)
     assert first_in is not None and previous_out is not None
     if taps:
-        tail = []
-        for side, port in zip(SIDES, previous_out):
-            nodes.append({"type": "builtin", "name": f"tail_{side}", "label": "copy"})
-            links.append({"output": port, "input": f"tail_{side}:In"})
-            tail.append(f"tail_{side}:Out")
-        previous_out = (tail[0], tail[1])
+        previous_out = _tail(nodes, links, previous_out)
     return Chain(nodes, links, first_in, previous_out)
+
+
+def _tail(nodes: list[dict[str, Any]], links: list[dict[str, str]],
+          outputs: tuple[str, str]) -> tuple[str, str]:
+    """End a tapped chain in copies: its last output also feeds a tap."""
+    tail = []
+    for side, port in zip(SIDES, outputs):
+        nodes.append({"type": "builtin", "name": f"tail_{side}", "label": "copy"})
+        links.append({"output": port, "input": f"tail_{side}:In"})
+        tail.append(f"tail_{side}:Out")
+    return tail[0], tail[1]
 
 
 def unsatisfied_requirements(effects: list[Effect]) -> list[Requirement | Unusable]:

@@ -85,6 +85,7 @@ class GuiTestCase(unittest.TestCase):
             # Never start a real parec from a test, even if a window is shown.
             mock.patch("audiorouter.gui.meters.LevelReader", FakeReader),
             mock.patch("audiorouter.gui.meters.FileLevelReader", FakeReader),
+            mock.patch("audiorouter.gui.mixer.FileLevelReader", FakeReader),
             # Whether this machine has the level tap must not change a test.
             mock.patch("audiorouter.gui.meters.taps_available", return_value=False),
             isolated_settings(self.tmp.name),
