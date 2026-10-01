@@ -174,8 +174,9 @@ class Config:
             if channel.slug in seen:
                 issues.append(f"duplicate channel id {channel.slug!r}")
             seen.add(channel.slug)
-            if not channel.device and not channel.is_input:
-                issues.append(f"channel {channel.slug!r} has no output device")
+            # An empty device is "Default output", a choice the window offers,
+            # not a fault. (It once warned "has no output device", which read
+            # as "nothing is plugged in" while sound was playing.)
             for reason in channel.missing_plugins():
                 issues.append(f"channel {channel.slug!r}: {reason}")
         kinds = {c.slug: c.kind for c in self.channels}

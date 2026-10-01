@@ -67,9 +67,9 @@ class ConfigTest(unittest.TestCase):
         self.config.remove_channel("headphones")
         self.assertEqual(self.config.rules.rules, [])
 
-    def test_problems_report_channels_with_no_output(self):
+    def test_following_the_default_output_is_not_a_problem(self):
         self.config.channels.append(Channel("void", "Void", ""))
-        self.assertIn("channel 'void' has no output device", self.config.problems())
+        self.assertFalse(any("void" in p for p in self.config.problems()))
 
     def test_problems_report_rules_pointing_nowhere(self):
         self.config.rules.rules.append(Rule("app", "mpv", "ghost"))

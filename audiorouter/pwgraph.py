@@ -19,6 +19,7 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -444,9 +445,14 @@ class GraphMonitor:
         )
         self._thread = threading.Thread(target=self._run, name="pw-monitor", daemon=True)
         self._thread.start()
-        if not self._ready.wait(wait):
-            self.stop()
-            raise PwError("timed out waiting for the first pw-dump snapshot")
+        # Give up at once if pw-dump ends (PipeWire is down, e.g. restarting)
+        # rather than holding the caller - a window - for the whole wait.
+        deadline = time.monotonic() + wait
+        while not self._ready.wait(0.05):
+            if self.ended.is_set() or time.monotonic() > deadline:
+                self.stop()
+                raise PwError("PipeWire is not answering" if self.ended.is_set()
+                              else "timed out waiting for the first pw-dump snapshot")
 
     def _run(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None

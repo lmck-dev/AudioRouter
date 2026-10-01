@@ -172,6 +172,25 @@ class WindowTest(GuiTestCase):
             self.window.refresh()
         self.assertTrue(self.window.ec_banner.isHidden())
 
+    def test_after_a_pipewire_restart_the_window_re_applies_and_routes_again(self):
+        from audiorouter.engine import AutoRouter
+
+        dead = mock.Mock(spec=AutoRouter, ended=True)
+        self.window.auto = dead
+        with mock.patch("audiorouter.gui.main.daemon_pid", return_value=None), \
+                mock.patch.object(self.window, "_start_auto_router") as start, \
+                mock.patch.object(self.window, "apply_now") as apply_now:
+            self.window._feed_reconnected()
+        dead.stop.assert_called_once_with()
+        start.assert_called_once_with()
+        apply_now.assert_called_once_with()  # no login service to bring channels back
+
+    def test_with_the_login_service_running_the_window_leaves_applying_to_it(self):
+        with mock.patch("audiorouter.gui.main.daemon_pid", return_value=1234), \
+                mock.patch.object(self.window, "apply_now") as apply_now:
+            self.window._feed_reconnected()
+        apply_now.assert_not_called()
+
     def test_renaming_a_channel_saves_and_reaches_the_list(self):
         self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.channel_panel.name.setText("Desk")

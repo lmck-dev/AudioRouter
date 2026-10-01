@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self.bridge = GraphBridge(self)
         self.bridge.changed.connect(self.refresh)
         self.bridge.failed.connect(self._monitor_failed)
+        self.bridge.reconnected.connect(self._feed_reconnected)
         self.auto: AutoRouter | None = None
 
         self._pending_apply = QTimer(self)
@@ -799,6 +800,17 @@ class MainWindow(QMainWindow):
         if self.auto is not None:
             self.auto.stop()
             self.auto = None
+
+    def _feed_reconnected(self) -> None:
+        """PipeWire came back after a restart: pick everything up again."""
+        self.engine.use_graph(self.bridge.graph)
+        if self.auto is not None and self.auto.ended:
+            self._stop_auto_router()
+        self._start_auto_router()
+        # The restart took every channel's sink. The login service re-applies
+        # as systemd restarts it; without it, this window must.
+        if daemon_pid() is None:
+            self.apply_now()
 
     def _monitor_failed(self, message: str) -> None:
         self._set_status(f"Not watching for new apps: {message}", warn=True)

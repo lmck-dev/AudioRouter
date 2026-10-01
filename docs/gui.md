@@ -153,6 +153,19 @@ Unticked, or where no tap can be read, they are the whole channel as before.
   code, device -36.00 unchanged; a knob change stayed live (same pid, Out
   -36 -> -30); host CPU 0.25% of a core with or without four taps.
 
+## The window survives a PipeWire restart (1 Oct 2026)
+
+A PipeWire restart ends the window's `pw-dump -m` feed. The login service
+exits and systemd restarts it, but a window has no such parent: it kept a
+frozen, empty graph and said "No output devices - is anything plugged in?"
+while sound played (owner hit this). `GraphBridge` now checks the feed every
+second and reconnects with a FRESH graph (the old one is stale), then
+`MainWindow._feed_reconnected` restarts its own auto-router and re-applies
+the channels unless the login service is running to do it. `GraphMonitor.
+start` gives up as soon as pw-dump ends, so a retry while PipeWire is down
+never freezes the window. Live check: the window's own pw-dump killed, the
+feed was back within a second with the real device listed.
+
 ## The mixer (30 Sep 2026)
 
 `gui/mixer.py`, the first tab and the default view (owner: an extra view AND
