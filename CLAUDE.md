@@ -26,6 +26,15 @@ needed, no dependencies).
 The GUI drives `Engine` directly. Anything that needs thinking
 belongs in the engine, never in the CLI.
 
+## The user guide
+
+`audiorouter/guide/user_guide.md` (+ `signal-flow.png`) is the guide for people
+USING the app, opened by the window's **User Guide** button (`gui/guide.py`) and
+linked from the README. It ships in the package (`pyproject` package-data), so
+the installed app shows the installed version's guide. **A change to what a
+control does or says must update the guide in the same commit.** The owner also
+keeps a Claude Docs copy (1 Oct 2026); the repo file is the source of truth.
+
 ## Feature notes live in `docs/` — read the one you are touching
 
 | Working on | Read first |

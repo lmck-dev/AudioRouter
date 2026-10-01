@@ -192,6 +192,24 @@ class WindowTest(GuiTestCase):
             self.window._feed_reconnected()
         apply_now.assert_not_called()
 
+    def test_the_user_guide_button_opens_the_guide_with_its_picture(self):
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QTextDocument
+
+        self.window.guide_button.click()
+        guide = self.window._guide
+        self.assertTrue(guide.isVisible())
+        text = guide.browser.toPlainText()
+        self.assertIn("A channel strip, control by control", text)
+        self.assertIn("Mic channels", text)
+        image = guide.browser.loadResource(QTextDocument.ResourceType.ImageResource.value,
+                                           QUrl("signal-flow.png"))
+        self.assertFalse(image.isNull())
+        self.assertEqual(image.width(), 720)  # scaled to the page (the file is 1344 wide)
+        self.window.guide_button.click()  # a second click reuses the window
+        self.assertIs(self.window._guide, guide)
+        guide.close()
+
     def test_renaming_a_channel_saves_and_reaches_the_list(self):
         self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.channel_panel.name.setText("Desk")

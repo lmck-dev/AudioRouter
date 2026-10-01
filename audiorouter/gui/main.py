@@ -168,6 +168,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.background)
         top.addStretch(1)
         top.addWidget(self.status_label)
+        self.guide_button = QPushButton("User Guide", self)
+        self.guide_button.setToolTip("What every part of Audio Router does")
+        self.guide_button.clicked.connect(self._show_guide)
+        top.addWidget(self.guide_button)
 
         # Outputs and inputs behave nothing alike, so they get a list each.
         self.output_list = QListWidget(self)
@@ -846,6 +850,16 @@ class MainWindow(QMainWindow):
         # as systemd restarts it; without it, this window must.
         if daemon_pid() is None:
             self.apply_now()
+
+    def _show_guide(self) -> None:
+        """Open the user guide, or bring its window forward if it is open."""
+        from .guide import GuideWindow
+
+        if getattr(self, "_guide", None) is None:
+            self._guide = GuideWindow(self)
+        self._guide.show()
+        self._guide.raise_()
+        self._guide.activateWindow()
 
     def _monitor_failed(self, message: str) -> None:
         self._set_status(f"Not watching for new apps: {message}", warn=True)

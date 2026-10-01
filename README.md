@@ -11,6 +11,10 @@ in the desktop's ordinary sound settings under its own name.
 This is the headless half: an engine plus a CLI. The GUI drives the same
 `Engine` object.
 
+**New to Audio Router?** Read the [User Guide](audiorouter/guide/user_guide.md):
+every part of the window, what it does, and how to fix common warnings. The
+window's **User Guide** button opens the same guide.
+
 ## Why not EasyEffects
 
 EasyEffects finds its own sink by the hard-coded name `easyeffects_sink`, so a
@@ -55,10 +59,12 @@ It builds in a clean Fedora container and runs the test suite there.
 python -m audiorouter.gui.main        # or: audiorouter-gui
 ```
 
-Channels are on the left with their effect chain on the right, and everything
-currently making sound is listed underneath with a menu to send it elsewhere.
-Moving something takes effect immediately; **Always send this app here**
-remembers it, and the remembered apps can be forgotten again in the same window.
+The **Mixer** tab lays out Mics | Channels | Groups | Outputs, left to right in
+the order sound travels; the **Channels** tab holds every setting for one
+channel. Everything currently making sound is listed underneath with a menu to
+send it elsewhere. Moving something takes effect immediately; **Always send this
+app here** remembers it, and the remembered apps can be forgotten again in the
+same window. See the [User Guide](audiorouter/guide/user_guide.md) for each control.
 
 Edits apply themselves. Changing an effect restarts that channel behind the
 scenes, and anything playing through it is put back afterwards.
