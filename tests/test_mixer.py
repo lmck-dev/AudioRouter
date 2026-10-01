@@ -9,6 +9,11 @@ from audiorouter.effects import Effect
 from audiorouter.engine import Engine
 from audiorouter.meter import Tap
 
+try:
+    from PyQt6.QtWidgets import QLabel
+except ImportError:  # pragma: no cover
+    QLabel = None
+
 from .test_gui import QApplication, FakeDriver, FakeReader, GuiTestCase
 
 
@@ -28,7 +33,7 @@ class MixerTest(GuiTestCase):
         self.assertIs(self.window.views.currentWidget(), self.mixer)
         self.assertEqual(list(self.mixer.strips), ["mic", "speakers", "phones"])
         self.assertEqual(self.strip("speakers").name.text(), "Speakers")
-        self.assertEqual(self.strip("mic").kind.text(), "INPUT")
+        self.assertEqual(self.strip("mic").kind.text(), "FROM A MIC")
         self.assertIsNotNone(self.strip("mic").source)
         self.assertIsNone(self.strip("speakers").source)
 
@@ -187,6 +192,40 @@ class MixerTest(GuiTestCase):
                 strip.fader.setValue(value)
                 self.assertEqual(strip.fader.value(), value)
 
+    def test_outputs_get_a_device_strip_whose_volume_and_mute_drive_the_device(self):
+        strip = self.mixer.device_strips["alsa_output.a"]
+        strip.show_state({"volume": 1.0, "muted": False})
+        self.assertEqual(strip.kind.text(), "OUTPUT")
+        with mock.patch.object(Engine, "set_device_volume") as set_volume:
+            strip.volume.setValue(40)
+            strip.volume.setValue(50)  # a drag: one write, the last value
+            self.window._write_device_volume()
+        set_volume.assert_called_once_with("alsa_output.a", 0.5)
+        with mock.patch.object(Engine, "set_device_muted") as set_muted:
+            strip.mute.click()
+        set_muted.assert_called_once_with("alsa_output.a", True)
+
+    def test_the_desk_reads_mics_channels_groups_outputs_and_hides_companions(self):
+        status = {"channels": [], "streams": [{"id": 1, "app": "Spotify", "channel": "mic_mix"}],
+                  "input_devices": [{"name": "alsa_input.usb", "label": "USB Mic", "volume": 0.5, "muted": False}],
+                  "devices": [{"name": "alsa_output.a", "label": "Built-in Audio", "volume": 1.0, "muted": False}]}
+        self.mixer.refresh(self.engine.config, status)
+        self.assertNotIn("mic_mix", self.mixer.strips)
+        self.assertEqual(list(self.mixer.device_strips), ["alsa_input.usb", "alsa_output.a"])
+        self.assertEqual(self.mixer.device_strips["alsa_input.usb"].kind.text(), "MIC")
+        self.assertEqual(self.mixer.device_strips["alsa_input.usb"].volume.value(), 50)
+        # Apps sent into a mic channel are listed on its strip.
+        self.assertEqual(self.strip("mic").apps.text(), "+ Spotify")
+        headers = [self.mixer.row.itemAt(i).widget() for i in range(self.mixer.row.count())]
+        titles = [w.findChild(QLabel).text() for w in headers
+                  if w is not None and not hasattr(w, "channel") and not hasattr(w, "device")]
+        self.assertEqual(titles, ["MICS", "CHANNELS", "OUTPUTS"])
+
+    def test_an_app_can_be_sent_into_a_mic(self):
+        combo = self.window.streams_panel.table.cellWidget(0, 2)
+        labels = [combo.itemText(i) for i in range(combo.count())]
+        self.assertIn("Desk mic (into the mic)", [l.replace(" (stopped)", "") for l in labels])
+
     def test_mute_mutes_that_channel(self):
         with mock.patch.object(Engine, "set_channel_muted") as set_muted:
             self.strip("speakers").mute.setEnabled(True)
@@ -225,7 +264,7 @@ class MixerTest(GuiTestCase):
         taps = {s: Tap("Out", (), 42, f"/run/42.{s}") for s in ("speakers", "phones", "mic")}
         with mock.patch("audiorouter.gui.mixer.output_tap", side_effect=lambda c: taps[c.slug]):
             self.mixer.set_active(True)
-            self.assertEqual(sorted(r.tap.file for r in FakeReader.started if r.running),
+            self.assertEqual(sorted(r.tap.file for r in FakeReader.started if r.running and r.tap.file),
                              sorted(t.file for t in taps.values()))
             self.window.views.setCurrentIndex(1)
             with mock.patch.object(self.window, "isVisible", return_value=True):

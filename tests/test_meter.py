@@ -77,7 +77,9 @@ class TapTest(unittest.TestCase):
         self.assertEqual(channel_taps(cable, graph)[1].args, ("--device=ar_speakers_rec",))
 
     def test_an_input_reads_the_microphone_and_its_virtual_mic(self):
-        graph = Graph([fakes.node(70, "ar_mic", "Audio/Source", serial=700, **{"audiorouter.channel": "mic"})])
+        # The mic channel's own node is its capture; Out reads the virtual mic,
+        # which its companion publishes under the mic channel's name.
+        graph = Graph([fakes.node(70, "ar_mic_in", "Stream/Input/Audio", serial=700, **{"audiorouter.channel": "mic"})])
         tap_in, tap_out = channel_taps(Channel("mic", "Mic", "alsa_input.usb", kind=INPUT), graph)
         self.assertEqual((tap_in.args, tap_out.args), (("--device=alsa_input.usb",), ("--device=ar_mic",)))
         default_mic = channel_taps(Channel("mic", "Mic", "", kind=INPUT), graph)[0]

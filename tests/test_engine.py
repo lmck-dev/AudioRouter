@@ -135,6 +135,21 @@ class GroupEditingTest(EngineTestCase):
         self.assertEqual(Config.load(self.path).channel("music").device, "")
 
 
+class DeviceVolumeTest(EngineTestCase):
+    def test_a_devices_own_volume_and_mute_are_set_on_its_node(self):
+        with mock.patch.object(Graph, "snapshot", staticmethod(live_graph)), \
+             mock.patch("audiorouter.engine._wpctl") as wpctl:
+            self.assertEqual(self.engine.set_device_volume("alsa_output.a", 9.0), 1.5)  # capped
+            self.engine.set_device_muted("alsa_output.a", True)
+        self.assertEqual([c.args for c in wpctl.call_args_list],
+                         [("set-volume", "50", "1.5000"), ("set-mute", "50", "1")])
+
+    def test_an_unknown_device_is_refused(self):
+        with mock.patch.object(Graph, "snapshot", staticmethod(live_graph)), \
+             self.assertRaises(EngineError):
+            self.engine.set_device_volume("nope", 0.5)
+
+
 class ReconcileTest(EngineTestCase):
     def test_a_stale_config_on_disk_means_a_restart_is_due(self):
         channel = self.engine.channel("speakers")
@@ -442,9 +457,13 @@ class InputChannelApplyTest(EngineTestCase):
 
         mic = Channel("mic", "Mic", "", kind=INPUT)
         self.engine.config.add_channel(mic)
-        mic.config_path.write_text(mic.render_config_text())
+        companion = self.engine.config.companion(mic)
+        for channel in (mic, companion):
+            channel.config_path.write_text(channel.render_config_text())
         graph = live_graph()
-        graph.apply([fakes.node(70, "ar_mic", "Audio/Source", serial=700, **{"audiorouter.channel": "mic"})])
+        # A mic channel's own node is its capture; the virtual mic is its companion's.
+        graph.apply([fakes.node(70, "ar_mic_in", "Stream/Input/Audio", serial=700, **{"audiorouter.channel": "mic"}),
+                     fakes.node(71, "ar_mic_mix", "Audio/Sink", serial=710, **{"audiorouter.channel": "mic_mix"})])
         self.engine.use_graph(graph)
         with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)), \
              mock.patch.object(Channel, "is_running", return_value=True), \

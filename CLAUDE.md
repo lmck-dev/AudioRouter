@@ -144,6 +144,19 @@ These rules come from those files, and they apply even when you haven't opened t
   capture-side node** (`control_name`): the sink for outputs, `ar_<slug>_in`
   for inputs. Apps pick inputs from their own list - there is no input-side
   routing, and `sink_map` holds outputs only.
+- **Every input channel has a hidden COMPANION output** (`<slug>_mix`,
+  `Channel.companion_of`, made and kept in step by `Config.ensure_companions`;
+  1 Oct 2026). The mic channel's filter-chain no longer publishes the virtual
+  mic: its playback is a passive, dont-fallback STREAM into the companion's
+  sink, and the companion (recordable, playing NOWHERE or into the `listen`
+  channel) publishes the virtual mic under the OLD name `ar_<input slug>`, so
+  apps keep their choice. Apps can be sent into a mic via the companion. An
+  input's own node (`sink_node`, `_await_sink`, its trim volume) is now its
+  CAPTURE `ar_<slug>_in`. Companions start before their mic (`start_order`)
+  and are never strips or list entries. Lab (1 Oct): levels exact, 0 ms extra
+  delay, the mic still sleeps until something records, and an upgrading mic
+  channel hands its recorders to the companion with no gap. **The link must
+  be passive on BOTH sides** or the mic runs all the time (measured).
 - **Internal streams carry `node.dont-fallback`.** Measured without it: when
   the output a loopback played into vanished, WirePlumber relinked it onto the
   REAL SPEAKERS - for a listen-through, a live mic on the speakers.

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .channels import NODE_PREFIX, Channel, ChannelError
+from .channels import INPUT, NODE_PREFIX, NOWHERE, OUTPUT, Channel, ChannelError, companion_slug_for
 from .routing import Rule, RuleSet
 
 CONFIG_VERSION = 1
@@ -40,7 +40,59 @@ class Config:
     auto_route: bool = True
 
     def __post_init__(self) -> None:
+        self.ensure_companions()
         self.update_solo()
+
+    # -- companions -----------------------------------------------------------
+    #
+    # Every input channel has a hidden companion output channel (owner, 1 Oct
+    # 2026). The mic channel (mic, echo cancel, mic effects) plays into it over
+    # a passive link; apps can play into it too; it offers the sum to recording
+    # apps as the mic, and plays it to `listen` if set. Lab: exact levels, no
+    # added delay, the mic still sleeps until something records.
+
+    def companion(self, channel: Channel) -> Channel | None:
+        """An input channel's companion, or None."""
+        if not channel.is_input:
+            return None
+        return next((c for c in self.channels if c.companion_of == channel.slug), None)
+
+    def mic_channel_of(self, companion: Channel) -> Channel | None:
+        """The input channel a companion belongs to."""
+        if not companion.companion_of:
+            return None
+        return next((c for c in self.channels if c.is_input and c.slug == companion.companion_of), None)
+
+    def ensure_companions(self) -> bool:
+        """Give every input a companion and keep it in step; True if anything changed.
+
+        The companion follows its input's name, on/off and listen-through
+        (which it plays as its output: into the chosen output channel, or
+        nowhere). Companions whose input is gone are removed.
+        """
+        changed = False
+        inputs = {c.slug: c for c in self.channels if c.is_input}
+        for orphan in [c for c in self.channels if c.companion_of and c.companion_of not in inputs]:
+            self.channels.remove(orphan)
+            changed = True
+        for mic in inputs.values():
+            companion = self.companion(mic)
+            if companion is None:
+                slug = companion_slug_for(mic.slug)
+                if any(c.slug == slug for c in self.channels):
+                    slug = companion_slug_for(mic.slug[:34] + "_c")
+                companion = Channel(slug=slug, name=mic.name, device=NOWHERE, kind=OUTPUT,
+                                    recordable=True, companion_of=mic.slug)
+                # Right after its mic channel, so the file stays readable.
+                self.channels.insert(self.channels.index(mic) + 1, companion)
+                changed = True
+            device = f"{NODE_PREFIX}{mic.listen}" if mic.listen else NOWHERE
+            wanted = {"name": mic.name, "enabled": mic.enabled, "device": device, "recordable": True}
+            for key, value in wanted.items():
+                if getattr(companion, key) != value:
+                    setattr(companion, key, value)
+                    changed = True
+        return changed
 
     def update_solo(self) -> None:
         """Mark which channels a solo silences: the rest of the soloed kind.
@@ -59,7 +111,14 @@ class Config:
             heard.update(m.slug for m in self.members_of(channel, nested=True))
         kinds = {c.kind for c in soloed}
         for channel in self.channels:
+            if channel.companion_of:
+                continue  # follows its mic channel, below
             channel.solo_cut = channel.kind in kinds and channel.slug not in heard
+        for companion in self.channels:
+            mic = self.mic_channel_of(companion)
+            if mic is not None:
+                # Never cut by an output's solo: that would silence a call's mic.
+                companion.solo_cut = mic.solo_cut
 
     # -- groups -------------------------------------------------------------
     #
@@ -126,7 +185,13 @@ class Config:
         A member started first would find no group to play into and follow
         the default output until the group appeared.
         """
-        return sorted(self.channels, key=lambda c: len(self.groups_below(c)))
+        def depth(channel: Channel) -> int:
+            # A mic channel plays into its companion, which must exist first.
+            companion = self.companion(channel)
+            if companion is not None:
+                return len(self.groups_below(companion)) + 1
+            return len(self.groups_below(channel))
+        return sorted(self.channels, key=depth)
 
     # -- lookup -----------------------------------------------------------
 
@@ -147,19 +212,27 @@ class Config:
         if self.has_channel(channel.slug):
             raise ConfigError(f"channel {channel.slug!r} already exists")
         self.channels.append(channel)
+        self.ensure_companions()
         self.update_solo()
         return channel
 
     def remove_channel(self, slug: str) -> Channel:
         channel = self.channel(slug)
-        self.channels.remove(channel)
+        if channel.companion_of:
+            raise ConfigError(f"{channel.name}'s mix belongs to its mic channel; delete that instead")
+        # An input's companion goes with it.
+        gone = [channel, *([self.companion(channel)] if self.companion(channel) else [])]
+        for each in gone:
+            self.channels.remove(each)
+        gone_slugs = {c.slug for c in gone}
+        gone_nodes = {c.node_name for c in gone if not c.is_input}
         # Rules pointing at a channel that no longer exists would silently stop
         # working, so drop them with the channel.
-        self.rules.rules = [r for r in self.rules.rules if r.channel != slug]
+        self.rules.rules = [r for r in self.rules.rules if r.channel not in gone_slugs]
         # Members of a deleted group go back to the default output rather
         # than pointing at a node that will never appear again.
         for member in self.channels:
-            if not member.is_input and member.device == channel.node_name:
+            if not member.is_input and member.device in gone_nodes:
                 member.device = ""
         self.update_solo()
         return channel

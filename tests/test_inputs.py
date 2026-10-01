@@ -22,14 +22,28 @@ def modules(channel):
 
 
 class InputRenderTest(unittest.TestCase):
-    def test_an_input_channel_reads_the_mic_and_offers_a_virtual_microphone(self):
+    def test_an_input_channel_reads_the_mic_and_plays_into_its_companion(self):
         mic = Channel("mic", "Desk mic", "alsa_input.usb", kind=INPUT)
         args = modules(mic)["libpipewire-module-filter-chain"]
         self.assertEqual(args["capture.props"]["target.object"], "alsa_input.usb")
         self.assertEqual(args["capture.props"]["node.name"], "ar_mic_in")
+        playback = args["playback.props"]
+        self.assertNotIn("media.class", playback)  # a stream now, not the virtual mic
+        self.assertEqual(playback["target.object"], "ar_mic_mix")
+        # Passive, or the mic would run with nothing recording (measured);
+        # never the speakers if the companion is missing.
+        self.assertTrue(playback["node.passive"])
+        self.assertTrue(playback[NO_FALLBACK])
+
+    def test_the_companion_offers_the_virtual_mic_under_the_old_name(self):
+        config = Config(channels=[Channel("mic", "Desk mic", "alsa_input.usb", kind=INPUT)])
+        companion = config.companion(config.channel("mic"))
+        self.assertEqual((companion.slug, companion.device, companion.recordable), ("mic_mix", NOWHERE, True))
+        args = modules(companion)["libpipewire-module-filter-chain"]
         self.assertEqual(args["playback.props"]["media.class"], "Audio/Source")
-        self.assertEqual(args["playback.props"]["node.name"], "ar_mic")
+        self.assertEqual(args["playback.props"]["node.name"], "ar_mic")  # what apps already picked
         self.assertEqual(args["playback.props"]["node.description"], "Desk mic")
+        self.assertEqual(args["capture.props"]["node.name"], "ar_mic_mix")
 
     def test_the_real_mic_is_only_opened_while_something_records(self):
         args = modules(Channel("mic", "Mic", "", kind=INPUT))["libpipewire-module-filter-chain"]
@@ -42,8 +56,12 @@ class InputRenderTest(unittest.TestCase):
         self.assertNotIn(NO_FALLBACK, default["capture.props"])
         self.assertNotIn("target.object", default["capture.props"])
 
-    def test_listening_adds_a_loopback_into_the_output_channel_that_never_falls_back(self):
-        loop = modules(Channel("mic", "Mic", "", kind=INPUT, listen="speakers"))["libpipewire-module-loopback"]
+    def test_listening_is_the_companion_playing_into_the_output_that_never_falls_back(self):
+        config = Config(channels=[Channel("speakers", "Speakers", "dev"),
+                                  Channel("mic", "Mic", "", kind=INPUT, listen="speakers")])
+        companion = config.companion(config.channel("mic"))
+        self.assertEqual(companion.device, "ar_speakers")
+        loop = modules(companion)["libpipewire-module-loopback"]
         self.assertEqual(loop["capture.props"]["target.object"], "ar_mic")
         self.assertEqual(loop["playback.props"]["target.object"], "ar_speakers")
         # Measured without it: removing the output relinked the loopback onto
@@ -51,11 +69,17 @@ class InputRenderTest(unittest.TestCase):
         self.assertTrue(loop["playback.props"][NO_FALLBACK])
         self.assertTrue(loop["capture.props"][NO_FALLBACK])
 
-    def test_not_listening_means_no_loopback(self):
-        self.assertNotIn("libpipewire-module-loopback", modules(Channel("mic", "Mic", "", kind=INPUT)))
+    def test_not_listening_means_the_companion_plays_nowhere(self):
+        config = Config(channels=[Channel("mic", "Mic", "", kind=INPUT)])
+        companion = config.companion(config.channel("mic"))
+        self.assertEqual(companion.device, NOWHERE)
+        self.assertNotIn("libpipewire-module-loopback", modules(companion))
+        self.assertNotIn("libpipewire-module-loopback", modules(config.channel("mic")))
 
     def test_every_node_is_stamped_as_ours(self):
-        text = Channel("mic", "Mic", "", kind=INPUT, listen="speakers").render_config_text()
+        config = Config(channels=[Channel("speakers", "Speakers", "dev"),
+                                  Channel("mic", "Mic", "", kind=INPUT, listen="speakers")])
+        text = config.channel("mic").render_config_text()
         conf = json.loads(text)
         for module in conf["context.modules"][4:]:
             for side in ("capture.props", "playback.props"):
@@ -232,7 +256,8 @@ class EngineInputTest(EngineTestCase):
         ])
         with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)):
             status = self.engine.status()
-        self.assertEqual(status["input_devices"], [{"name": "alsa_input.usb", "label": "USB Mic"}])
+        self.assertEqual(status["input_devices"],
+                         [{"name": "alsa_input.usb", "label": "USB Mic", "volume": None, "muted": None}])
 
 
 class HandOverTest(EngineTestCase):
@@ -261,7 +286,7 @@ class HandOverTest(EngineTestCase):
         moved = sorted(c.args for c in metadata.call_args_list)
         self.assertEqual(moved, [(60, 520), (61, 520)])
 
-    def test_recorders_of_an_input_channel_follow_its_restart(self):
+    def test_recorders_of_a_mic_follow_its_companions_restart(self):
         self.engine.create_channel("mic", "Mic", kind=INPUT)
         graph = Graph([
             fakes.client(1, 111), fakes.client(2, 222),
@@ -273,8 +298,28 @@ class HandOverTest(EngineTestCase):
         with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)), \
              mock.patch("audiorouter.routing.Router._set_metadata") as metadata, \
              mock.patch("audiorouter.engine.time.sleep"):
-            self.engine._hand_over(self.engine.channel("mic"), 222, timeout=0)
+            self.engine._hand_over(self.engine.channel("mic_mix"), 222, timeout=0)
         self.assertEqual([c.args for c in metadata.call_args_list], [(75, 710)])
+
+    def test_after_upgrading_the_mic_hands_its_recorders_to_its_companion(self):
+        # An older mic host published the virtual mic itself. Its first
+        # restart must move Discord onto the companion's copy (measured live:
+        # no gap), or Discord falls back to the raw default mic.
+        self.engine.create_channel("mic", "Mic", kind=INPUT)
+        graph = Graph([
+            fakes.client(1, 111), fakes.client(3, 333),
+            fakes.node(70, "ar_mic", "Audio/Source", serial=700, client_id=1, **{"audiorouter.channel": "mic"}),
+            fakes.node(73, "ar_mic", "Audio/Source", serial=730, client_id=3, **{"audiorouter.channel": "mic_mix"}),
+            fakes.node(75, "discord", "Stream/Input/Audio", serial=750, **{"application.name": "Discord"}),
+            fakes.port(80, 70, "out"), fakes.port(81, 75, "in"), fakes.link(90, 80, 81),
+        ])
+        companion = self.engine.channel("mic_mix")
+        with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)), \
+             mock.patch.object(type(companion), "pid", lambda self: 333 if self.slug == "mic_mix" else 222), \
+             mock.patch("audiorouter.routing.Router._set_metadata") as metadata, \
+             mock.patch("audiorouter.engine.time.sleep"):
+            self.engine._hand_over(self.engine.channel("mic"), 222, timeout=0)
+        self.assertEqual([c.args for c in metadata.call_args_list], [(75, 730)])
 
     def test_a_level_meter_reading_the_old_source_is_left_alone(self):
         # Meter taps refuse moves; waiting for one held every restart for the
@@ -292,7 +337,7 @@ class HandOverTest(EngineTestCase):
         with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)), \
              mock.patch("audiorouter.routing.Router._set_metadata") as metadata, \
              mock.patch("audiorouter.engine.time.sleep"):
-            self.engine._hand_over(self.engine.channel("mic"), 222, timeout=0)
+            self.engine._hand_over(self.engine.channel("mic_mix"), 222, timeout=0)
         self.assertEqual([c.args for c in metadata.call_args_list], [(75, 710)])
 
     def test_the_new_hosts_own_loopback_is_pointed_at_its_own_source(self):
@@ -302,13 +347,13 @@ class HandOverTest(EngineTestCase):
             fakes.client(1, 111), fakes.client(2, 222),
             fakes.node(70, "ar_mic", "Audio/Source", serial=700, client_id=1, **{"audiorouter.channel": "mic"}),
             fakes.node(71, "ar_mic", "Audio/Source", serial=710, client_id=2, **{"audiorouter.channel": "mic"}),
-            fakes.node(76, "ar_mic_listen_in", "Stream/Input/Audio", serial=760, client_id=2,
-                       **{"audiorouter.channel": "mic", "target.object": "ar_mic"}),
+            fakes.node(76, "ar_mic_mix_play_in", "Stream/Input/Audio", serial=760, client_id=2,
+                       **{"audiorouter.channel": "mic_mix", "target.object": "ar_mic"}),
         ])
         with mock.patch.object(Graph, "snapshot", staticmethod(lambda: graph)), \
              mock.patch("audiorouter.routing.Router._set_metadata") as metadata, \
              mock.patch("audiorouter.engine.time.sleep"):
-            self.engine._hand_over(self.engine.channel("mic"), 222, timeout=0)
+            self.engine._hand_over(self.engine.channel("mic_mix"), 222, timeout=0)
         self.assertEqual([c.args for c in metadata.call_args_list], [(76, 710)])
 
 

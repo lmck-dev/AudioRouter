@@ -79,6 +79,11 @@ class ChannelError(RuntimeError):
     pass
 
 
+def companion_slug_for(slug: str) -> str:
+    """The companion's slug: `<input>_mix`, shortened to stay a valid slug."""
+    return f"{slug[:36]}_mix"
+
+
 def validate_slug(slug: str) -> str:
     if not SLUG_RE.match(slug or ""):
         raise ChannelError(
@@ -250,6 +255,11 @@ class Channel:
     #: Silenced because another channel of the same kind is soloed. Worked out
     #: by `Config.update_solo` from the whole desk, never saved.
     solo_cut: bool = field(default=False, repr=False, compare=False)
+    #: Outputs only: this channel is the hidden COMPANION of the input channel
+    #: with this slug (see `Config.ensure_companions`). The mic channel plays
+    #: into it, apps can play into it too, and it offers the sum to recording
+    #: apps under the name they always used for the mic (`ar_<input slug>`).
+    companion_of: str = ""
 
     def __post_init__(self) -> None:
         validate_slug(self.slug)
@@ -259,6 +269,7 @@ class Channel:
             raise ChannelError(f"channel {self.slug!r}: kind must be one of {', '.join(KINDS)}")
         if self.kind == INPUT:
             self.recordable = False
+            self.companion_of = ""
             if self.device == NOWHERE:
                 raise ChannelError(f"input channel {self.slug!r} needs something to record from")
         else:
@@ -291,10 +302,25 @@ class Channel:
 
     @property
     def recording_name(self) -> str | None:
-        """The source recording apps pick, if this channel offers one."""
+        """The source recording apps pick, if this channel offers one.
+
+        A mic channel's is published by its companion, under the mic channel's
+        own node name, so apps that chose the mic keep it.
+        """
         if self.is_input:
             return self.node_name
+        if self.companion_of:
+            return f"{NODE_PREFIX}{self.companion_of}"
         return f"{NODE_PREFIX}{self.slug}_rec" if self.recordable else None
+
+    @property
+    def companion_slug(self) -> str:
+        """An input channel's companion: the output its mic plays into."""
+        return companion_slug_for(self.slug)
+
+    @property
+    def companion_sink_name(self) -> str:
+        return f"{NODE_PREFIX}{self.companion_slug}"
 
     @property
     def playback_name(self) -> str:
@@ -329,6 +355,8 @@ class Channel:
             data["echo_cancel"] = self.echo_cancel
         else:
             data["recordable"] = self.recordable
+            if self.companion_of:
+                data["companion_of"] = self.companion_of
         return data
 
     @classmethod
@@ -346,6 +374,7 @@ class Channel:
             fader_db=float(data.get("fader_db", 0.0)),
             pan=max(-1.0, min(1.0, float(data.get("pan", 0.0)))),
             solo=bool(data.get("solo", False)),
+            companion_of=str(data.get("companion_of", "")),
         )
 
     # -- rendering --------------------------------------------------------
@@ -398,23 +427,24 @@ class Channel:
                 # for whichever other microphone happens to be the default.
                 args["capture.props"][NO_FALLBACK] = True
             args["playback.props"] = {
-                "node.name": self.node_name,
-                "node.description": self.name,
-                "media.class": "Audio/Source",
+                # Into the companion, which mixes in any apps and offers the
+                # sum as the mic apps record (and plays it to `listen`).
+                "node.name": self.playback_name,
+                "node.description": f"{self.name} (into its mix)",
+                "target.object": self.companion_sink_name,
+                # Passive: the mic wakes only while something records the
+                # companion. dont-fallback: never the speakers - with the
+                # companion missing, filter-chain destroys this channel
+                # instead (measured), and `apply` restarts it once it is back.
+                "node.passive": True,
+                NO_FALLBACK: True,
                 **stamp,
             }
-            if self.listen:
-                modules.append(_loopback(
-                    f"{self.name} (listening)",
-                    capture={"node.name": f"{self.node_name}_listen_in", "target.object": self.node_name,
-                             NO_FALLBACK: True, **stamp},
-                    playback={"node.name": self.listen_name,
-                              "target.object": f"{NODE_PREFIX}{self.listen}", NO_FALLBACK: True, **stamp},
-                ))
         else:
             args["capture.props"] = {
                 "node.name": self.node_name,
-                "node.description": self.name,
+                # A companion's sink is where apps are mixed into a mic.
+                "node.description": f"{self.name} (mix into the mic)" if self.companion_of else self.name,
                 "media.class": "Audio/Sink",
                 **stamp,
             }
@@ -422,7 +452,8 @@ class Channel:
             if self.recordable:
                 args["playback.props"] = {
                     "node.name": self.recording_name,
-                    "node.description": f"{self.name} (recording)",
+                    # A companion's is the mic apps already know by name.
+                    "node.description": self.name if self.companion_of else f"{self.name} (recording)",
                     "media.class": "Audio/Source",
                     **stamp,
                 }
@@ -430,6 +461,10 @@ class Channel:
                     playback = {"node.name": self.playback_name, **stamp}
                     if self.device:
                         playback["target.object"] = self.device
+                        if self.companion_of:
+                            # A mic's listen-through: never onto the real
+                            # speakers if the output it plays into vanishes.
+                            playback[NO_FALLBACK] = True
                     modules.append(_loopback(
                         f"{self.name} output",
                         capture={"node.name": f"{self.node_name}_play_in",
@@ -686,7 +721,9 @@ class Channel:
                     f"(code {proc.returncode}); see {self.log_path}"
                 )
             try:
-                node = Graph.snapshot().node_owned_by_pid(proc.pid, self.node_name)
+                # An input's virtual mic belongs to its companion; its own is the capture.
+                own = self.control_name if self.is_input else self.node_name
+                node = Graph.snapshot().node_owned_by_pid(proc.pid, own)
                 if node is not None:
                     return node
             except PwError:
@@ -749,8 +786,13 @@ class Channel:
         return graph.node_owned_by_pid(pid, name) if pid is not None else None
 
     def sink_node(self, graph: Graph) -> Node | None:
-        """The channel's own node: an output's sink or an input's virtual mic."""
-        return self._node(graph, self.node_name)
+        """The channel's own node: an output's sink, or an input's capture.
+
+        An input's virtual mic belongs to its companion, so the node that says
+        this host is alive (and carries its trim volume, before the effects,
+        like an output's sink) is the capture.
+        """
+        return self._node(graph, self.control_name if self.is_input else self.node_name)
 
     def control_node(self, graph: Graph) -> Node | None:
         return self._node(graph, self.control_name)
@@ -786,6 +828,7 @@ class Channel:
             "echo_cancel": self.echo_cancel,
             "recordable": self.recordable,
             "recording_name": self.recording_name,
+            "companion_of": self.companion_of,
             "device_present": self.device_present(graph),
             "enabled": self.enabled,
             "running": self.is_running(),

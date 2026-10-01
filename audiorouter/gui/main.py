@@ -113,6 +113,12 @@ class MainWindow(QMainWindow):
         self._volume_timer.setSingleShot(True)
         self._volume_timer.setInterval(TUNE_DELAY_MS)
         self._volume_timer.timeout.connect(self._write_volume)
+        # The same for a real device's own volume (the mixer's MICS / OUTPUTS).
+        self._pending_device_volume: tuple[str, float] | None = None
+        self._device_volume_timer = QTimer(self)
+        self._device_volume_timer.setSingleShot(True)
+        self._device_volume_timer.setInterval(TUNE_DELAY_MS)
+        self._device_volume_timer.timeout.connect(self._write_device_volume)
 
         self._build()
         self._connect()
@@ -260,6 +266,8 @@ class MainWindow(QMainWindow):
         self.mixer.mute_toggled.connect(self._set_muted)
         self.mixer.set_inserts_open(self._setting_bool("mixer_inserts_open", True))
         self.mixer.inserts_toggled.connect(lambda on: self.settings.setValue("mixer_inserts_open", on))
+        self.mixer.device_volume_changed.connect(self._set_device_volume)
+        self.mixer.device_mute_toggled.connect(self._set_device_muted)
         self.mixer.pan_changed.connect(self._set_pan)
         self.mixer.solo_toggled.connect(self._set_solo)
         self.mixer.effect_toggled.connect(self._toggle_effect)
@@ -376,6 +384,8 @@ class MainWindow(QMainWindow):
             lst.blockSignals(True)
             lst.clear()
         for channel in self.engine.config.channels:
+            if channel.companion_of:
+                continue  # a mic channel's hidden mix: shown as part of the mic channel
             label = channel.name
             if not channel.is_input and channel.recordable:
                 label += "  (cable)"
@@ -390,7 +400,7 @@ class MainWindow(QMainWindow):
         slugs = self.engine.config.channel_slugs
         if self._selected_slug not in slugs:
             # The first output, else the first input, else nothing.
-            first = [c.slug for c in self.engine.config.channels if not c.is_input]
+            first = [c.slug for c in self.engine.config.channels if not c.is_input and not c.companion_of]
             first += [c.slug for c in self.engine.config.channels if c.is_input]
             self._selected_slug = first[0] if first else None
         self.select_channel(self._selected_slug)
@@ -447,7 +457,8 @@ class MainWindow(QMainWindow):
         )
 
     def _output_choices(self) -> list[tuple[str, str]]:
-        return [(c.slug, c.name) for c in self.engine.config.channels if not c.is_input]
+        return [(c.slug, c.name) for c in self.engine.config.channels
+                if not c.is_input and not c.companion_of]
 
     @staticmethod
     def _device_choices(status: dict, channel) -> list[tuple[str, str]]:
@@ -458,7 +469,8 @@ class MainWindow(QMainWindow):
         """Output channels this one can play into (as a group), loops left out."""
         if channel is None:
             return []
-        return [(c.node_name, group_label(c.name)) for c in self.engine.config.group_choices(channel)]
+        return [(c.node_name, group_label(c.name, bool(c.companion_of)))
+                for c in self.engine.config.group_choices(channel)]
 
     def _channel_selected(self) -> None:
         channel = self.selected_channel
@@ -516,6 +528,29 @@ class MainWindow(QMainWindow):
         self._pending_volume = None
         try:
             self.engine.set_channel_volume(slug, volume)
+        except USER_ERRORS as exc:
+            self._set_status(str(exc), warn=True)
+
+    def _set_device_volume(self, name: str, volume: float) -> None:
+        if self._pending_device_volume is not None and self._pending_device_volume[0] != name:
+            self._write_device_volume()
+        self._pending_device_volume = (name, volume)
+        if not self._device_volume_timer.isActive():
+            self._device_volume_timer.start()
+
+    def _write_device_volume(self) -> None:
+        if self._pending_device_volume is None:
+            return
+        name, volume = self._pending_device_volume
+        self._pending_device_volume = None
+        try:
+            self.engine.set_device_volume(name, volume)
+        except USER_ERRORS as exc:
+            self._set_status(str(exc), warn=True)
+
+    def _set_device_muted(self, name: str, muted: bool) -> None:
+        try:
+            self.engine.set_device_muted(name, muted)
         except USER_ERRORS as exc:
             self._set_status(str(exc), warn=True)
 

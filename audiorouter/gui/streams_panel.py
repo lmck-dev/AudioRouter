@@ -144,6 +144,8 @@ class StreamsPanel(QWidget):
                 if channel.get("kind") == "input":
                     continue  # playback cannot be sent into a microphone
                 label = channel["name"]
+                if channel.get("companion_of"):
+                    label += " (into the mic)"  # a mic channel's mix
                 if channel["slug"] not in running:
                     label += " (stopped)"
                 combo.addItem(label, channel["slug"])

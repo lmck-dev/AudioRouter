@@ -97,7 +97,7 @@ class SoloTest(unittest.TestCase):
         self.assertEqual(self.cut(config), {"speakers"})  # the mics are untouched
         config.channel("mic").solo = True
         config.update_solo()
-        self.assertEqual(self.cut(config), {"speakers", "mic2"})
+        self.assertEqual(self.cut(config), {"speakers", "mic2", "mic2_mix"})  # a mic's mix goes with it
 
     def test_two_solos_are_both_heard(self):
         config = self.config()
@@ -160,7 +160,8 @@ class GroupTest(unittest.TestCase):
 
     def test_choices_leave_out_itself_inputs_and_loops(self):
         config = self.config()
-        self.assertEqual(self.slugs(config.group_choices(config.channel("master"))), ["phones"])
+        # A mic's mix is a choice too: that is how music reaches a mic.
+        self.assertEqual(self.slugs(config.group_choices(config.channel("master"))), ["phones", "mic_mix"])
         self.assertEqual(config.group_choices(config.channel("mic")), [])
 
     def test_a_loop_is_reported(self):
@@ -185,6 +186,55 @@ class GroupTest(unittest.TestCase):
         config.channel("master").solo = True
         config.update_solo()
         self.assertEqual({c.slug for c in config.channels if c.solo_cut}, {"phones"})
+
+
+class CompanionTest(unittest.TestCase):
+    """Every input channel has a hidden companion output (its mix)."""
+
+    def config(self):
+        return Config(channels=[Channel("speakers", "Speakers", "dev"),
+                                Channel("mic", "Desk mic", "", kind=INPUT)])
+
+    def test_every_input_gets_one_right_after_it_and_it_is_saved(self):
+        config = self.config()
+        self.assertEqual([c.slug for c in config.channels], ["speakers", "mic", "mic_mix"])
+        again = Config.from_dict(config.to_dict())
+        self.assertEqual(again.channel("mic_mix").companion_of, "mic")
+        self.assertEqual([c.slug for c in again.channels], ["speakers", "mic", "mic_mix"])  # not doubled
+
+    def test_it_follows_its_mic_channels_name_switch_and_listen(self):
+        config = self.config()
+        mic = config.channel("mic")
+        mic.name, mic.enabled, mic.listen = "Teams mic", False, "speakers"
+        self.assertTrue(config.ensure_companions())
+        companion = config.channel("mic_mix")
+        self.assertEqual((companion.name, companion.enabled, companion.device),
+                         ("Teams mic", False, "ar_speakers"))
+        self.assertFalse(config.ensure_companions())  # nothing more to do
+
+    def test_it_starts_before_its_mic_channel(self):
+        order = [c.slug for c in self.config().start_order()]
+        self.assertLess(order.index("mic_mix"), order.index("mic"))
+
+    def test_it_goes_with_its_mic_channel_and_cannot_be_deleted_alone(self):
+        config = self.config()
+        with self.assertRaisesRegex(ConfigError, "belongs to its mic channel"):
+            config.remove_channel("mic_mix")
+        config.channel("speakers").device = "ar_mic_mix"  # music into the mic
+        config.remove_channel("mic")
+        self.assertEqual([c.slug for c in config.channels], ["speakers"])
+        self.assertEqual(config.channel("speakers").device, "")
+
+    def test_an_output_solo_never_cuts_a_mic(self):
+        config = self.config()
+        config.channel("speakers").solo = True
+        config.update_solo()
+        self.assertFalse(config.channel("mic_mix").solo_cut)
+
+    def test_a_clashing_slug_gets_another_name(self):
+        config = Config(channels=[Channel("mic_mix", "Something else", "dev"),
+                                  Channel("mic", "Mic", "", kind=INPUT)])
+        self.assertEqual(config.companion(config.channel("mic")).slug, "mic_c_mix")
 
 
 class DefaultConfigTest(unittest.TestCase):

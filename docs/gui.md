@@ -153,6 +153,18 @@ Unticked, or where no tap can be read, they are the whole channel as before.
   code, device -36.00 unchanged; a knob change stayed live (same pid, Out
   -36 -> -30); host CPU 0.25% of a core with or without four taps.
 
+## Mics | Channels | Groups | Outputs (1 Oct 2026)
+
+Owner's layout: the real microphones on the left (`DeviceStrip`, the
+device's own volume and mute via `Engine.set_device_volume/_muted`, a parec
+meter on the mic), every channel in one CHANNELS section ("FROM A MIC" /
+"FROM APPS" / "CABLE"), GROUPS, then the real outputs (meter on the sink's
+monitor). The "+" offers a channel for a microphone or for apps. A mic
+channel's companion is never a strip; apps sent into it show as "+ app" on
+the mic channel's strip, and "Send to" lists it as "<mic> (into the mic)".
+Device meters are parec `LevelReader`s, run only while the mixer is seen;
+GUI tests patch `gui.mixer.LevelReader` too.
+
 ## The window survives a PipeWire restart (1 Oct 2026)
 
 A PipeWire restart ends the window's `pw-dump -m` feed. The login service

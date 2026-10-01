@@ -103,6 +103,7 @@ class GuiTestCase(unittest.TestCase):
             mock.patch("audiorouter.gui.meters.LevelReader", FakeReader),
             mock.patch("audiorouter.gui.meters.FileLevelReader", FakeReader),
             mock.patch("audiorouter.gui.mixer.FileLevelReader", FakeReader),
+            mock.patch("audiorouter.gui.mixer.LevelReader", FakeReader),  # device strips
             # Nor a real recorder of an input's virtual mic.
             mock.patch("audiorouter.gui.mixer.Driver", FakeDriver),
             # Whether this machine has the level tap must not change a test.
@@ -623,7 +624,8 @@ class MeterTest(GuiTestCase):
     def test_an_input_channel_says_that_measuring_opens_the_microphone(self):
         self.engine.create_channel("mic", "Mic", "", kind="input")
         graph = live_graph()
-        graph.apply([fakes.node(70, "ar_mic", "Audio/Source", serial=700, **{"audiorouter.channel": "mic"})])
+        # A running mic channel's own node is its capture.
+        graph.apply([fakes.node(70, "ar_mic_in", "Stream/Input/Audio", serial=700, **{"audiorouter.channel": "mic"})])
         self.meters.set_active(True)
         self.meters.follow(self.engine.channel("mic"), graph)
         self.assertEqual(
@@ -992,7 +994,7 @@ class InputAndCableGuiTest(GuiTestCase):
         with mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Streaming mic", True)), \
              mock.patch.object(Engine, "apply"):
             self.window.add_input_button.click()
-        created = self.engine.config.channels[-1]
+        created = self.engine.config.channels[-2]  # its hidden companion follows it
         self.assertEqual((created.name, created.kind, created.device), ("Streaming mic", "input", ""))
         self.assertEqual(self.window.selected_channel.slug, created.slug)
 

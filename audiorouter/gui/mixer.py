@@ -1,6 +1,11 @@
 """The mixer: every channel as a strip on one desk, the way a console lays it out.
 
-Inputs sit on the left, outputs on the right. Each strip reads top to bottom
+Left to right in signal order (owner, 1 Oct 2026): MICS - the real
+microphones, each with its own volume and mute; CHANNELS - every channel,
+whether it takes a mic or apps; GROUPS - channels other channels play into;
+OUTPUTS - the real speakers and headphones, with their own volume and mute.
+A mic channel's hidden companion (its mix, see `Config.ensure_companions`) is
+never a strip: apps sent into it are listed on the mic channel's strip. Each strip reads top to bottom
 in signal order: where the sound comes from, the inserts (the effect chain,
 each one lit while it is on), where it goes, then the fader, the mute and a
 meter of what the channel puts out.
@@ -39,6 +44,7 @@ import time
 from PyQt6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import (
+    QMenu,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -57,7 +63,7 @@ from PyQt6.QtWidgets import (
 from ..channels import NOWHERE, Channel
 from ..config import Config
 from ..effects import FADER_MAX_DB, FADER_OFF_DB, EffectError
-from ..meter import Driver, FileLevelReader, Levels, Tap, output_tap
+from ..meter import Driver, FileLevelReader, LevelReader, Levels, Tap, output_tap
 from .meters import FLOOR_DB, FRAME_MS, SCALE_MARKS, LevelBar, bar_span, fraction
 from .theme import Theme
 
@@ -117,9 +123,9 @@ def fader_text(db: float) -> str:
     return "off" if db <= FADER_OFF_DB else f"{db:+.1f} dB"
 
 
-def group_label(name: str) -> str:
-    """How another channel appears in an OUT list."""
-    return f"Into {name}"
+def group_label(name: str, mic: bool = False) -> str:
+    """How another channel appears in an OUT list (a mic channel's mix says so)."""
+    return f"Into {name} (mic)" if mic else f"Into {name}"
 
 
 #: The pan slider's travel each side of centre.
@@ -483,8 +489,11 @@ class ChannelStrip(QFrame):
         self._fill_routes(entry, devices, outputs, groups)
         if members:
             self.apps.setText("from " + ", ".join(members) + (f"; {', '.join(apps)}" if apps else ""))
+        elif apps:
+            # On a mic channel these are apps sent into the mic, mixed with it.
+            self.apps.setText(("+ " if self.channel.is_input else "") + ", ".join(apps))
         elif not self.channel.is_input:
-            self.apps.setText(", ".join(apps) if apps else "no apps playing")
+            self.apps.setText("no apps playing")
         else:
             self.apps.setText("")
         self.apps.setHidden(not self.apps.text())
@@ -628,6 +637,139 @@ class ChannelStrip(QFrame):
         self.level_label.setText("")
 
 
+DEVICE_STRIP_WIDTH = 96
+
+
+class DeviceStrip(QFrame):
+    """A real microphone or output: its own volume and mute, and a meter.
+
+    The volume is the device's, the one the desktop's sound settings show.
+    For a mic it sets how hot every channel reading that mic is driven; for an
+    output it is the last control before the sound leaves the computer.
+    """
+
+    volume_changed = pyqtSignal(str, float)
+    mute_toggled = pyqtSignal(str, bool)
+
+    def __init__(self, name: str, label: str, is_mic: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.device = name
+        self.is_mic = is_mic
+        self._last_local_edit = 0.0
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFixedWidth(DEVICE_STRIP_WIDTH)
+        theme = Theme(self)
+        small = self.font()
+        small.setPointSizeF(max(6.5, small.pointSizeF() * 0.85))
+
+        self.name = QLabel(self)
+        bold = self.name.font()
+        bold.setBold(True)
+        self.name.setFont(bold)
+        self.name.setText(self.name.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight,
+                                                             DEVICE_STRIP_WIDTH - 14))
+        self.name.setToolTip(label)
+        self.name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.kind = QLabel("MIC" if is_mic else "OUTPUT", self)
+        self.kind.setFont(small)
+        self.kind.setStyleSheet(theme.css(theme.dim))
+        self.kind.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.volume = QSlider(Qt.Orientation.Vertical, self)
+        self.volume.setRange(0, 100)
+        self.volume.setPageStep(10)
+        self.volume.setMinimumHeight(140)
+        self.volume.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.volume.setToolTip("This microphone's own volume, for every channel that uses it"
+                               if is_mic else "This device's own volume: the last control before your ears")
+        self.volume.valueChanged.connect(self._volume_moved)
+        self.meter_l = LevelBar(self, vertical=True)
+        self.meter_r = LevelBar(self, vertical=True)
+        self.meter_l.setToolTip("What this microphone picks up" if is_mic else "What this device is playing")
+        self.meter_r.setToolTip(self.meter_l.toolTip())
+        self.volume_label = QLabel("", self)
+        self.volume_label.setFont(small)
+        self.volume_label.setStyleSheet(theme.css(theme.dim))
+        self.volume_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mute = QPushButton("M", self)
+        self.mute.setCheckable(True)
+        self.mute.setFixedWidth(30)
+        self.mute.setToolTip("Mute this microphone everywhere" if is_mic else "Mute this device")
+        self.mute.toggled.connect(self._mute_toggled)
+
+        bars = QHBoxLayout()
+        bars.setSpacing(2)
+        bars.addStretch(1)
+        bars.addWidget(self.volume)
+        bars.addSpacing(4)
+        bars.addWidget(self.meter_l)
+        bars.addWidget(self.meter_r)
+        bars.addStretch(1)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+        layout.addWidget(self.name)
+        layout.addWidget(self.kind)
+        layout.addStretch(1)
+        layout.addWidget(self.mute, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addLayout(bars, 3)
+        layout.addWidget(self.volume_label)
+
+    def sizeHint(self) -> QSize:
+        return QSize(DEVICE_STRIP_WIDTH, 520)
+
+    def show_state(self, entry: dict) -> None:
+        volume, muted = entry.get("volume"), entry.get("muted")
+        self.volume.setEnabled(volume is not None)
+        self.mute.setEnabled(muted is not None)
+        if volume is None or self.volume.isSliderDown() \
+                or time.monotonic() - self._last_local_edit < VOLUME_SETTLE_S:
+            return
+        percent = round(volume * 100)
+        self.volume.blockSignals(True)
+        self.volume.setMaximum(150 if percent > 100 else 100)
+        self.volume.setValue(percent)
+        self.volume.blockSignals(False)
+        self.volume_label.setText(volume_db(volume))
+        self.mute.blockSignals(True)
+        self.mute.setChecked(bool(muted))
+        self.mute.blockSignals(False)
+        self._show_mute()
+
+    def _show_mute(self) -> None:
+        theme = Theme(self)
+        self.mute.setStyleSheet(
+            f"background: {theme.warn.name()}; color: {self.palette().base().color().name()};"
+            if self.mute.isChecked() else "")
+
+    def _volume_moved(self, value: int) -> None:
+        self._last_local_edit = time.monotonic()
+        self.volume_label.setText(volume_db(value / 100))
+        self.volume_changed.emit(self.device, value / 100)
+
+    def _mute_toggled(self, on: bool) -> None:
+        self._last_local_edit = time.monotonic()
+        self._show_mute()
+        self.mute_toggled.emit(self.device, on)
+
+    def tap(self) -> Tap:
+        """What its meter reads: the mic itself, or what the output is playing."""
+        source = self.device if self.is_mic else f"{self.device}.monitor"
+        return Tap("Device", (f"--device={source}",), None)
+
+    feed = ChannelStrip.feed
+
+    def silence(self) -> None:
+        for bar in (self.meter_l, self.meter_r):
+            bar.state.silence()
+            bar.update()
+
+    def tick(self, now: float) -> None:
+        for bar in (self.meter_l, self.meter_r):
+            bar.state.tick(now)
+            bar.update()
+
+
 class MixerView(QWidget):
     """All channels as strips; the meters run only while the view is on screen."""
 
@@ -643,16 +785,25 @@ class MixerView(QWidget):
     listen_chosen = pyqtSignal(str, str)
     open_settings = pyqtSignal(str)
     new_channel = pyqtSignal(bool)  # is_input
+    #: A real device's own volume / mute (by node name).
+    device_volume_changed = pyqtSignal(str, float)
+    device_mute_toggled = pyqtSignal(str, bool)
     #: The inserts were folded (False) or unfolded (True), on every strip.
     inserts_toggled = pyqtSignal(bool)
 
     #: From reader threads: (slug, Levels). Delivered queued onto the GUI thread.
     _levels = pyqtSignal(str, object)
     _ended = pyqtSignal(str, object)
+    _device_levels = pyqtSignal(str, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.strips: dict[str, ChannelStrip] = {}
+        self.device_strips: dict[str, DeviceStrip] = {}
+        self._mics: list[tuple[str, str]] = []
+        self._outputs: list[tuple[str, str]] = []
+        self._device_readers: dict[str, LevelReader] = {}
+        self._device_levels.connect(self._on_device_levels)
         self.active = False
         #: One switch for the whole desk, so the faders stay level across strips.
         self.inserts_open = True
@@ -689,18 +840,22 @@ class MixerView(QWidget):
 
     def refresh(self, config: Config, status: dict) -> None:
         """Show the desk's channels; rebuild it only when its shape changed."""
-        channels = config.channels
         self._config = config
-        signature = tuple(
+        # A mic channel's companion is plumbing, never a strip of its own.
+        channels = [c for c in config.channels if not c.companion_of]
+        mics = [(d["name"], d["label"]) for d in status.get("input_devices", [])]
+        outs = [(d["name"], d["label"]) for d in status.get("devices", [])]
+        signature = (tuple(
             (c.slug, c.name, c.kind, c.recordable, c.enabled, config.is_group(c),
              tuple((e.kind, e.plugin, e.enabled) for e in c.effects))
             for c in channels
-        )
+        ), tuple(mics), tuple(outs))
         if signature != self._signature or any(
             self.strips.get(c.slug) is None or self.strips[c.slug].channel is not c for c in channels
         ):
             self._signature = signature
-            self._channels = list(channels)
+            self._channels = channels
+            self._mics, self._outputs = mics, outs
             self._rebuild()
         entries = {c["slug"]: c for c in status.get("channels", [])}
         apps: dict[str, list[str]] = {}
@@ -710,14 +865,21 @@ class MixerView(QWidget):
         outputs = [(c.slug, c.name) for c in channels if not c.is_input]
         for channel in channels:
             devices = status.get("input_devices" if channel.is_input else "devices", [])
+            # Apps sent into a mic channel play into its companion.
+            companion = config.companion(channel)
+            playing = apps.get(companion.slug if companion is not None else channel.slug, [])
             self.strips[channel.slug].show_state(
                 entries.get(channel.slug),
-                sorted(set(apps.get(channel.slug, []))),
+                sorted(set(playing)),
                 [(d["name"], d["label"]) for d in devices],
                 outputs,
-                [(g.node_name, group_label(g.name)) for g in config.group_choices(channel)],
-                [m.name for m in config.members_of(channel)],
+                [(g.node_name, group_label(g.name, bool(g.companion_of))) for g in config.group_choices(channel)],
+                [m.name for m in config.members_of(companion if companion is not None else channel)],
             )
+        for device in [*status.get("input_devices", []), *status.get("devices", [])]:
+            strip = self.device_strips.get(device["name"])
+            if strip is not None:
+                strip.show_state(device)
         self._follow_taps()
 
     def set_inserts_open(self, open_: bool) -> None:
@@ -743,46 +905,71 @@ class MixerView(QWidget):
                 widget.hide()
                 widget.deleteLater()
         self.strips.clear()
+        self.device_strips.clear()
         config = self._config
-        inputs = [c for c in self._channels if c.is_input]
         # Groups sit right of the channels feeding them, as on a console.
         groups = [c for c in self._channels if not c.is_input and config.is_group(c)]
-        outputs = [c for c in self._channels if not c.is_input and c not in groups]
-        sections = [("Inputs", inputs, True), ("Outputs", outputs, False)]
+        channels = ([c for c in self._channels if c.is_input]
+                    + [c for c in self._channels if not c.is_input and c not in groups])
+
+        self._add_devices("Mics", self._mics, is_mic=True)
+        self.row.addWidget(self._group_header("Channels", "new"))
+        for channel in channels:
+            self._add_strip(channel, group=False)
         if groups:
-            sections.append(("Groups", groups, None))
-        for title, group, is_input in sections:
-            self.row.addWidget(self._group_header(title, is_input))
-            for channel in group:
-                strip = ChannelStrip(channel, self.desk)
-                if is_input is None:
-                    strip.kind.setText("GROUP")
-                for name in ("volume_changed", "fader_changed", "mute_toggled", "pan_changed", "solo_toggled",
-                             "effect_toggled", "effect_opened", "add_effect", "device_chosen",
-                             "listen_chosen", "open_settings"):
-                    getattr(strip, name).connect(getattr(self, name).emit)
-                strip.inserts_clicked.connect(self._toggle_inserts)
-                strip.set_inserts_open(self.inserts_open)
-                self.strips[channel.slug] = strip
-                self.row.addWidget(strip)
+            self.row.addWidget(self._group_header("Groups", None))
+            for channel in groups:
+                self._add_strip(channel, group=True)
+        self._add_devices("Outputs", self._outputs, is_mic=False)
         self.row.addStretch(1)
 
-    def _group_header(self, title: str, is_input: bool | None) -> QWidget:
-        """A narrow column naming the section, with its New button (if it has one)."""
+    def _add_strip(self, channel: Channel, group: bool) -> None:
+        strip = ChannelStrip(channel, self.desk)
+        if group:
+            strip.kind.setText("GROUP")
+        elif channel.is_input:
+            strip.kind.setText("FROM A MIC")
+        else:
+            strip.kind.setText("CABLE" if channel.recordable else "FROM APPS")
+        for name in ("volume_changed", "fader_changed", "mute_toggled", "pan_changed", "solo_toggled",
+                     "effect_toggled", "effect_opened", "add_effect", "device_chosen",
+                     "listen_chosen", "open_settings"):
+            getattr(strip, name).connect(getattr(self, name).emit)
+        strip.inserts_clicked.connect(self._toggle_inserts)
+        strip.set_inserts_open(self.inserts_open)
+        self.strips[channel.slug] = strip
+        self.row.addWidget(strip)
+
+    def _add_devices(self, title: str, devices: list[tuple[str, str]], is_mic: bool) -> None:
+        if not devices:
+            return
+        self.row.addWidget(self._group_header(title, None))
+        for name, label in devices:
+            strip = DeviceStrip(name, label, is_mic, self.desk)
+            strip.volume_changed.connect(self.device_volume_changed.emit)
+            strip.mute_toggled.connect(self.device_mute_toggled.emit)
+            self.device_strips[name] = strip
+            self.row.addWidget(strip)
+
+    def _group_header(self, title: str, new_kind: str | None) -> QWidget:
+        """A narrow column naming the section; CHANNELS has a New button."""
         column = QWidget(self.desk)
         layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
         label = QLabel(title.upper(), column)
         label.setStyleSheet(Theme(self).css(Theme(self).dim))
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        new = QToolButton(column)
-        new.setText("+")
-        new.setToolTip(f"New {'input' if is_input else 'output'} channel")
-        new.clicked.connect(lambda: self.new_channel.emit(is_input))
         layout.addWidget(label)
-        if is_input is None:
-            new.hide()  # a channel becomes a group when another plays into it
-        layout.addWidget(new, 0, Qt.AlignmentFlag.AlignHCenter)
+        if new_kind is not None:
+            new = QToolButton(column)
+            new.setText("+")
+            new.setToolTip("New channel")
+            new.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            menu = QMenu(new)
+            menu.addAction("Channel for a microphone", lambda: self.new_channel.emit(True))
+            menu.addAction("Channel for apps", lambda: self.new_channel.emit(False))
+            new.setMenu(menu)
+            layout.addWidget(new, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
         column.setFixedWidth(max(label.sizeHint().width(), 28) + 4)
         return column
@@ -834,7 +1021,18 @@ class MixerView(QWidget):
                 )
                 reader.start()
                 self._readers[channel.slug] = reader
-        if self._readers and not self._frame.isActive():
+        for name, strip in self.device_strips.items():
+            reader = self._device_readers.get(name)
+            if reader is None or not reader.running:
+                if reader is not None:
+                    reader.stop()
+                reader = LevelReader(strip.tap(), lambda levels, n=name: self._device_levels.emit(n, levels))
+                try:
+                    reader.start()
+                except Exception:  # noqa: BLE001 - a meter must never break the desk
+                    continue
+                self._device_readers[name] = reader
+        if (self._readers or self._device_readers) and not self._frame.isActive():
             self._frame.start()
         # A host restarting has no tap for a moment; look again shortly.
         if missing and not self._retry.isActive():
@@ -877,11 +1075,17 @@ class MixerView(QWidget):
         if not self._retry.isActive():
             self._retry.start()
 
+    @pyqtSlot(str, object)
+    def _on_device_levels(self, name: str, levels: Levels) -> None:
+        strip = self.device_strips.get(name)
+        if strip is not None and name in self._device_readers:
+            strip.feed(levels, time.monotonic())
+
     def _redraw(self) -> None:
         now = time.monotonic()
-        for strip in self.strips.values():
+        for strip in [*self.strips.values(), *self.device_strips.values()]:
             strip.tick(now)
-        if not self._readers:
+        if not self._readers and not self._device_readers:
             self._frame.stop()
 
     def _stop_readers(self) -> None:
@@ -890,6 +1094,11 @@ class MixerView(QWidget):
         self._readers.clear()
         for slug in list(self._drivers):
             self._stop_driver(slug)
+        for reader in self._device_readers.values():
+            reader.stop()
+        self._device_readers.clear()
+        for device in self.device_strips.values():
+            device.silence()
         self._frame.stop()
         self._retry.stop()
         for strip in self.strips.values():

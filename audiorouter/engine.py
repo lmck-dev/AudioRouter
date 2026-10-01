@@ -19,6 +19,7 @@ Two rules shape the whole file:
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .channels import (
+    MAX_VOLUME,
     NODE_PREFIX,
     NOWHERE,
     OUTPUT,
@@ -41,7 +43,7 @@ from . import session
 from .config import Config, ConfigError, config_path, default_config
 from .effects import Effect, EffectError, make_effect
 from .meter import sweep_stale
-from .pwgraph import Graph, GraphMonitor, Node, PwError
+from .pwgraph import Graph, GraphMonitor, Node, PwError, require_tools
 from .routing import Placement, Router, Rule, RuleSet, plan
 
 
@@ -120,6 +122,7 @@ class Engine:
     def save(self) -> Path | None:
         if self.dry_run:
             return None
+        self.config.ensure_companions()  # the daemon reads this file too
         saved = self.config.save(self.path)
         self._loaded_stamp = self._config_stamp()
         return saved
@@ -298,6 +301,33 @@ class Engine:
             self.config.channel(slug).set_muted(muted, self._live_graph())
         finally:
             self._graph = None
+
+    def _device_id(self, name: str) -> int:
+        graph = self._live_graph() or self.graph(refresh=True)
+        node = next((n for n in [*graph.devices(), *graph.input_devices()] if n.name == name), None)
+        if node is None:
+            raise EngineError(f"no device {name!r} is connected")
+        return node.id
+
+    def set_device_volume(self, name: str, volume: float) -> float:
+        """A real device's own volume (1.0 = 100%): the mixer's mic and output strips.
+
+        The same volume the desktop's sound settings show; WirePlumber keeps it.
+        """
+        volume = max(0.0, min(MAX_VOLUME, float(volume)))
+        if not self.dry_run:
+            try:
+                _wpctl("set-volume", str(self._device_id(name)), f"{volume:.4f}")
+            finally:
+                self._graph = None
+        return volume
+
+    def set_device_muted(self, name: str, muted: bool) -> None:
+        if not self.dry_run:
+            try:
+                _wpctl("set-mute", str(self._device_id(name)), "1" if muted else "0")
+            finally:
+                self._graph = None
 
     def adopt_devices(self) -> list[Channel]:
         """Seed an empty configuration with one pass-through channel per device."""
@@ -513,6 +543,16 @@ class Engine:
                     if new_sink is not None and stream.owned_channel != channel.slug:
                         moves.append((stream, new_sink))
         old_sources, new_source = copies(channel.recording_name)
+        companion = self.config.companion(channel)
+        if companion is not None:
+            # A mic channel's virtual mic now lives in its companion. Recorders
+            # still on a copy published by an older host of this channel (the
+            # first restart after upgrading) move to the companion's.
+            companion_pid = companion.pid()
+            new_source = (graph.node_owned_by_pid(companion_pid, channel.recording_name)
+                          if companion_pid is not None else None)
+            old_sources = [n for n in graph.nodes_named(channel.recording_name)
+                           if new_source is None or n.id != new_source.id]
         for old in old_sources:
             for stream in graph.readers_of(old.id):
                 # A level meter refuses moves by design; waiting for one would
@@ -617,6 +657,7 @@ class Engine:
         because a restart takes the sink out from under them.
         """
         report = ApplyReport()
+        self.config.ensure_companions()  # a mic channel renamed, switched or re-listened
         self.config.update_solo()  # a solo may have been switched since the last apply
         if not self.dry_run:
             sweep_stale()  # level-tap files of hosts that were killed outright
@@ -770,8 +811,11 @@ class Engine:
             )
         return {
             "auto_route": self.config.auto_route,
-            "devices": [{"name": n.name, "label": n.label} for n in graph.devices()],
-            "input_devices": [{"name": n.name, "label": n.label} for n in graph.input_devices()],
+            # With their own volume and mute: the mixer's device strips.
+            "devices": [{"name": n.name, "label": n.label, "volume": n.volume, "muted": n.muted}
+                        for n in graph.devices()],
+            "input_devices": [{"name": n.name, "label": n.label, "volume": n.volume, "muted": n.muted}
+                              for n in graph.input_devices()],
             "channels": channels,
             "streams": streams,
             "rules": [r.describe() for r in self.config.rules.rules],
@@ -781,6 +825,14 @@ class Engine:
             "echo_cancel_broken": session.echo_cancel_broken(self.config.channels, graph) is not None,
             "orphans": self.orphan_slugs(),
         }
+
+
+def _wpctl(*argv: str) -> None:
+    require_tools("wpctl")
+    try:
+        subprocess.run(["wpctl", *argv], check=True, capture_output=True, text=True, timeout=5)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise EngineError(f"could not change the device: {exc}") from exc
 
 
 def conflict_message(program: str) -> str:
