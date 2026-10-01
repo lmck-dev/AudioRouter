@@ -502,11 +502,7 @@ class ChannelStrip(QFrame):
             self.mute.blockSignals(True)
             self.mute.setChecked(bool(entry.get("muted")))
             self.mute.blockSignals(False)
-        if not self.fader.isSliderDown():
-            self.fader.blockSignals(True)
-            self.fader.setValue(db_to_fader(self.channel.fader_db))
-            self.fader.blockSignals(False)
-        self.volume_label.setText(f"fader {fader_text(self.channel.fader_db)}")
+        self.show_fader()
         if not self.pan.isSliderDown():
             self.pan.blockSignals(True)
             self.pan.setValue(round(self.channel.pan * PAN_TRAVEL))
@@ -515,6 +511,16 @@ class ChannelStrip(QFrame):
         self._show_mute()
         self.show_solo()
         self.name.setEnabled(running)
+
+    def show_fader(self) -> None:
+        """Show the channel's fader, unless the user is holding it."""
+        # Only when it reads differently: writing the rounded dB back into the
+        # slider being moved would snap it and could stall a wheel step.
+        if not self.fader.isSliderDown() and round(fader_to_db(self.fader.value()), 1) != self.channel.fader_db:
+            self.fader.blockSignals(True)
+            self.fader.setValue(db_to_fader(self.channel.fader_db))
+            self.fader.blockSignals(False)
+        self.volume_label.setText(f"fader {fader_text(self.channel.fader_db)}")
 
     def show_solo(self) -> None:
         """Light S while soloed; say so while another solo cuts this one."""

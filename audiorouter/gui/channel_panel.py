@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..channels import NOWHERE, Channel
+from .mixer import FADER_TRAVEL, db_to_fader, fader_text, fader_to_db
 from .theme import Theme
 
 FOLLOW_DEFAULT = ""
@@ -43,6 +44,8 @@ class ChannelPanel(QGroupBox):
     #: The user moved the volume slider (1.0 = 100%).
     volume_changed = pyqtSignal(float)
     mute_changed = pyqtSignal(bool)
+    #: The user moved the fader (dB after the effects, as on the mixer).
+    fader_changed = pyqtSignal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Channel", parent)
@@ -81,7 +84,7 @@ class ChannelPanel(QGroupBox):
         self.volume.setPageStep(10)
         self.volume.valueChanged.connect(self._volume_moved)
         self.volume_label = QLabel("", self)
-        self.volume_label.setMinimumWidth(48)
+        self.volume_label.setMinimumWidth(self.volume_label.fontMetrics().horizontalAdvance("+10.0 dB") + 4)
         self.volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.mute = QCheckBox("Mute", self)
         self.mute.toggled.connect(self._mute_toggled)
@@ -91,9 +94,27 @@ class ChannelPanel(QGroupBox):
         volume_row.addWidget(self.volume_label)
         volume_row.addWidget(self.mute)
 
+        # The mixer's big fader, here too: the level after the effects. The
+        # volume above is the desktop's, which acts before them.
+        self.fader = QSlider(Qt.Orientation.Horizontal, self)
+        self.fader.setRange(0, FADER_TRAVEL)
+        self.fader.setPageStep(40)
+        self.fader.setToolTip("The channel's level after its effects - the mixer's fader. "
+                              "The volume above acts before the effects.")
+        self.fader.valueChanged.connect(self._fader_moved)
+        self.fader_label = QLabel("", self)
+        self.fader_label.setMinimumWidth(self.fader_label.fontMetrics().horizontalAdvance("+10.0 dB") + 4)
+        self.fader_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        fader_row = QHBoxLayout()
+        fader_row.addWidget(self.fader, 1)
+        fader_row.addWidget(self.fader_label)
+        # Room where the volume row has Mute, so the two sliders line up.
+        fader_row.addSpacing(self.mute.sizeHint().width() + volume_row.spacing())
+
         self.form = QFormLayout(self)
         self.form.addRow("Name", self.name)
         self.form.addRow("Volume", volume_row)
+        self.form.addRow("Fader", fader_row)
         self.form.addRow("Plays through", self.device)
         self.form.addRow("", self.recordable)
         self.form.addRow("Listen through", self.listen)
@@ -172,6 +193,7 @@ class ChannelPanel(QGroupBox):
         self.name.setText(channel.name if channel else "")
         self.enabled.setChecked(channel.enabled if channel else False)
         self._show_kind(channel)
+        self.show_fader()
         self.set_devices(devices, present)
         self.set_outputs(self._outputs)
         self._sync_options()
@@ -308,6 +330,24 @@ class ChannelPanel(QGroupBox):
             return
         self._last_local_edit = time.monotonic()
         self.volume_changed.emit(percent / 100.0)
+
+    def show_fader(self) -> None:
+        """Show the channel's fader, unless the user is holding it."""
+        if self.fader.isSliderDown():
+            return
+        db = self.channel.fader_db if self.channel is not None else 0.0
+        # Only when it reads differently (see ChannelStrip.show_fader).
+        if round(fader_to_db(self.fader.value()), 1) != db:
+            self.fader.blockSignals(True)
+            self.fader.setValue(db_to_fader(db))
+            self.fader.blockSignals(False)
+        self.fader_label.setText(fader_text(db) if self.channel is not None else "")
+
+    def _fader_moved(self, value: int) -> None:
+        db = round(fader_to_db(value), 1)
+        self.fader_label.setText(fader_text(db))
+        if not self._loading and self.channel is not None:
+            self.fader_changed.emit(db)
 
     def _mute_toggled(self, on: bool) -> None:
         if self._loading or self.channel is None:

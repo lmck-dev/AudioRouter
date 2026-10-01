@@ -253,6 +253,8 @@ class MainWindow(QMainWindow):
         self.channel_panel.renamed.connect(self._refresh_channel_list)
         self.channel_panel.volume_changed.connect(self._volume_changed)
         self.channel_panel.mute_changed.connect(self._mute_changed)
+        self.channel_panel.fader_changed.connect(
+            lambda db: self.selected_channel and self._set_fader(self.selected_channel.slug, db))
         self.effects_panel.changed.connect(self._config_edited)
         self.effects_panel.tuned.connect(self._config_tuned)
         self.effects_panel.highlighted.connect(
@@ -506,6 +508,11 @@ class MainWindow(QMainWindow):
         channel = self.engine.config.channel(slug)
         if db != channel.fader_db:
             channel.fader_db = db
+            # Both views show this fader; keep the one not being moved in step.
+            if channel is self.selected_channel:
+                self.channel_panel.show_fader()
+            if slug in self.mixer.strips:
+                self.mixer.strips[slug].show_fader()
             self._config_tuned()
 
     def _set_pan(self, slug: str, pan: float) -> None:

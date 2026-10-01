@@ -158,6 +158,35 @@ class MixerTest(GuiTestCase):
         self.assertEqual(self.strip("speakers").kind.text(), "GROUP")
         self.assertLess(self.strip("speakers").route.findData("ar_phones"), 0)
 
+    def test_the_channels_view_has_the_same_fader_and_both_stay_in_step(self):
+        from audiorouter.gui.mixer import db_to_fader
+
+        self.window.select_channel("speakers")
+        panel = self.window.channel_panel
+        self.assertEqual(panel.fader_label.text(), "+0.0 dB")
+        with mock.patch.object(Engine, "apply"):
+            panel.fader.setValue(db_to_fader(-12.0))
+        self.assertEqual(Config.load(self.engine.path).channel("speakers").fader_db, -12.0)
+        self.assertEqual(self.strip("speakers").fader.value(), db_to_fader(-12.0))
+        self.assertEqual(self.strip("speakers").volume_label.text(), "fader -12.0 dB")
+        self.assertFalse(self.window._structural_pending)  # live, like the mixer's
+        with mock.patch.object(Engine, "apply"):
+            self.strip("speakers").fader.setValue(db_to_fader(3.0))
+        self.assertEqual(panel.fader.value(), db_to_fader(3.0))
+        self.assertEqual(panel.fader_label.text(), "+3.0 dB")
+        # Another channel moved on the mixer leaves the panel alone.
+        with mock.patch.object(Engine, "apply"):
+            self.strip("phones").fader.setValue(db_to_fader(-20.0))
+        self.assertEqual(panel.fader_label.text(), "+3.0 dB")
+
+    def test_a_fader_step_is_never_snapped_back(self):
+        # Fine travel near the top is < 0.1 dB a step; rounding must not stall it.
+        strip = self.strip("speakers")
+        with mock.patch.object(Engine, "apply"):
+            for value in range(900, 920):
+                strip.fader.setValue(value)
+                self.assertEqual(strip.fader.value(), value)
+
     def test_mute_mutes_that_channel(self):
         with mock.patch.object(Engine, "set_channel_muted") as set_muted:
             self.strip("speakers").mute.setEnabled(True)

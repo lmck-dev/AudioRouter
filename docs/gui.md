@@ -187,7 +187,11 @@ and a stereo meter, volume in dB.
   is a live control change (measured: same pid, 0/-6/+6/off gave exactly
   -48.06/-54.06/-42.06/silence while the last effect's output stayed -48.06).
   Law: `mixer.FADER_LAW`, +10 dB top, 0 dB at 76% of travel, off at the bottom.
-  The Channels view does not show the fader.
+  The Channels view shows the same fader as a "Fader" row under Volume (1 Oct
+  2026); `MainWindow._set_fader` keeps both views in step. A view only
+  rewrites its slider when its reading differs from `fader_db`: writing the
+  0.1 dB-rounded value back into the slider being moved snapped it and could
+  stall a wheel step near the top, where a step is < 0.1 dB.
 - **Pan and solo live at the fader** (1 Oct 2026). Both multiply into the
   `fader_l`/`fader_r` gains, so both are live control changes, never
   restarts. Pan (`Channel.pan`, -1..+1) is a BALANCE: centre leaves both
