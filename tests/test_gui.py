@@ -205,7 +205,7 @@ class WindowTest(GuiTestCase):
         image = guide.browser.loadResource(QTextDocument.ResourceType.ImageResource.value,
                                            QUrl("signal-flow.png"))
         self.assertFalse(image.isNull())
-        self.assertEqual(image.width(), 720)  # scaled to the page (the file is 1344 wide)
+        self.assertEqual(image.width(), 700)  # scaled to the column (the file is 1344 wide)
         self.window.guide_button.click()  # a second click reuses the window
         self.assertIs(self.window._guide, guide)
         guide.close()
