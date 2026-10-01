@@ -5,6 +5,9 @@ in signal order: where the sound comes from, the inserts (the effect chain,
 each one lit while it is on), where it goes, then the fader, the mute and a
 meter of what the channel puts out.
 
+Clicking any strip's INSERTS title folds the inserts on every strip at once,
+so the faders stay level across the desk and get the room.
+
 Under the fader's buttons, PAN balances the channel between left and right
 and S solos it: every other channel of the same kind (outputs, or inputs) is
 cut until the solo is released. Both act at the fader, so both are live.
@@ -195,6 +198,8 @@ class ChannelStrip(QFrame):
     device_chosen = pyqtSignal(str, str)
     listen_chosen = pyqtSignal(str, str)
     open_settings = pyqtSignal(str)
+    #: The INSERTS title was clicked: fold or unfold the inserts.
+    inserts_clicked = pyqtSignal()
 
     def __init__(self, channel: Channel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -255,6 +260,16 @@ class ChannelStrip(QFrame):
         self.inserts.addStretch(1)
         self.insert_area.setWidget(holder)
         self.insert_area.setMinimumHeight(60)
+
+        # The INSERTS title folds the list away, giving the fader the room.
+        self.inserts_toggle = QToolButton(self)
+        self.inserts_toggle.setFont(small)
+        self.inserts_toggle.setAutoRaise(True)
+        self.inserts_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.inserts_toggle.setStyleSheet(f"QToolButton {{ {theme.css(theme.dim)} padding: 0; }}")
+        self.inserts_toggle.setToolTip("Show or hide the inserts on every strip")
+        self.inserts_toggle.clicked.connect(self.inserts_clicked.emit)
+        self.set_inserts_open(True)
 
         # Where it goes: the device for an output, listen-through for an input.
         self.route = QComboBox(self)
@@ -371,7 +386,7 @@ class ChannelStrip(QFrame):
         layout.addWidget(self.apps)
         layout.addLayout(trim_row)
         layout.addWidget(self.trim_label)
-        layout.addWidget(caption("INSERTS"))
+        layout.addWidget(self.inserts_toggle)
         layout.addWidget(self.insert_area, 2)
         layout.addWidget(caption("LISTEN" if channel.is_input else "OUT"))
         layout.addWidget(self.route)
@@ -386,6 +401,17 @@ class ChannelStrip(QFrame):
         return QSize(STRIP_WIDTH, 520)
 
     # -- inserts -------------------------------------------------------------
+
+    def set_inserts_open(self, open_: bool) -> None:
+        """Show the inserts, or fold them to a title that still counts them."""
+        self.insert_area.setHidden(not open_)
+        self.inserts_toggle.setArrowType(Qt.ArrowType.DownArrow if open_ else Qt.ArrowType.RightArrow)
+        count = len(self.channel.effects)
+        on = sum(1 for e in self.channel.effects if e.enabled)
+        if open_ or not count:
+            self.inserts_toggle.setText("INSERTS")
+        else:
+            self.inserts_toggle.setText(f"INSERTS ({on}/{count} on)" if on != count else f"INSERTS ({count})")
 
     def _insert_button(self, index: int, effect) -> QToolButton:
         try:
@@ -595,6 +621,8 @@ class MixerView(QWidget):
     listen_chosen = pyqtSignal(str, str)
     open_settings = pyqtSignal(str)
     new_channel = pyqtSignal(bool)  # is_input
+    #: The inserts were folded (False) or unfolded (True), on every strip.
+    inserts_toggled = pyqtSignal(bool)
 
     #: From reader threads: (slug, Levels). Delivered queued onto the GUI thread.
     _levels = pyqtSignal(str, object)
@@ -604,6 +632,8 @@ class MixerView(QWidget):
         super().__init__(parent)
         self.strips: dict[str, ChannelStrip] = {}
         self.active = False
+        #: One switch for the whole desk, so the faders stay level across strips.
+        self.inserts_open = True
         self._channels: list[Channel] = []
         self._signature: tuple = ()
         self._readers: dict[str, FileLevelReader] = {}
@@ -662,6 +692,15 @@ class MixerView(QWidget):
             )
         self._follow_taps()
 
+    def set_inserts_open(self, open_: bool) -> None:
+        self.inserts_open = open_
+        for strip in self.strips.values():
+            strip.set_inserts_open(open_)
+
+    def _toggle_inserts(self) -> None:
+        self.set_inserts_open(not self.inserts_open)
+        self.inserts_toggled.emit(self.inserts_open)
+
     def show_solo(self) -> None:
         """A solo changes what every strip of its kind shows, not just its own."""
         for strip in self.strips.values():
@@ -686,6 +725,8 @@ class MixerView(QWidget):
                              "effect_toggled", "effect_opened", "add_effect", "device_chosen",
                              "listen_chosen", "open_settings"):
                     getattr(strip, name).connect(getattr(self, name).emit)
+                strip.inserts_clicked.connect(self._toggle_inserts)
+                strip.set_inserts_open(self.inserts_open)
                 self.strips[channel.slug] = strip
                 self.row.addWidget(strip)
         self.row.addStretch(1)

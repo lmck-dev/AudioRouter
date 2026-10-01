@@ -5,6 +5,7 @@ from unittest import mock
 
 from audiorouter.channels import INPUT, Channel
 from audiorouter.config import Config
+from audiorouter.effects import Effect
 from audiorouter.engine import Engine
 from audiorouter.meter import Tap
 
@@ -123,6 +124,22 @@ class MixerTest(GuiTestCase):
             self.strip("phones").solo.click()
         self.assertTrue(self.strip("speakers").cut_label.isHidden())
         self.assertEqual(self.engine.config.channel("speakers").controls()["fader_l:Gain 1"], 1.0)
+
+    def test_the_inserts_title_folds_every_strip_and_is_remembered(self):
+        self.strip("phones").inserts_toggle.click()
+        for strip in self.mixer.strips.values():
+            self.assertTrue(strip.insert_area.isHidden())
+        self.assertEqual(self.strip("speakers").inserts_toggle.text(), "INSERTS (1)")
+        self.assertEqual(self.strip("phones").inserts_toggle.text(), "INSERTS")  # none to count
+        self.assertFalse(self.window._setting_bool("mixer_inserts_open", True))
+        # A rebuild (here: an effect added) keeps the desk folded.
+        self.engine.config.channel("phones").effects.append(Effect("gain", enabled=False))
+        self.window.refresh()
+        self.assertTrue(self.strip("phones").insert_area.isHidden())
+        self.assertEqual(self.strip("phones").inserts_toggle.text(), "INSERTS (0/1 on)")
+        self.strip("speakers").inserts_toggle.click()
+        self.assertFalse(self.strip("phones").insert_area.isHidden())
+        self.assertTrue(self.window._setting_bool("mixer_inserts_open", False))
 
     def test_mute_mutes_that_channel(self):
         with mock.patch.object(Engine, "set_channel_muted") as set_muted:

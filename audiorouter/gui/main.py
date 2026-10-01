@@ -238,6 +238,8 @@ class MainWindow(QMainWindow):
         self.mixer.volume_changed.connect(self._set_volume)
         self.mixer.fader_changed.connect(self._set_fader)
         self.mixer.mute_toggled.connect(self._set_muted)
+        self.mixer.set_inserts_open(self._setting_bool("mixer_inserts_open", True))
+        self.mixer.inserts_toggled.connect(lambda on: self.settings.setValue("mixer_inserts_open", on))
         self.mixer.pan_changed.connect(self._set_pan)
         self.mixer.solo_toggled.connect(self._set_solo)
         self.mixer.effect_toggled.connect(self._toggle_effect)

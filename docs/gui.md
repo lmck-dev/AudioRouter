@@ -173,6 +173,10 @@ and a stereo meter, volume in dB.
   no parec, and an input moves only while something records it (its capture
   is passive). Every tapped chain, even an empty one, has an output tap.
   Only the visible view's meters run (`MainWindow._update_meters`).
+- **The INSERTS title folds the inserts on EVERY strip at once** (1 Oct
+  2026), not per strip, so the faders stay level across the desk; folded,
+  the title counts them ("INSERTS (2)", or "(1/2 on)"). Remembered in
+  gui.conf as `mixer_inserts_open`.
 - **Inserts scroll inside the strip** and names are elided in the middle;
   otherwise a long chain pushed the fader off the bottom of the desk.
 - **Two levels, like a console** (owner asked, 30 Sep 2026). TRIM (small,
