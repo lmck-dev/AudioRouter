@@ -128,6 +128,65 @@ class SoloTest(unittest.TestCase):
         self.assertEqual(self.cut(config), set())
 
 
+class GroupTest(unittest.TestCase):
+    """A group is an output channel other output channels play into."""
+
+    def config(self):
+        return Config(channels=[
+            Channel("music", "Music", "ar_master"), Channel("game", "Game", "ar_master"),
+            Channel("master", "Master", "alsa_output.a"), Channel("phones", "Phones", ""),
+            Channel("mic", "Mic", "", kind=INPUT),
+        ])
+
+    def slugs(self, channels):
+        return [c.slug for c in channels]
+
+    def test_members_and_groups_are_found_by_node_name(self):
+        config = self.config()
+        master = config.channel("master")
+        self.assertIs(config.group_of(config.channel("music")), master)
+        self.assertEqual(self.slugs(config.members_of(master)), ["music", "game"])
+        self.assertTrue(config.is_group(master))
+        self.assertFalse(config.is_group(config.channel("music")))
+        # A real device whose name happens to start with ar_ is not a group.
+        self.assertIsNone(config.group_of(Channel("x", "X", "ar_testdev")))
+
+    def test_groups_start_before_their_members(self):
+        config = self.config()
+        config.channel("master").device = "ar_phones"  # a group of a group
+        order = self.slugs(config.start_order())
+        self.assertLess(order.index("phones"), order.index("master"))
+        self.assertLess(order.index("master"), order.index("music"))
+
+    def test_choices_leave_out_itself_inputs_and_loops(self):
+        config = self.config()
+        self.assertEqual(self.slugs(config.group_choices(config.channel("master"))), ["phones"])
+        self.assertEqual(config.group_choices(config.channel("mic")), [])
+
+    def test_a_loop_is_reported(self):
+        config = self.config()
+        config.channel("master").device = "ar_music"
+        self.assertTrue(config.in_loop(config.channel("music")))
+        self.assertTrue(any("loop" in p for p in config.problems()))
+
+    def test_deleting_a_group_sends_its_members_to_the_default_output(self):
+        config = self.config()
+        config.remove_channel("master")
+        self.assertEqual([config.channel(s).device for s in ("music", "game")], ["", ""])
+
+    def test_a_solo_never_cuts_the_group_it_plays_through(self):
+        config = self.config()
+        config.channel("music").solo = True
+        config.update_solo()
+        self.assertEqual({c.slug for c in config.channels if c.solo_cut}, {"game", "phones"})
+
+    def test_soloing_a_group_keeps_its_members(self):
+        config = self.config()
+        config.channel("master").solo = True
+        config.update_solo()
+        self.assertEqual({c.slug for c in config.channels if c.solo_cut}, {"phones"})
+
+
 class DefaultConfigTest(unittest.TestCase):
     def test_one_channel_per_device(self):
         config = default_config(["alsa_output.pci-0000_0f_00.6.analog-stereo", "bluez_output.x"])

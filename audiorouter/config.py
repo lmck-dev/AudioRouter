@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .channels import Channel, ChannelError
+from .channels import NODE_PREFIX, Channel, ChannelError
 from .routing import Rule, RuleSet
 
 CONFIG_VERSION = 1
@@ -47,11 +47,86 @@ class Config:
 
         Outputs and inputs are separate desks - soloing the headphones must not
         cut the microphone a call is using - so a solo only reaches channels
-        of its own kind. Call this after changing any channel's `solo`.
+        of its own kind. The groups a soloed channel plays through, and the
+        members of a soloed group, are part of what is being soloed and are
+        never cut. Call this after changing any channel's `solo`.
         """
-        soloed = {c.kind for c in self.channels if c.solo and c.enabled}
+        soloed = [c for c in self.channels if c.solo and c.enabled]
+        heard: set[str] = set()
+        for channel in soloed:
+            heard.add(channel.slug)
+            heard.update(g.slug for g in self.groups_below(channel))
+            heard.update(m.slug for m in self.members_of(channel, nested=True))
+        kinds = {c.kind for c in soloed}
         for channel in self.channels:
-            channel.solo_cut = channel.kind in soloed and not channel.solo
+            channel.solo_cut = channel.kind in kinds and channel.slug not in heard
+
+    # -- groups -------------------------------------------------------------
+    #
+    # A group is an output channel that other output channels play into: a
+    # member's `device` is the group's node name (`ar_<slug>`), so the conf
+    # needs nothing special. The group's own effects and fader then act on
+    # the members' sum, and the group plays to a real device.
+
+    def group_of(self, channel: Channel) -> Channel | None:
+        """The output channel this one plays into, if it plays into one."""
+        if channel.is_input or not channel.device.startswith(NODE_PREFIX):
+            return None
+        return next((c for c in self.channels
+                     if not c.is_input and c is not channel and c.node_name == channel.device), None)
+
+    def groups_below(self, channel: Channel) -> list[Channel]:
+        """The groups this channel plays through, nearest first (loops stop)."""
+        chain: list[Channel] = []
+        group = self.group_of(channel)
+        while group is not None and group is not channel and group not in chain:
+            chain.append(group)
+            group = self.group_of(group)
+        return chain
+
+    def in_loop(self, channel: Channel) -> bool:
+        """Does following this channel's groups lead back to it?"""
+        group = self.group_of(channel)
+        for _ in self.channels:
+            if group is None:
+                return False
+            if group is channel:
+                return True
+            group = self.group_of(group)
+        return False
+
+    def members_of(self, group: Channel, nested: bool = False) -> list[Channel]:
+        """The channels playing into a group (and into its member groups)."""
+        direct = [c for c in self.channels if self.group_of(c) is group]
+        if not nested:
+            return direct
+        found: list[Channel] = []
+        pending = list(direct)
+        while pending:
+            member = pending.pop(0)
+            if member in found or member is group:
+                continue
+            found.append(member)
+            pending.extend(c for c in self.channels if self.group_of(c) is member)
+        return found
+
+    def is_group(self, channel: Channel) -> bool:
+        return bool(self.members_of(channel))
+
+    def group_choices(self, channel: Channel) -> list[Channel]:
+        """Output channels this one may play into without making a loop."""
+        if channel.is_input:
+            return []
+        return [c for c in self.channels
+                if not c.is_input and c is not channel and channel not in self.groups_below(c)]
+
+    def start_order(self) -> list[Channel]:
+        """Channels with every group before the channels playing into it.
+
+        A member started first would find no group to play into and follow
+        the default output until the group appeared.
+        """
+        return sorted(self.channels, key=lambda c: len(self.groups_below(c)))
 
     # -- lookup -----------------------------------------------------------
 
@@ -81,6 +156,11 @@ class Config:
         # Rules pointing at a channel that no longer exists would silently stop
         # working, so drop them with the channel.
         self.rules.rules = [r for r in self.rules.rules if r.channel != slug]
+        # Members of a deleted group go back to the default output rather
+        # than pointing at a node that will never appear again.
+        for member in self.channels:
+            if not member.is_input and member.device == channel.node_name:
+                member.device = ""
         self.update_solo()
         return channel
 
@@ -105,6 +185,9 @@ class Config:
                     f"input channel {channel.slug!r} listens through {channel.listen!r}, "
                     "which is not an output channel"
                 )
+        for channel in self.channels:
+            if self.in_loop(channel):
+                issues.append(f"channel {channel.slug!r} plays into a loop of groups")
         for rule in self.rules.rules:
             if rule.channel not in seen:
                 issues.append(f"rule {rule.pattern!r} points at unknown channel {rule.channel!r}")

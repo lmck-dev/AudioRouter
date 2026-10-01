@@ -114,6 +114,27 @@ class EditingTest(EngineTestCase):
         self.assertEqual([c.device for c in channels], ["alsa_output.a"])
 
 
+class GroupEditingTest(EngineTestCase):
+    def test_playing_into_another_output_and_the_loop_it_refuses(self):
+        self.engine.create_channel("music", "Music", "")
+        self.engine.set_device("music", "ar_speakers")
+        self.assertEqual(Config.load(self.path).channel("music").device, "ar_speakers")
+        with self.assertRaisesRegex(EngineError, "already plays into"):
+            self.engine.set_device("speakers", "ar_music")
+        self.assertEqual(self.engine.channel("speakers").device, "alsa_output.a")
+
+    def test_an_input_cannot_be_a_group_or_join_one(self):
+        self.engine.create_channel("mic", "Mic", "", kind="input")
+        with self.assertRaises(EngineError):
+            self.engine.set_device("speakers", "ar_mic")
+
+    def test_deleting_a_group_frees_its_members(self):
+        self.engine.create_channel("music", "Music", "")
+        self.engine.set_device("music", "ar_speakers")
+        self.engine.delete_channel("speakers")
+        self.assertEqual(Config.load(self.path).channel("music").device, "")
+
+
 class ReconcileTest(EngineTestCase):
     def test_a_stale_config_on_disk_means_a_restart_is_due(self):
         channel = self.engine.channel("speakers")

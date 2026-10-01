@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..channels import NOWHERE, Channel
+from ..config import Config
 from ..effects import FADER_MAX_DB, FADER_OFF_DB, EffectError
 from ..meter import FileLevelReader, Levels, Tap, output_tap
 from .meters import FLOOR_DB, FRAME_MS, SCALE_MARKS, LevelBar, bar_span, fraction
@@ -112,6 +113,11 @@ def db_to_fader(db: float) -> int:
 
 def fader_text(db: float) -> str:
     return "off" if db <= FADER_OFF_DB else f"{db:+.1f} dB"
+
+
+def group_label(name: str) -> str:
+    """How another channel appears in an OUT list."""
+    return f"Into {name}"
 
 
 #: The pan slider's travel each side of centre.
@@ -465,10 +471,17 @@ class ChannelStrip(QFrame):
     # -- state from the window ---------------------------------------------
 
     def show_state(self, entry: dict | None, apps: list[str],
-                   devices: list[tuple[str, str]], outputs: list[tuple[str, str]]) -> None:
-        """Refresh everything that can change without the strip being rebuilt."""
-        self._fill_routes(entry, devices, outputs)
-        if not self.channel.is_input:
+                   devices: list[tuple[str, str]], outputs: list[tuple[str, str]],
+                   groups: list[tuple[str, str]] = (), members: list[str] = ()) -> None:
+        """Refresh everything that can change without the strip being rebuilt.
+
+        `groups` are the channels this one may play into; `members` name the
+        channels playing into this one, which makes it a group.
+        """
+        self._fill_routes(entry, devices, outputs, groups)
+        if members:
+            self.apps.setText("from " + ", ".join(members) + (f"; {', '.join(apps)}" if apps else ""))
+        elif not self.channel.is_input:
             self.apps.setText(", ".join(apps) if apps else "no apps playing")
         else:
             self.apps.setText("")
@@ -515,14 +528,15 @@ class ChannelStrip(QFrame):
         )
         self.cut_label.setHidden(not self.channel.solo_cut)
 
-    def _fill_routes(self, entry: dict | None, devices, outputs) -> None:
+    def _fill_routes(self, entry: dict | None, devices, outputs, groups=()) -> None:
         present = entry["device_present"] if entry else True
         if self.source is not None:
             self._fill(self.source, [(FOLLOW_DEFAULT, "Default input"), *[(n, l) for n, l in devices]],
                        self.channel.device, present)
             self._fill(self.route, [(NOT_LISTENING, "Don't listen"), *outputs], self.channel.listen, True)
         else:
-            choices = [(FOLLOW_DEFAULT, "Default output"), *devices, (NOWHERE, "Nowhere (recording only)")]
+            choices = [(FOLLOW_DEFAULT, "Default output"), *devices, *groups,
+                       (NOWHERE, "Nowhere (recording only)")]
             self._fill(self.route, choices, self.channel.device, present)
 
     @staticmethod
@@ -635,6 +649,7 @@ class MixerView(QWidget):
         #: One switch for the whole desk, so the faders stay level across strips.
         self.inserts_open = True
         self._channels: list[Channel] = []
+        self._config = Config()
         self._signature: tuple = ()
         self._readers: dict[str, FileLevelReader] = {}
         self._levels.connect(self._on_levels)
@@ -663,10 +678,12 @@ class MixerView(QWidget):
 
     # -- building ------------------------------------------------------------
 
-    def refresh(self, channels: list[Channel], status: dict) -> None:
-        """Show these channels; rebuild the desk only when its shape changed."""
+    def refresh(self, config: Config, status: dict) -> None:
+        """Show the desk's channels; rebuild it only when its shape changed."""
+        channels = config.channels
+        self._config = config
         signature = tuple(
-            (c.slug, c.name, c.kind, c.recordable, c.enabled,
+            (c.slug, c.name, c.kind, c.recordable, c.enabled, config.is_group(c),
              tuple((e.kind, e.plugin, e.enabled) for e in c.effects))
             for c in channels
         )
@@ -689,6 +706,8 @@ class MixerView(QWidget):
                 sorted(set(apps.get(channel.slug, []))),
                 [(d["name"], d["label"]) for d in devices],
                 outputs,
+                [(g.node_name, group_label(g.name)) for g in config.group_choices(channel)],
+                [m.name for m in config.members_of(channel)],
             )
         self._follow_taps()
 
@@ -715,12 +734,20 @@ class MixerView(QWidget):
                 widget.hide()
                 widget.deleteLater()
         self.strips.clear()
+        config = self._config
         inputs = [c for c in self._channels if c.is_input]
-        outputs = [c for c in self._channels if not c.is_input]
-        for title, group, is_input in (("Inputs", inputs, True), ("Outputs", outputs, False)):
+        # Groups sit right of the channels feeding them, as on a console.
+        groups = [c for c in self._channels if not c.is_input and config.is_group(c)]
+        outputs = [c for c in self._channels if not c.is_input and c not in groups]
+        sections = [("Inputs", inputs, True), ("Outputs", outputs, False)]
+        if groups:
+            sections.append(("Groups", groups, None))
+        for title, group, is_input in sections:
             self.row.addWidget(self._group_header(title, is_input))
             for channel in group:
                 strip = ChannelStrip(channel, self.desk)
+                if is_input is None:
+                    strip.kind.setText("GROUP")
                 for name in ("volume_changed", "fader_changed", "mute_toggled", "pan_changed", "solo_toggled",
                              "effect_toggled", "effect_opened", "add_effect", "device_chosen",
                              "listen_chosen", "open_settings"):
@@ -731,8 +758,8 @@ class MixerView(QWidget):
                 self.row.addWidget(strip)
         self.row.addStretch(1)
 
-    def _group_header(self, title: str, is_input: bool) -> QWidget:
-        """A narrow column naming the group, with its New button."""
+    def _group_header(self, title: str, is_input: bool | None) -> QWidget:
+        """A narrow column naming the section, with its New button (if it has one)."""
         column = QWidget(self.desk)
         layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -744,6 +771,8 @@ class MixerView(QWidget):
         new.setToolTip(f"New {'input' if is_input else 'output'} channel")
         new.clicked.connect(lambda: self.new_channel.emit(is_input))
         layout.addWidget(label)
+        if is_input is None:
+            new.hide()  # a channel becomes a group when another plays into it
         layout.addWidget(new, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
         column.setFixedWidth(max(label.sizeHint().width(), 28) + 4)

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .channels import (
+    NODE_PREFIX,
     NOWHERE,
     OUTPUT,
     SLUG_RE,
@@ -261,6 +262,14 @@ class Engine:
     def set_device(self, slug: str, device: str) -> Channel:
         """Point a channel at a different output. Takes effect on the next apply."""
         channel = self.config.channel(slug)
+        if device.startswith(NODE_PREFIX):
+            group = next((c for c in self.config.channels if c.node_name == device), None)
+            if group is not None:
+                if channel.is_input or group.is_input:
+                    raise EngineError("only an output channel can play into another output channel")
+                if group not in self.config.group_choices(channel):
+                    raise EngineError(f"{channel.name} cannot play into {group.name}: "
+                                      f"{group.name} already plays into {channel.name}")
         channel.device = device
         self.save()
         return channel
@@ -626,7 +635,9 @@ class Engine:
                 probe.config_path.unlink(missing_ok=True)
             report.actions.append(Action("stop", slug, "orphaned process"))
 
-        for channel in self.config.channels:
+        # Groups first: a member started before its group would find nothing
+        # to play into and follow the default output until the group appeared.
+        for channel in self.config.start_order():
             running = channel.is_running()
             if not channel.enabled:
                 if running:

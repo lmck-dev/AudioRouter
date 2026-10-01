@@ -200,6 +200,22 @@ and a stereo meter, volume in dB.
   call it after changing any `solo`. Measured live (lab): L50 = -3.01 dB on R,
   hard pan and a cut = digital silence, release restores -23.04 exactly, one
   host pid throughout.
+- **Groups** (1 Oct 2026). An output channel whose OUT is another output
+  channel ("Into Master" in either OUT list) plays into it; the target is
+  then a GROUP: its own section right of the outputs, "from A, B" on its
+  strip, and its effects and fader act on the members' sum. Stored as the
+  member's `device` = the group's node name (`ar_<slug>`), so the conf needs
+  nothing new. `Config.group_of/members_of/groups_below/group_choices` hold
+  the logic; choices leave out loops and `Engine.set_device` refuses them;
+  `apply` starts channels in `Config.start_order()` (groups first); deleting
+  a group sends its members to the default output. Solo never cuts the
+  groups a soloed channel plays through, nor a soloed group's members.
+  Measured (lab): two members through a -6 dB group = exactly -6.01; group
+  fader live; a group restart mid-tone: zero 10 ms gaps, no level change;
+  cold start links members straight in. **A switched-off group passes its
+  members to the default output** (like any switched-off channel); they
+  relink to the group by themselves when it returns, same pid. Do NOT add
+  `node.dont-fallback` to a member's playback - see CLAUDE.md.
 - **The output tap is after the fader** (`effects.output_slot` = rendered
   effects + 1). `meter.output_tap` reads the slot from the RUNNING host's
   conf, so a host started by 0.4.0 (no fader) still meters until it restarts.

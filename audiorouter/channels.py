@@ -448,6 +448,10 @@ class Channel:
                     # the chain follows the default sink, which can be another
                     # channel.
                     args["playback.props"]["target.object"] = self.device
+                    # Never node.dont-fallback here, not even into a group: a
+                    # missing target then makes filter-chain destroy the whole
+                    # channel ("defined target not found", measured 1 Oct
+                    # 2026), and its apps land on the default output anyway.
         return {
             "context.properties": {"log.level": 0},
             "context.spa-libs": {

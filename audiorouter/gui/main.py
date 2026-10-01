@@ -47,7 +47,7 @@ from .applier import Applier
 from .channel_panel import ChannelPanel
 from .effects_panel import EffectsPanel
 from .meters import MeterPanel
-from .mixer import MixerView
+from .mixer import MixerView, group_label
 from .monitor import GraphBridge
 from .streams_panel import StreamsPanel
 from .theme import Theme
@@ -324,12 +324,13 @@ class MainWindow(QMainWindow):
             None,
         )
         self.channel_panel.show_status(entry)
-        self.mixer.refresh(self.engine.config.channels, status)
+        self.mixer.refresh(self.engine.config, status)
         # A restart replaces the nodes a meter reads; this reopens its taps.
         self.meters.follow(self.selected_channel, self.engine.graph())
         self.channel_panel.set_outputs(self._output_choices())
         self.channel_panel.set_devices(
-            self._device_choices(status, self.selected_channel),
+            self._device_choices(status, self.selected_channel)
+            + self._group_choices(self.selected_channel),
             present=entry["device_present"] if entry else True,
         )
         if not status["devices"]:
@@ -407,10 +408,16 @@ class MainWindow(QMainWindow):
         key = "input_devices" if channel is not None and channel.is_input else "devices"
         return [(d["name"], d["label"]) for d in status.get(key, [])]
 
+    def _group_choices(self, channel) -> list[tuple[str, str]]:
+        """Output channels this one can play into (as a group), loops left out."""
+        if channel is None:
+            return []
+        return [(c.node_name, group_label(c.name)) for c in self.engine.config.group_choices(channel)]
+
     def _channel_selected(self) -> None:
         channel = self.selected_channel
         status = getattr(self, "_status", {})
-        devices = self._device_choices(status, channel)
+        devices = self._device_choices(status, channel) + self._group_choices(channel)
         self.channel_panel.set_outputs(self._output_choices())
         entry = next(
             (c for c in status.get("channels", [])

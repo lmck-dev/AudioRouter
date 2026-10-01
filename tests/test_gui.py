@@ -135,7 +135,8 @@ class WindowTest(GuiTestCase):
         self.engine.channel("phones").device = "ar_speakers"
         self.window.refresh()
         self.window.select_channel(self.engine.config.channels[1].slug)
-        self.assertEqual(self.window.channel_panel.device.currentText(), "ar_speakers")
+        # Another channel's sink is a group, offered by name.
+        self.assertEqual(self.window.channel_panel.device.currentText(), "Into Speakers")
 
     def test_renaming_a_channel_saves_and_reaches_the_list(self):
         self.window.select_channel(self.engine.config.channels[0].slug)

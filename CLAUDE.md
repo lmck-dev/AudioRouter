@@ -147,6 +147,11 @@ These rules come from those files, and they apply even when you haven't opened t
 - **Internal streams carry `node.dont-fallback`.** Measured without it: when
   the output a loopback played into vanished, WirePlumber relinked it onto the
   REAL SPEAKERS - for a listen-through, a live mic on the speakers.
+- **`node.dont-fallback` on a channel's MAIN playback destroys the channel
+  when its target is missing.** Tried for groups (1 Oct 2026): with the group
+  off, filter-chain logged "defined target not found" and destroyed the
+  member's sink, so its apps fell to the default output anyway. It is safe on
+  internal loopbacks (listen-through), which is where it belongs.
 - **A restart hands over three kinds of stream** (`Engine._hand_over`): apps
   AND other channels' own streams feeding the sink (an input's listen-through
   was missed at first), recorders of the virtual source, and the new host's own

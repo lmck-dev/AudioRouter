@@ -141,6 +141,23 @@ class MixerTest(GuiTestCase):
         self.assertFalse(self.strip("phones").insert_area.isHidden())
         self.assertTrue(self.window._setting_bool("mixer_inserts_open", False))
 
+    def test_an_output_can_play_into_another_which_becomes_a_group(self):
+        route = self.strip("phones").route
+        index = route.findData("ar_speakers")
+        self.assertEqual(route.itemText(index), "Into Speakers")
+        self.assertLess(self.strip("mic").route.findData("ar_speakers"), 1)  # inputs listen instead
+        with mock.patch.object(Engine, "apply"):
+            route.activated.emit(index)
+            self.window.refresh()
+        self.assertEqual(Config.load(self.engine.path).channel("phones").device, "ar_speakers")
+        self.assertTrue(self.window._structural_pending)
+        # Speakers is now a group: its own section, its members named, and
+        # no way back into Headphones (that would be a loop).
+        self.assertEqual(list(self.mixer.strips), ["mic", "phones", "speakers"])
+        self.assertIn("from Headphones", self.strip("speakers").apps.text())
+        self.assertEqual(self.strip("speakers").kind.text(), "GROUP")
+        self.assertLess(self.strip("speakers").route.findData("ar_phones"), 0)
+
     def test_mute_mutes_that_channel(self):
         with mock.patch.object(Engine, "set_channel_muted") as set_muted:
             self.strip("speakers").mute.setEnabled(True)
