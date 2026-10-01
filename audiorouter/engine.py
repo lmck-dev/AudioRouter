@@ -656,6 +656,12 @@ class Engine:
         `restore` puts streams back on the channels they were playing through,
         because a restart takes the sink out from under them.
         """
+        if self.config.bypass:
+            # Bypassed: nothing of ours runs. Apps fall back to the default
+            # output and recorders to the default mic, as without Audio Router.
+            if not self.dry_run:
+                sweep_stale()
+            return self.stop_all()
         report = ApplyReport()
         self.config.ensure_companions()  # a mic channel renamed, switched or re-listened
         self.config.update_solo()  # a solo may have been switched since the last apply
@@ -711,6 +717,16 @@ class Engine:
             report.actions.extend(self._restore(occupants))
         self._graph = None
         return report
+
+    def set_bypass(self, on: bool) -> None:
+        """Switch bypass on or off and save it. The caller then applies.
+
+        After switching it off and applying, call `route()` once: the streams
+        that played through bypass sit on the default output, and the auto
+        router has already seen them.
+        """
+        self.config.bypass = bool(on)
+        self.save()
 
     def stop_all(self) -> ApplyReport:
         """Tear down every channel process we know about, configured or not."""
@@ -811,6 +827,7 @@ class Engine:
             )
         return {
             "auto_route": self.config.auto_route,
+            "bypass": self.config.bypass,
             # With their own volume and mute: the mixer's device strips.
             "devices": [{"name": n.name, "label": n.label, "volume": n.volume, "muted": n.muted}
                         for n in graph.devices()],
@@ -906,6 +923,12 @@ class AutoRouter:
             self.engine.reload_if_changed()
         if self.on_graph is not None:
             self.on_graph(graph)
+        if self.engine.config.bypass:
+            # Forget what was placed, so every stream is routed afresh the
+            # moment bypass ends.
+            with self._lock:
+                self._placed.clear()
+            return
         if not self.engine.config.auto_route:
             return
         with self._lock:

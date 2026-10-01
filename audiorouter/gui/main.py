@@ -17,7 +17,7 @@ import sys
 import time
 
 from PyQt6.QtCore import QSettings, Qt, QTimer
-from PyQt6.QtGui import QAction, QGuiApplication
+from PyQt6.QtGui import QAction, QFontMetrics, QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -132,6 +132,26 @@ class MainWindow(QMainWindow):
     # -- construction ------------------------------------------------------
 
     def _build(self) -> None:
+        # One switch for "is Audio Router the problem?": every channel off,
+        # nothing routed, and all of it back when switched off (owner, 1 Oct).
+        self.bypass = QPushButton("Bypass", self)
+        self.bypass.setCheckable(True)
+        self.bypass.setChecked(self.engine.config.bypass)
+        # Wide enough for either label (bold when on), so the bar never shifts.
+        bold = self.bypass.font()
+        bold.setBold(True)
+        self.bypass.setMinimumWidth(QFontMetrics(bold).horizontalAdvance("Bypassed") + 32)
+        self.bypass.setToolTip(
+            "Switch Audio Router off without losing anything: every channel stops and "
+            "apps play straight to your devices. Switch it back to bring every channel, "
+            "effect and routing back. Stays on across logins until you switch it off."
+        )
+        self._route_after_apply = False
+        self.bypass_banner = QLabel(
+            "Bypassed: every channel is stopped and nothing is routed. Apps play straight "
+            "to your default devices. Click Bypass again to bring everything back.", self)
+        self.bypass_banner.setWordWrap(True)
+        self.bypass_banner.setHidden(True)
         self.auto_route = QCheckBox("Send new apps to their usual channel", self)
         self.auto_route.setChecked(self.engine.config.auto_route)
         self.background = QCheckBox("Keep routing with this window closed, and from login", self)
@@ -164,6 +184,7 @@ class MainWindow(QMainWindow):
         self._ec_fix_started = 0.0
 
         top = QHBoxLayout()
+        top.addWidget(self.bypass)
         top.addWidget(self.auto_route)
         top.addWidget(self.background)
         top.addStretch(1)
@@ -246,6 +267,7 @@ class MainWindow(QMainWindow):
 
         central = QWidget(self)
         self._layout = layout = QVBoxLayout(central)
+        layout.addWidget(self.bypass_banner)
         layout.addWidget(self.conflict_banner)
         layout.addWidget(self.ec_banner)
         layout.addLayout(top)
@@ -299,6 +321,7 @@ class MainWindow(QMainWindow):
         self.meters.follow_effect.toggled.connect(
             lambda on: self.settings.setValue("meters_follow_effect", on)
         )
+        self.bypass.toggled.connect(self._bypass_toggled)
         self.auto_route.toggled.connect(self._auto_route_toggled)
         self.background.toggled.connect(self._background_toggled)
         self.streams_panel.send_requested.connect(self._send_stream)
@@ -352,6 +375,7 @@ class MainWindow(QMainWindow):
             self._set_status(str(exc), warn=True)
             return
         self._status = status
+        self._show_bypass(self.engine.config.bypass)
         self._show_conflicts(status.get("conflicts", []))
         self._show_echo_cancel(bool(status.get("echo_cancel_broken")))
         self._refresh_channel_list(status)
@@ -445,6 +469,19 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             self._ec_fix_started = 0.0
             self._error("Could not restart the sound system", str(exc))
+
+    def _show_bypass(self, on: bool) -> None:
+        self.bypass_banner.setHidden(not on)
+        self.bypass.setText("Bypassed" if on else "Bypass")
+        theme = Theme(self)
+        warn = theme.warn.name()
+        self.bypass.setStyleSheet(
+            f"QPushButton:checked {{ color: {warn}; font-weight: bold; border: 1px solid {warn};"
+            " border-radius: 4px; padding: 4px 10px; }")
+        self.bypass_banner.setStyleSheet(
+            f"color: {warn}; font-weight: bold; padding: 6px;"
+            f"border: 1px solid {warn}; border-radius: 4px;"
+        )
 
     def _show_conflicts(self, conflicts: list[str]) -> None:
         self.conflict_banner.setHidden(not conflicts)
@@ -684,6 +721,12 @@ class MainWindow(QMainWindow):
             self._busy_cursor = True
 
     def _apply_finished(self, report, structural: bool) -> None:
+        if self._route_after_apply and not self.engine.config.bypass and not self.applier.busy:
+            self._route_after_apply = False
+            try:
+                self.engine.route()
+            except USER_ERRORS as exc:
+                self._set_status(f"Could not route after bypass: {exc}", warn=True)
         if report.failures:
             self._set_status(report.failures[0].describe(), warn=True)
         elif not structural and not report.restarted:
@@ -747,6 +790,22 @@ class MainWindow(QMainWindow):
             return
         self._refresh_channel_list()
         self.refresh()
+
+    def _bypass_toggled(self, on: bool) -> None:
+        try:
+            self.engine.set_bypass(on)
+        except OSError as exc:
+            self.bypass.blockSignals(True)
+            self.bypass.setChecked(not on)
+            self.bypass.blockSignals(False)
+            self._error("Could not change bypass", str(exc))
+            return
+        # Switching back on: once the channels are up, send what is playing
+        # to its usual channel - it spent the bypass on the default output.
+        self._route_after_apply = not on
+        self._show_bypass(on)
+        self._structural_pending = True
+        self.apply_now()
 
     def _auto_route_toggled(self, on: bool) -> None:
         self.engine.config.auto_route = on

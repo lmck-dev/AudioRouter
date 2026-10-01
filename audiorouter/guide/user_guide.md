@@ -26,6 +26,14 @@ Two checkboxes along the top control how Audio Router behaves:
 
 Your settings save themselves as you change them. Nothing needs saving or applying by hand.
 
+### Bypass
+
+The **Bypass** button, left of the checkboxes, switches Audio Router off without losing anything. Every channel stops, mic channels included, and nothing is routed: apps play straight to your default speakers or headphones, and record from your default microphone, exactly as if Audio Router were not installed. A banner across the window says so.
+
+Click it again (it reads **Bypassed** while on) and everything comes back: every channel with its effects, and every playing app is sent to its usual channel. Nothing you set up is changed or forgotten.
+
+Bypass stays on across logout and restart until you switch it off. It is the quickest way to answer "is Audio Router the cause of this sound problem?"
+
 ## The mixer at a glance
 
 The Mixer tab reads left to right in the order sound travels, in four sections:
@@ -169,6 +177,7 @@ Below the settings, **Levels** shows what goes into and comes out of the channel
 | **No output devices - is anything plugged in?** | No speakers or headphones are connected. | Plug a device in or check the desktop's sound settings. |
 | **(not connected)** after a device name | The channel's chosen device is unplugged. The channel keeps that choice rather than switching silently. | Plug it back in, or choose another device. |
 | **not running** on a strip | The channel should be on but is not. | Usually clears within a second or two. If it stays, switch the channel off and on in the Channels tab. |
+| **Bypassed** banner across the window | Bypass is on: every channel is stopped and nothing is routed. | Click **Bypassed** to bring everything back. |
 | **cut by a solo** on a strip | Another channel of the same kind is soloed. | Turn off the lit **S**. |
 
 ## Glossary

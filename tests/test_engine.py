@@ -187,6 +187,34 @@ class ReconcileTest(EngineTestCase):
         start.assert_not_called()
         self.assertFalse(report.changed)
 
+    def test_bypass_stops_every_channel_and_starts_none(self):
+        self.engine.set_bypass(True)
+        with mock.patch.object(Channel, "is_running", return_value=True), \
+             mock.patch.object(Channel, "stop", return_value=True) as stop, \
+             mock.patch.object(Channel, "start") as start:
+            report = self.engine.apply()
+        stop.assert_called_once()
+        start.assert_not_called()
+        self.assertEqual([a.kind for a in report.actions], ["stop"])
+
+    def test_bypass_is_saved_and_switching_it_off_brings_channels_back(self):
+        self.engine.set_bypass(True)
+        self.assertTrue(Config.load(self.path).bypass)
+        self.engine.set_bypass(False)
+        self.assertFalse(Config.load(self.path).bypass)
+        with mock.patch.object(Channel, "is_running", return_value=False), \
+             mock.patch.object(Channel, "start", return_value=1) as start:
+            self.engine.apply()
+        start.assert_called_once()
+
+    def test_bypass_keeps_every_setting(self):
+        self.engine.add_effect("speakers", "gain", {"gain_db": -3})
+        self.engine.add_rule("app", "firefox", "speakers")
+        before = Config.load(self.path).to_dict()
+        self.engine.set_bypass(True)
+        self.engine.set_bypass(False)
+        self.assertEqual(Config.load(self.path).to_dict(), before)
+
     def test_a_channel_that_cannot_start_does_not_stop_the_others(self):
         self.engine.create_channel("phones", "Phones", "alsa_output.b")
         self.engine.add_effect("speakers", "limiter")
@@ -434,6 +462,22 @@ class AutoRouterTest(EngineTestCase):
         with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
             self.auto._changed(live_graph())
         metadata.assert_not_called()
+
+    def test_nothing_moves_while_bypassed(self):
+        self.engine.config.bypass = True
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            self.auto._changed(live_graph())
+        metadata.assert_not_called()
+
+    def test_streams_are_routed_afresh_when_bypass_ends(self):
+        graph = live_graph()
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            self.auto._changed(graph)
+            self.engine.config.bypass = True
+            self.auto._changed(graph)
+            self.engine.config.bypass = False
+            self.auto._changed(graph)
+        self.assertEqual(metadata.call_count, 2)
 
     def test_forgetting_a_stream_allows_it_to_be_placed_again(self):
         graph = live_graph()

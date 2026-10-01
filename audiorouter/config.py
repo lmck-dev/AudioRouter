@@ -38,6 +38,10 @@ class Config:
     #: Move streams automatically as they appear. Off means rules are only
     #: applied when the user explicitly asks.
     auto_route: bool = True
+    #: Bypass: every channel stopped and nothing routed, as if Audio Router
+    #: were not installed. Saved, so it lasts across logins until switched
+    #: off; switching it off brings everything back from these same settings.
+    bypass: bool = False
 
     def __post_init__(self) -> None:
         self.ensure_companions()
@@ -275,6 +279,7 @@ class Config:
         return {
             "version": CONFIG_VERSION,
             "auto_route": self.auto_route,
+            "bypass": self.bypass,
             "channels": [c.to_dict() for c in self.channels],
             "rules": self.rules.to_list(),
         }
@@ -295,6 +300,7 @@ class Config:
             channels=channels,
             rules=RuleSet.from_list(data.get("rules")),
             auto_route=bool(data.get("auto_route", True)),
+            bypass=bool(data.get("bypass", False)),
         )
 
     # -- files ------------------------------------------------------------

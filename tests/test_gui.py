@@ -795,6 +795,35 @@ class BackgroundServiceTest(GuiTestCase):
         warning.assert_called_once()
 
 
+class BypassTest(GuiTestCase):
+    def test_bypass_saves_shows_a_banner_and_applies(self):
+        with mock.patch.object(Engine, "route") as route:
+            self.window.bypass.setChecked(True)
+            self.settle()
+        self.assertTrue(Config.load(self.engine.path).bypass)
+        self.assertFalse(self.window.bypass_banner.isHidden())
+        route.assert_not_called()
+
+    def test_switching_bypass_off_routes_what_is_playing(self):
+        self.window.bypass.setChecked(True)
+        self.settle()
+        with mock.patch.object(Engine, "route", return_value=[]) as route:
+            self.window.bypass.setChecked(False)
+            self.settle()
+        self.assertFalse(Config.load(self.engine.path).bypass)
+        self.assertTrue(self.window.bypass_banner.isHidden())
+        route.assert_called_once()
+
+    def test_the_window_opens_bypassed_if_it_was_left_bypassed(self):
+        from audiorouter.gui.main import MainWindow
+
+        self.engine.set_bypass(True)
+        window = MainWindow(self.engine)
+        self.addCleanup(window.close)
+        self.assertTrue(window.bypass.isChecked())
+        self.assertFalse(window.bypass_banner.isHidden())
+
+
 class OwnRouterTest(GuiTestCase):
     # setUp patches _start_auto_router out, so these call the real one.
     def real_start(self):

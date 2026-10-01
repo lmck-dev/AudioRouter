@@ -32,6 +32,7 @@ class ConfigTest(unittest.TestCase):
         empty = Config.load(self.path)
         self.assertEqual(empty.channels, [])
         self.assertTrue(empty.auto_route)
+        self.assertFalse(empty.bypass)
 
     def test_saving_leaves_no_temporary_file_behind(self):
         self.config.save(self.path)

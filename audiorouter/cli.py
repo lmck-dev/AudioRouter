@@ -121,6 +121,9 @@ def cmd_status(engine: Engine, args: argparse.Namespace) -> int:
         print(f"! WARNING: {session.MESSAGE}")
         print("  Fix: systemctl --user restart pipewire pipewire-pulse wireplumber")
         print()
+    if status.get("bypass"):
+        print("! BYPASS IS ON: every channel stopped, nothing routed ('bypass off' to undo)")
+        print()
     print(f"auto-route: {'on' if status['auto_route'] else 'off'}")
     print()
     print("Channels")
@@ -321,6 +324,21 @@ def cmd_apply(engine: Engine, args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_bypass(engine: Engine, args: argparse.Namespace) -> int:
+    if args.state == "status":
+        print("bypass is on" if engine.config.bypass else "bypass is off")
+        return 0
+    engine.set_bypass(args.state == "on")
+    report = engine.apply()
+    for line in report.describe():
+        print(line)
+    if args.state == "off" and report.ok:
+        cmd_route(engine, args)  # what played through bypass is on the default output
+    print("bypass is on: every channel stopped, nothing routed" if engine.config.bypass
+          else "bypass is off: channels and routing are back")
+    return 0 if report.ok else 1
+
+
 def cmd_start(engine: Engine, args: argparse.Namespace) -> int:
     print(engine.start_channel(args.slug).describe())
     return 0
@@ -518,6 +536,10 @@ def build_parser() -> argparse.ArgumentParser:
     apply_cmd = sub.add_parser("apply", help="start, restart or stop channels to match the config")
     apply_cmd.add_argument("--route", action="store_true", help="also apply rules afterwards")
     apply_cmd.set_defaults(func=cmd_apply)
+
+    bypass = sub.add_parser("bypass", help="stop every channel and route nothing, or undo that")
+    bypass.add_argument("state", nargs="?", choices=("on", "off", "status"), default="status")
+    bypass.set_defaults(func=cmd_bypass)
 
     start = sub.add_parser("start", help="start one channel")
     start.add_argument("slug")
