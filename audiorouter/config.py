@@ -39,6 +39,20 @@ class Config:
     #: applied when the user explicitly asks.
     auto_route: bool = True
 
+    def __post_init__(self) -> None:
+        self.update_solo()
+
+    def update_solo(self) -> None:
+        """Mark which channels a solo silences: the rest of the soloed kind.
+
+        Outputs and inputs are separate desks - soloing the headphones must not
+        cut the microphone a call is using - so a solo only reaches channels
+        of its own kind. Call this after changing any channel's `solo`.
+        """
+        soloed = {c.kind for c in self.channels if c.solo and c.enabled}
+        for channel in self.channels:
+            channel.solo_cut = channel.kind in soloed and not channel.solo
+
     # -- lookup -----------------------------------------------------------
 
     def channel(self, slug: str) -> Channel:
@@ -58,6 +72,7 @@ class Config:
         if self.has_channel(channel.slug):
             raise ConfigError(f"channel {channel.slug!r} already exists")
         self.channels.append(channel)
+        self.update_solo()
         return channel
 
     def remove_channel(self, slug: str) -> Channel:
@@ -66,6 +81,7 @@ class Config:
         # Rules pointing at a channel that no longer exists would silently stop
         # working, so drop them with the channel.
         self.rules.rules = [r for r in self.rules.rules if r.channel != slug]
+        self.update_solo()
         return channel
 
     # -- validation -------------------------------------------------------

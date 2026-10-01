@@ -88,6 +88,42 @@ class MixerTest(GuiTestCase):
         for db in (-60.0, -20.0, -6.0, 0.0, 10.0):
             self.assertAlmostEqual(fader_to_db(db_to_fader(db)), db, places=1)
 
+    def test_pan_is_saved_applied_live_and_centres_on_double_click(self):
+        from PyQt6.QtCore import QEvent, QPointF, Qt
+        from PyQt6.QtGui import QMouseEvent
+
+        strip = self.strip("speakers")
+        with mock.patch.object(Engine, "apply"):
+            strip.pan.setValue(-40)
+        self.assertEqual(Config.load(self.engine.path).channel("speakers").pan, -0.4)
+        self.assertEqual(strip.pan_label.text(), "L40")
+        self.assertTrue(self.window._pending_apply.isActive())
+        self.assertFalse(self.window._structural_pending)
+        click = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.NoModifier)
+        with mock.patch.object(Engine, "apply"):
+            QApplication.sendEvent(strip.pan, click)
+        self.assertEqual(strip.pan.value(), 0)
+        self.assertEqual(strip.pan_label.text(), "C")
+        self.assertEqual(self.engine.config.channel("speakers").pan, 0.0)
+
+    def test_solo_cuts_the_other_outputs_but_not_the_inputs(self):
+        with mock.patch.object(Engine, "apply"):
+            self.strip("phones").solo.click()
+        saved = Config.load(self.engine.path)
+        self.assertTrue(saved.channel("phones").solo)
+        self.assertFalse(self.strip("speakers").cut_label.isHidden())
+        self.assertTrue(self.strip("phones").cut_label.isHidden())
+        self.assertTrue(self.strip("mic").cut_label.isHidden())
+        self.assertTrue(self.window._pending_apply.isActive())
+        self.assertFalse(self.window._structural_pending)  # cuts are live, not restarts
+        self.assertEqual(self.engine.config.channel("speakers").controls()["fader_l:Gain 1"], 0.0)
+        with mock.patch.object(Engine, "apply"):
+            self.strip("phones").solo.click()
+        self.assertTrue(self.strip("speakers").cut_label.isHidden())
+        self.assertEqual(self.engine.config.channel("speakers").controls()["fader_l:Gain 1"], 1.0)
+
     def test_mute_mutes_that_channel(self):
         with mock.patch.object(Engine, "set_channel_muted") as set_muted:
             self.strip("speakers").mute.setEnabled(True)

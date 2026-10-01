@@ -49,6 +49,19 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(again.fader_db, -12.0)
         self.assertAlmostEqual(again.controls()["fader_l:Gain 1"], 0.251189, places=5)
 
+    def test_pan_and_solo_are_saved_and_rendered(self):
+        self.channel.pan = 1.0
+        self.channel.solo = True
+        again = Channel.from_dict(self.channel.to_dict())
+        self.assertEqual((again.pan, again.solo), (1.0, True))
+        self.assertEqual(again.controls()["fader_l:Gain 1"], 0.0)
+        self.assertEqual(again.controls()["fader_r:Gain 1"], 1.0)
+        # Old configs have neither; a hand-edited pan out of range is clamped.
+        data = self.channel.to_dict()
+        del data["pan"], data["solo"]
+        self.assertEqual((Channel.from_dict(data).pan, Channel.from_dict(data).solo), (0.0, False))
+        self.assertEqual(Channel.from_dict({**data, "pan": -7}).pan, -1.0)
+
     def test_the_sink_is_named_and_prefixed(self):
         self.assertEqual(self.channel.sink_name, "ar_headphones")
         self.assertEqual(self.channel.playback_name, "ar_headphones_out")

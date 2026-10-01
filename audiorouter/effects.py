@@ -754,6 +754,18 @@ def fader_gain(db: float) -> float:
     return round(db_to_linear(min(db, FADER_MAX_DB)), 6)
 
 
+def pan_gains(pan: float) -> tuple[float, float]:
+    """A stereo channel's balance: (left, right) multipliers for pan -1..+1.
+
+    Centre leaves both sides untouched; turning one way fades the other side
+    along a quarter cosine, -3 dB halfway and off at the end. The near side
+    never rises, so panning can never push a channel into clipping.
+    """
+    pan = max(-1.0, min(1.0, pan))
+    far = math.cos(abs(pan) * math.pi / 2)
+    return (1.0, far) if pan <= 0 else (far, 1.0)
+
+
 def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[str, str]]]:
     name = f"tap{slot}"
     node = {"type": "lv2", "name": name, "plugin": TAP_URI, "control": {"slot": float(slot)}}
@@ -761,7 +773,8 @@ def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[s
     return node, links
 
 
-def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.0) -> Chain:
+def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.0,
+                 pan: float = 0.0, cut: bool = False) -> Chain:
     """Render effects into one series stereo graph.
 
     Every effect sits behind a bypass switch (see `_with_bypass`), so a
@@ -774,9 +787,10 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
 
     The chain always ends in the channel's fader (`fader_l`/`fader_r`), a
     post-insert gain like a console's, so moving it is a live control change
-    and never reaches the compressors before it. The desktop's volume for
-    the channel acts before the effects, as a trim (measured: 50% is -18 dB
-    already at the first tap).
+    and never reaches the compressors before it. Pan and a solo's cut are
+    folded into the same two gains (`pan`, `cut`), so they are live too. The
+    desktop's volume for the channel acts before the effects, as a trim
+    (measured: 50% is -18 dB already at the first tap).
 
     With `taps`, a level tap listens at every boundary - before the first
     effect and after each one - so the window can show what any effect
@@ -791,7 +805,7 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
     if not active:
         nodes: list[dict[str, Any]] = []
         links: list[dict[str, str]] = []
-        entry = _fader(nodes, links, None, fader_db)
+        entry = _fader(nodes, links, None, fader_db, pan, cut)
         outputs = ("fader_l:Out", "fader_r:Out")
         if taps:
             node, tap_links = _tap(output_slot(effects), outputs)
@@ -824,7 +838,7 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
             nodes.append(node)
             links.extend(tap_links)
     assert first_in is not None and previous_out is not None
-    _fader(nodes, links, previous_out, fader_db)
+    _fader(nodes, links, previous_out, fader_db, pan, cut)
     previous_out = ("fader_l:Out", "fader_r:Out")
     if taps:
         node, tap_links = _tap(output_slot(effects), previous_out)
@@ -835,11 +849,13 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
 
 
 def _fader(nodes: list[dict[str, Any]], links: list[dict[str, str]],
-           source: tuple[str, str] | None, db: float) -> tuple[str, str]:
+           source: tuple[str, str] | None, db: float, pan: float = 0.0,
+           cut: bool = False) -> tuple[str, str]:
     """Append the fader, fed from `source`; returns its inputs."""
-    for side in SIDES:
+    level = 0.0 if cut else fader_gain(db)
+    for side, balance in zip(SIDES, pan_gains(pan)):
         nodes.append({"type": "builtin", "name": f"fader_{side}", "label": "mixer",
-                      "control": {"Gain 1": fader_gain(db)}})
+                      "control": {"Gain 1": round(level * balance, 6)}})
     if source is not None:
         for side, port in zip(SIDES, source):
             links.append({"output": port, "input": f"fader_{side}:In 1"})

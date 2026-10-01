@@ -184,6 +184,18 @@ and a stereo meter, volume in dB.
   -48.06/-54.06/-42.06/silence while the last effect's output stayed -48.06).
   Law: `mixer.FADER_LAW`, +10 dB top, 0 dB at 76% of travel, off at the bottom.
   The Channels view does not show the fader.
+- **Pan and solo live at the fader** (1 Oct 2026). Both multiply into the
+  `fader_l`/`fader_r` gains, so both are live control changes, never
+  restarts. Pan (`Channel.pan`, -1..+1) is a BALANCE: centre leaves both
+  sides alone, the far side fades on a quarter cosine (-3 dB at L50/R50, off
+  at the end), the near side never rises. Double-click the slider to centre.
+  Solo (`Channel.solo`, saved, so the login service agrees) cuts every other
+  ENABLED channel of the SAME KIND - an output solo never cuts the mic a call
+  is using. The cut (`Channel.solo_cut`) is never saved: `Config.update_solo()`
+  works it out on load, add/remove, and at the top of `apply`/`start_channel`;
+  call it after changing any `solo`. Measured live (lab): L50 = -3.01 dB on R,
+  hard pan and a cut = digital silence, release restores -23.04 exactly, one
+  host pid throughout.
 - **The output tap is after the fader** (`effects.output_slot` = rendered
   effects + 1). `meter.output_tap` reads the slot from the RUNNING host's
   conf, so a host started by 0.4.0 (no fader) still meters until it restarts.

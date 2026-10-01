@@ -462,6 +462,7 @@ class Engine:
         `_hand_over`); `occupants` is accepted for older callers and unused.
         """
         channel = self.config.channel(slug)
+        self.config.update_solo()
         if self.dry_run:
             return Action("start", slug, "dry run")
         channel.start(handover=lambda new_pid: self._hand_over(channel, new_pid))
@@ -606,6 +607,7 @@ class Engine:
         because a restart takes the sink out from under them.
         """
         report = ApplyReport()
+        self.config.update_solo()  # a solo may have been switched since the last apply
         if not self.dry_run:
             sweep_stale()  # level-tap files of hosts that were killed outright
         live = None if self.dry_run else self._live_graph()

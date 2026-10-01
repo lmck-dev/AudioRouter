@@ -5,6 +5,10 @@ in signal order: where the sound comes from, the inserts (the effect chain,
 each one lit while it is on), where it goes, then the fader, the mute and a
 meter of what the channel puts out.
 
+Under the fader's buttons, PAN balances the channel between left and right
+and S solos it: every other channel of the same kind (outputs, or inputs) is
+cut until the solo is released. Both act at the fader, so both are live.
+
 Like a console there are two levels. TRIM, near the top, is the channel's
 desktop volume - it acts before the effects, so it sets how hard they are
 driven. The big FADER is after the effects (`Channel.fader_db`, a gain at the
@@ -107,6 +111,18 @@ def fader_text(db: float) -> str:
     return "off" if db <= FADER_OFF_DB else f"{db:+.1f} dB"
 
 
+#: The pan slider's travel each side of centre.
+PAN_TRAVEL = 100
+
+
+def pan_text(pan: float) -> str:
+    """As a console prints it: C, or how far left or right out of 100."""
+    amount = round(abs(pan) * PAN_TRAVEL)
+    if amount == 0:
+        return "C"
+    return f"{'L' if pan < 0 else 'R'}{amount}"
+
+
 class FaderScale(QWidget):
     """The fader's dB marks beside it, level with the handle's centre."""
 
@@ -171,6 +187,8 @@ class ChannelStrip(QFrame):
     volume_changed = pyqtSignal(str, float)
     fader_changed = pyqtSignal(str, float)
     mute_toggled = pyqtSignal(str, bool)
+    pan_changed = pyqtSignal(str, float)
+    solo_toggled = pyqtSignal(str, bool)
     effect_toggled = pyqtSignal(str, int, bool)
     effect_opened = pyqtSignal(str, int)
     add_effect = pyqtSignal(str)
@@ -265,6 +283,27 @@ class ChannelStrip(QFrame):
         self.fader.setValue(db_to_fader(channel.fader_db))
         self.fader.valueChanged.connect(self._fader_moved)
         self.fader_scale = FaderScale(self.fader, self)
+
+        # PAN: balance after the fader. Double-click puts it back in the centre.
+        self.pan = QSlider(Qt.Orientation.Horizontal, self)
+        self.pan.setRange(-PAN_TRAVEL, PAN_TRAVEL)
+        self.pan.setPageStep(10)
+        self.pan.setValue(round(channel.pan * PAN_TRAVEL))
+        self.pan.setToolTip("Pan: balance between left and right, after the fader.\n"
+                            "Double-click to centre.")
+        self.pan.valueChanged.connect(self._pan_moved)
+        self.pan.installEventFilter(self)
+        self.pan_label = caption(pan_text(channel.pan))
+        self.pan_label.setFixedWidth(self.pan_label.fontMetrics().horizontalAdvance("L100") + 2)
+        self.pan_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.cut_label = caption("cut by a solo")
+        self.cut_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cut_label.setStyleSheet(theme.css(theme.warn))
+        # Its room is kept while hidden, so every fader on the desk lines up.
+        keep = self.cut_label.sizePolicy()
+        keep.setRetainSizeWhenHidden(True)
+        self.cut_label.setSizePolicy(keep)
+        self.cut_label.setHidden(True)
         self.meter_l = LevelBar(self, vertical=True)
         self.meter_r = LevelBar(self, vertical=True)
         self.meter_l.setToolTip("What this channel puts out, after its effects")
@@ -280,8 +319,15 @@ class ChannelStrip(QFrame):
         self.mute = QPushButton("M", self)
         self.mute.setCheckable(True)
         self.mute.setToolTip("Mute")
-        self.mute.setFixedWidth(34)
         self.mute.toggled.connect(self._mute_toggled)
+        self.solo = QPushButton("S", self)
+        self.solo.setCheckable(True)
+        self.solo.setChecked(channel.solo)
+        self.solo.setToolTip("Solo: hear only this channel - every other "
+                             + ("input" if channel.is_input else "output") + " is cut")
+        self.solo.setFixedWidth(30)
+        self.solo.toggled.connect(self._solo_toggled)
+        self.mute.setFixedWidth(30)
         self.edit = QPushButton("Edit", self)
         self.edit.setToolTip("Open this channel in the Channels view")
         self.edit.clicked.connect(lambda: self.open_settings.emit(self.slug))
@@ -302,8 +348,15 @@ class ChannelStrip(QFrame):
         trim_row.addWidget(caption("TRIM"))
         trim_row.addWidget(self.trim, 1)
 
+        pan_row = QHBoxLayout()
+        pan_row.setSpacing(3)
+        pan_row.addWidget(caption("PAN"))
+        pan_row.addWidget(self.pan, 1)
+        pan_row.addWidget(self.pan_label)
+
         buttons = QHBoxLayout()
         buttons.addWidget(self.mute)
+        buttons.addWidget(self.solo)
         buttons.addWidget(self.edit, 1)
 
         # Top to bottom in signal order, the name first so a strip is always
@@ -322,7 +375,9 @@ class ChannelStrip(QFrame):
         layout.addWidget(self.insert_area, 2)
         layout.addWidget(caption("LISTEN" if channel.is_input else "OUT"))
         layout.addWidget(self.route)
+        layout.addLayout(pan_row)
         layout.addLayout(buttons)
+        layout.addWidget(self.cut_label)
         layout.addLayout(faders, 3)
         layout.addWidget(self.volume_label)
         layout.addWidget(self.level_label)
@@ -373,6 +428,9 @@ class ChannelStrip(QFrame):
         return button
 
     def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.MouseButtonDblClick and watched is self.pan:
+            self.pan.setValue(0)
+            return True
         if event.type() == QEvent.Type.MouseButtonDblClick and watched in self.insert_buttons:
             self.effect_opened.emit(self.slug, int(watched.property("effect_index")))
             return True
@@ -410,8 +468,26 @@ class ChannelStrip(QFrame):
             self.fader.setValue(db_to_fader(self.channel.fader_db))
             self.fader.blockSignals(False)
         self.volume_label.setText(f"fader {fader_text(self.channel.fader_db)}")
+        if not self.pan.isSliderDown():
+            self.pan.blockSignals(True)
+            self.pan.setValue(round(self.channel.pan * PAN_TRAVEL))
+            self.pan.blockSignals(False)
+            self.pan_label.setText(pan_text(self.channel.pan))
         self._show_mute()
+        self.show_solo()
         self.name.setEnabled(running)
+
+    def show_solo(self) -> None:
+        """Light S while soloed; say so while another solo cuts this one."""
+        self.solo.blockSignals(True)
+        self.solo.setChecked(self.channel.solo)
+        self.solo.blockSignals(False)
+        theme = Theme(self)
+        self.solo.setStyleSheet(
+            f"background: {theme.solo.name()}; color: {self.palette().base().color().name()};"
+            if self.channel.solo else ""
+        )
+        self.cut_label.setHidden(not self.channel.solo_cut)
 
     def _fill_routes(self, entry: dict | None, devices, outputs) -> None:
         present = entry["device_present"] if entry else True
@@ -455,6 +531,14 @@ class ChannelStrip(QFrame):
         db = round(fader_to_db(value), 1)
         self.volume_label.setText(f"fader {fader_text(db)}")
         self.fader_changed.emit(self.slug, db)
+
+    def _pan_moved(self, value: int) -> None:
+        pan = value / PAN_TRAVEL
+        self.pan_label.setText(pan_text(pan))
+        self.pan_changed.emit(self.slug, pan)
+
+    def _solo_toggled(self, on: bool) -> None:
+        self.solo_toggled.emit(self.slug, on)
 
     def _mute_toggled(self, on: bool) -> None:
         self._show_mute()
@@ -502,6 +586,8 @@ class MixerView(QWidget):
     volume_changed = pyqtSignal(str, float)
     fader_changed = pyqtSignal(str, float)
     mute_toggled = pyqtSignal(str, bool)
+    pan_changed = pyqtSignal(str, float)
+    solo_toggled = pyqtSignal(str, bool)
     effect_toggled = pyqtSignal(str, int, bool)
     effect_opened = pyqtSignal(str, int)
     add_effect = pyqtSignal(str)
@@ -576,6 +662,11 @@ class MixerView(QWidget):
             )
         self._follow_taps()
 
+    def show_solo(self) -> None:
+        """A solo changes what every strip of its kind shows, not just its own."""
+        for strip in self.strips.values():
+            strip.show_solo()
+
     def _rebuild(self) -> None:
         self._stop_readers()
         while self.row.count():
@@ -591,8 +682,9 @@ class MixerView(QWidget):
             self.row.addWidget(self._group_header(title, is_input))
             for channel in group:
                 strip = ChannelStrip(channel, self.desk)
-                for name in ("volume_changed", "fader_changed", "mute_toggled", "effect_toggled", "effect_opened",
-                             "add_effect", "device_chosen", "listen_chosen", "open_settings"):
+                for name in ("volume_changed", "fader_changed", "mute_toggled", "pan_changed", "solo_toggled",
+                             "effect_toggled", "effect_opened", "add_effect", "device_chosen",
+                             "listen_chosen", "open_settings"):
                     getattr(strip, name).connect(getattr(self, name).emit)
                 self.strips[channel.slug] = strip
                 self.row.addWidget(strip)

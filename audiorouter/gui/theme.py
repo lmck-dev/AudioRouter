@@ -23,6 +23,8 @@ class Theme:
         # no "warning" role, so derive one that keeps its contrast.
         self.warn = QColor("#e8a33d") if self.dark else QColor("#9a5b00")
         self.good = QColor("#5bbf7a") if self.dark else QColor("#1f7a3f")
+        # A lit solo, yellow as on a console (mute already uses warn).
+        self.solo = QColor("#e3cf3a") if self.dark else QColor("#8c7a00")
         # Level meter zones, as on studio meters. Like warn/good, the palette
         # has no roles for these, so each has a light and a dark value.
         self.meter_green = QColor("#4cc26a") if self.dark else QColor("#2e9e4a")

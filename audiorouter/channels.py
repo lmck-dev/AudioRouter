@@ -243,6 +243,13 @@ class Channel:
     #: The post-insert fader, in dB (the mixer's big fader). The desktop's
     #: volume for the channel is separate and acts before the effects.
     fader_db: float = 0.0
+    #: Balance after the fader: -1 hard left, 0 centre, +1 hard right.
+    pan: float = 0.0
+    #: Soloed on the mixer: every other channel of the same kind is cut.
+    solo: bool = False
+    #: Silenced because another channel of the same kind is soloed. Worked out
+    #: by `Config.update_solo` from the whole desk, never saved.
+    solo_cut: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         validate_slug(self.slug)
@@ -314,6 +321,8 @@ class Channel:
             "enabled": self.enabled,
             "effects": [e.to_dict() for e in self.effects],
             "fader_db": self.fader_db,
+            "pan": self.pan,
+            "solo": self.solo,
         }
         if self.is_input:
             data["listen"] = self.listen
@@ -335,13 +344,19 @@ class Channel:
             listen=str(data.get("listen", "")),
             echo_cancel=bool(data.get("echo_cancel", False)),
             fader_db=float(data.get("fader_db", 0.0)),
+            pan=max(-1.0, min(1.0, float(data.get("pan", 0.0)))),
+            solo=bool(data.get("solo", False)),
         )
 
     # -- rendering --------------------------------------------------------
 
+    def _chain(self):
+        return render_chain(self.effects, taps=taps_available(), fader_db=self.fader_db,
+                            pan=self.pan, cut=self.solo_cut)
+
     def render_config(self) -> dict[str, Any]:
         """The complete conf structure for this channel's host process."""
-        chain = render_chain(self.effects, taps=taps_available(), fader_db=self.fader_db)
+        chain = self._chain()
         stamp = {OWNER_KEY: self.slug}
         args: dict[str, Any] = {
             "node.description": self.name,
@@ -489,7 +504,7 @@ class Channel:
 
     def controls(self) -> dict[str, float]:
         """Every knob value in the rendered graph, as `node:control`."""
-        return render_chain(self.effects, taps=taps_available(), fader_db=self.fader_db).controls()
+        return self._chain().controls()
 
     def running_config(self) -> dict[str, Any] | None:
         """The conf the running host was started with (or last updated to)."""

@@ -238,6 +238,8 @@ class MainWindow(QMainWindow):
         self.mixer.volume_changed.connect(self._set_volume)
         self.mixer.fader_changed.connect(self._set_fader)
         self.mixer.mute_toggled.connect(self._set_muted)
+        self.mixer.pan_changed.connect(self._set_pan)
+        self.mixer.solo_toggled.connect(self._set_solo)
         self.mixer.effect_toggled.connect(self._toggle_effect)
         self.mixer.effect_opened.connect(self._open_effect)
         self.mixer.add_effect.connect(self._add_effect_to)
@@ -495,6 +497,22 @@ class MainWindow(QMainWindow):
         channel = self.engine.config.channel(slug)
         if db != channel.fader_db:
             channel.fader_db = db
+            self._config_tuned()
+
+    def _set_pan(self, slug: str, pan: float) -> None:
+        """Balance at the fader: live, like the fader itself."""
+        channel = self.engine.config.channel(slug)
+        if pan != channel.pan:
+            channel.pan = pan
+            self._config_tuned()
+
+    def _set_solo(self, slug: str, on: bool) -> None:
+        """A solo cuts the rest of its kind at their faders: live, no restarts."""
+        channel = self.engine.config.channel(slug)
+        if on != channel.solo:
+            channel.solo = on
+            self.engine.config.update_solo()
+            self.mixer.show_solo()
             self._config_tuned()
 
     def _open_effect(self, slug: str, index: int) -> None:

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from audiorouter.channels import Channel
+from audiorouter.channels import INPUT, Channel
 from audiorouter.config import CONFIG_VERSION, Config, ConfigError, default_config
 from audiorouter.effects import Effect
 from audiorouter.routing import Rule, RuleSet
@@ -77,6 +77,55 @@ class ConfigTest(unittest.TestCase):
 
     def test_a_healthy_config_has_no_problems(self):
         self.assertEqual(self.config.problems(), [])
+
+
+class SoloTest(unittest.TestCase):
+    def config(self):
+        return Config(channels=[
+            Channel("speakers", "Speakers", ""), Channel("phones", "Phones", ""),
+            Channel("mic", "Mic", "", kind=INPUT), Channel("mic2", "Mic 2", "", kind=INPUT),
+        ])
+
+    def cut(self, config):
+        return {c.slug for c in config.channels if c.solo_cut}
+
+    def test_a_solo_cuts_only_the_rest_of_its_own_kind(self):
+        config = self.config()
+        self.assertEqual(self.cut(config), set())
+        config.channel("phones").solo = True
+        config.update_solo()
+        self.assertEqual(self.cut(config), {"speakers"})  # the mics are untouched
+        config.channel("mic").solo = True
+        config.update_solo()
+        self.assertEqual(self.cut(config), {"speakers", "mic2"})
+
+    def test_two_solos_are_both_heard(self):
+        config = self.config()
+        for slug in ("speakers", "phones"):
+            config.channel(slug).solo = True
+        config.update_solo()
+        self.assertEqual(self.cut(config), set())
+
+    def test_a_switched_off_channel_soloed_cuts_nothing(self):
+        config = self.config()
+        config.channel("phones").solo = True
+        config.channel("phones").enabled = False
+        config.update_solo()
+        self.assertEqual(self.cut(config), set())
+
+    def test_the_cut_is_worked_out_on_load_and_never_saved(self):
+        config = self.config()
+        config.channel("phones").solo = True
+        again = Config.from_dict(config.to_dict())
+        self.assertEqual(self.cut(again), {"speakers"})
+        self.assertNotIn("solo_cut", config.channel("speakers").to_dict())
+
+    def test_removing_the_soloed_channel_releases_the_others(self):
+        config = self.config()
+        config.channel("phones").solo = True
+        config.update_solo()
+        config.remove_channel("phones")
+        self.assertEqual(self.cut(config), set())
 
 
 class DefaultConfigTest(unittest.TestCase):

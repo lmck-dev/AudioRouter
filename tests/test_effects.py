@@ -1,3 +1,4 @@
+import math
 import unittest
 from unittest import mock
 
@@ -93,6 +94,31 @@ class RenderTest(unittest.TestCase):
         a, b = render_chain([Effect("gain")], fader_db=0), render_chain([Effect("gain")], fader_db=-20)
         self.assertEqual(a.links, b.links)
         self.assertEqual([n["name"] for n in a.nodes], [n["name"] for n in b.nodes])
+
+    def test_pan_fades_the_far_side_and_never_raises_the_near_one(self):
+        from audiorouter.effects import pan_gains
+
+        self.assertEqual(pan_gains(0.0), (1.0, 1.0))
+        left, right = pan_gains(-0.5)
+        self.assertEqual(left, 1.0)
+        self.assertAlmostEqual(20 * math.log10(right), -3.01, places=2)
+        self.assertEqual(render_chain([], pan=1.0).controls()["fader_l:Gain 1"], 0.0)
+        self.assertEqual(render_chain([], pan=1.0).controls()["fader_r:Gain 1"], 1.0)
+        controls = render_chain([], fader_db=-6.0, pan=-0.5).controls()
+        self.assertAlmostEqual(controls["fader_l:Gain 1"], 0.501187, places=5)
+        self.assertAlmostEqual(controls["fader_r:Gain 1"], 0.501187 * right, places=5)
+
+    def test_a_solo_cut_silences_the_fader(self):
+        controls = render_chain([Effect("gain")], fader_db=6.0, cut=True).controls()
+        self.assertEqual((controls["fader_l:Gain 1"], controls["fader_r:Gain 1"]), (0.0, 0.0))
+
+    def test_pan_and_cut_keep_the_graph_shape(self):
+        # So both are live control changes, never a restart.
+        a = render_chain([Effect("gain")], taps=True)
+        for b in (render_chain([Effect("gain")], taps=True, pan=-0.7),
+                  render_chain([Effect("gain")], taps=True, cut=True)):
+            self.assertEqual(a.links, b.links)
+            self.assertEqual([n["name"] for n in a.nodes], [n["name"] for n in b.nodes])
 
     def test_every_effect_sits_behind_a_switch_that_feeds_it_and_the_dry_path(self):
         chain = render_chain([Effect("gain")])
