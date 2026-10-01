@@ -60,6 +60,23 @@ class FakeReader:
         self.running = False
 
 
+class FakeDriver:
+    """Stands in for meter.Driver: no parec, and a test can make it end."""
+
+    started: list = []
+
+    def __init__(self, channel):
+        self.slug, self.host = channel.slug, channel.pid()
+        self.running = False
+
+    def start(self):
+        self.running = True
+        FakeDriver.started.append(self)
+
+    def stop(self):
+        self.running = False
+
+
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class GuiTestCase(unittest.TestCase):
     app = None
@@ -86,6 +103,8 @@ class GuiTestCase(unittest.TestCase):
             mock.patch("audiorouter.gui.meters.LevelReader", FakeReader),
             mock.patch("audiorouter.gui.meters.FileLevelReader", FakeReader),
             mock.patch("audiorouter.gui.mixer.FileLevelReader", FakeReader),
+            # Nor a real recorder of an input's virtual mic.
+            mock.patch("audiorouter.gui.mixer.Driver", FakeDriver),
             # Whether this machine has the level tap must not change a test.
             mock.patch("audiorouter.gui.meters.taps_available", return_value=False),
             isolated_settings(self.tmp.name),

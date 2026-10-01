@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        0.7.1
+Version:        0.7.2
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        Apache-2.0
@@ -96,6 +96,9 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/applications/audiorouter.desktop
 
 %changelog
+* Thu Oct 01 2026 lmck-dev <lmck.dev@gmail.com> - 0.7.2-1
+- Input strips on the mixer meter the mic without anything recording it
+
 * Thu Oct 01 2026 lmck-dev <lmck.dev@gmail.com> - 0.7.1-1
 - The fader in the Channels view too, in step with the mixer
 

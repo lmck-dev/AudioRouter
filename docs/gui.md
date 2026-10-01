@@ -170,8 +170,19 @@ and a stereo meter, volume in dB.
 - **Rebuilt only when the desk's shape changes** (a signature of channels and
   effects); a plain refresh updates values, or a fader would vanish mid-drag.
 - **Strip meters read each channel's last level tap** (`meter.output_tap`):
-  no parec, and an input moves only while something records it (its capture
-  is passive). Every tapped chain, even an empty one, has an output tap.
+  no parec for outputs. **An input's chain idles until something records it**
+  (its capture is passive), so while the mixer is on screen each running
+  input is recorded by a `meter.Driver` (parec to /dev/null, 200 ms latency,
+  `METER_KEY`, dont-reconnect/dont-fallback): the strip always moves and the
+  desktop shows the mic in use (owner asked, 1 Oct 2026). Measured on the
+  real mic: 0 readings undriven, live readings driven. **After the input
+  restarts the old driver stays alive, linked to nothing** (it does not
+  wander onto the real mic, and does not exit), so the mixer replaces a
+  driver whenever the channel's host pid changes, not when it exits. A fake
+  mic for lab work: `module-remap-source` of a null sink's monitor (a
+  `.monitor` name is not a PipeWire node, and an input targeting one fails
+  to start) - but a fake mic fed a tone is never idle, so the undriven case
+  needs the real mic. Every tapped chain, even an empty one, has an output tap.
   Only the visible view's meters run (`MainWindow._update_meters`).
 - **The INSERTS title folds the inserts on EVERY strip at once** (1 Oct
   2026), not per strip, so the faders stay level across the desk; folded,

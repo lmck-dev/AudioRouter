@@ -9,7 +9,7 @@ from audiorouter.effects import Effect
 from audiorouter.engine import Engine
 from audiorouter.meter import Tap
 
-from .test_gui import QApplication, FakeReader, GuiTestCase
+from .test_gui import QApplication, FakeDriver, FakeReader, GuiTestCase
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -233,6 +233,36 @@ class MixerTest(GuiTestCase):
         self.assertFalse(any(r.running for r in FakeReader.started if r.tap.file.startswith("/run/42")))
         self.assertFalse(self.mixer.active)
         self.assertTrue(self.window.meters.active)
+
+    def test_inputs_are_driven_only_while_the_mixer_is_seen(self):
+        FakeDriver.started = []
+        taps = {s: Tap("Out", (), 42, f"/run/42.{s}") for s in ("speakers", "phones", "mic")}
+        with mock.patch("audiorouter.gui.mixer.output_tap", side_effect=lambda c: taps[c.slug]), \
+                mock.patch.object(Channel, "pid", return_value=42):
+            self.mixer.set_active(True)
+            self.assertEqual([(d.slug, d.running) for d in FakeDriver.started], [("mic", True)])
+            self.mixer.set_active(False)
+        self.assertFalse(FakeDriver.started[0].running)
+
+    def test_a_driver_that_ends_is_replaced_and_a_restart_gets_a_new_one(self):
+        FakeDriver.started = []
+        tap = Tap("Out", (), 42, "/run/42.mic")
+        with mock.patch("audiorouter.gui.mixer.output_tap",
+                        side_effect=lambda c: tap if c.slug == "mic" else None), \
+                mock.patch.object(Channel, "pid", return_value=42):
+            self.mixer.set_active(True)
+            FakeDriver.started[0].running = False  # parec ended on its own
+            self.mixer._follow_taps()
+            self.assertEqual(len(FakeDriver.started), 2)
+            self.assertTrue(self.mixer._retry.isActive())  # and it looks again soon
+        tap = Tap("Out", (), 43, "/run/43.mic")  # the input restarted: a new host
+        with mock.patch("audiorouter.gui.mixer.output_tap",
+                        side_effect=lambda c: tap if c.slug == "mic" else None), \
+                mock.patch.object(Channel, "pid", return_value=43):
+            self.mixer._follow_taps()
+        self.assertEqual([d.host for d in FakeDriver.started], [42, 42, 43])
+        self.assertEqual([d.running for d in FakeDriver.started], [False, False, True])
+        self.mixer.stop()
 
     def test_readings_move_that_strips_meter(self):
         from PyQt6.QtCore import QCoreApplication

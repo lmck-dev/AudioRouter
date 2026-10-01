@@ -24,9 +24,11 @@ window's one debounce still decides when audio restarts. Anything that needs
 more room than a strip has (an effect's knobs, echo cancellation, a new
 channel's name) opens the Channels view on that channel.
 
-Meters read each channel's last level tap (`meter.output_tap`), so a desk of
-strips costs no recording streams and never opens a microphone: an input
-strip moves only while something records that input.
+Meters read each channel's last level tap (`meter.output_tap`), so an output
+strip costs no recording stream. An input's chain idles until something
+records it, so while the mixer is on screen each running input is recorded
+by a `meter.Driver` that discards the sound: its strip always moves, and the
+desktop shows the mic in use.
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ from PyQt6.QtWidgets import (
 from ..channels import NOWHERE, Channel
 from ..config import Config
 from ..effects import FADER_MAX_DB, FADER_OFF_DB, EffectError
-from ..meter import FileLevelReader, Levels, Tap, output_tap
+from ..meter import Driver, FileLevelReader, Levels, Tap, output_tap
 from .meters import FLOOR_DB, FRAME_MS, SCALE_MARKS, LevelBar, bar_span, fraction
 from .theme import Theme
 
@@ -658,6 +660,7 @@ class MixerView(QWidget):
         self._config = Config()
         self._signature: tuple = ()
         self._readers: dict[str, FileLevelReader] = {}
+        self._drivers: dict[str, Driver] = {}
         self._levels.connect(self._on_levels)
         self._ended.connect(self._on_ended)
 
@@ -819,7 +822,10 @@ class MixerView(QWidget):
                 reader = None
             if tap is None:
                 missing = missing or channel.enabled
+                self._stop_driver(channel.slug)
                 continue
+            if channel.is_input and not self._drive(channel, tap):
+                missing = True  # its driver ended (a restart): look again soon
             if reader is None:
                 reader = FileLevelReader(
                     tap,
@@ -835,6 +841,23 @@ class MixerView(QWidget):
             self._retry.start()
         elif not missing:
             self._retry.stop()
+
+    def _drive(self, channel: Channel, tap: Tap) -> bool:
+        """Keep one driver recording this input's running host; False if it ended."""
+        driver = self._drivers.get(channel.slug)
+        if driver is not None and driver.host == tap.host and driver.running:
+            return True
+        ended = driver is not None and driver.host == tap.host
+        self._stop_driver(channel.slug)
+        driver = Driver(channel)
+        driver.start()
+        self._drivers[channel.slug] = driver
+        return not ended
+
+    def _stop_driver(self, slug: str) -> None:
+        driver = self._drivers.pop(slug, None)
+        if driver is not None:
+            driver.stop()
 
     @pyqtSlot(str, object)
     def _on_levels(self, slug: str, levels: Levels) -> None:
@@ -865,6 +888,8 @@ class MixerView(QWidget):
         for reader in self._readers.values():
             reader.stop()
         self._readers.clear()
+        for slug in list(self._drivers):
+            self._stop_driver(slug)
         self._frame.stop()
         self._retry.stop()
         for strip in self.strips.values():

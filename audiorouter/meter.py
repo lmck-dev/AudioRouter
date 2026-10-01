@@ -170,8 +170,8 @@ def output_tap(channel: Channel) -> Tap | None:
     """What the channel puts out, after all its effects, read from its last tap.
 
     A mixer strip's meter. No `parec`, so metering every strip at once costs
-    nothing and never opens a microphone: an input channel reads only while
-    something records it (its capture is passive until then).
+    nothing. An input channel reads only while something records it (its
+    capture is passive until then) - which is what `Driver` is for.
     """
     host = channel.pid()
     nodes = _running_nodes(channel)
@@ -294,6 +294,60 @@ class FileLevelReader:
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=2)
         self._thread = None
+
+
+class Driver:
+    """Records an input channel's virtual mic and throws the sound away.
+
+    An input channel's capture is passive: the mic, the effects and the level
+    taps all sit idle until something records the channel. A mixer strip
+    wants to see the mic anyway, so while the mixer is on screen this keeps
+    the chain running and its taps (`output_tap`) fed. It opens the
+    microphone, so the desktop shows its "mic in use" indicator meanwhile.
+
+    It refuses to move like a meter tap (so a restart of the channel ends it,
+    and the mixer starts a new one for the new host), and carries `METER_KEY`
+    so a handover leaves it alone.
+    """
+
+    def __init__(self, channel: Channel) -> None:
+        self.source = channel.node_name
+        #: The host it drives: a restart replaces the source it recorded.
+        self.host = channel.pid()
+        self._proc: subprocess.Popen[bytes] | None = None
+
+    def command(self) -> list[str]:
+        return [
+            "parec", "--raw", "--format=s16le", "--rate=48000", "--channels=2",
+            # Slow wakeups: the audio is discarded, only the graph must run.
+            "--latency-msec=200",
+            "--client-name=Audio Router meter",
+            "--property=application.name=Audio Router meter",
+            f"--property={METER_KEY}=true",
+            "--property=node.dont-reconnect=true",
+            "--property=node.dont-fallback=true",
+            f"--device={self.source}",
+        ]
+
+    def start(self) -> None:
+        require_tools("parec")
+        self._proc = subprocess.Popen(
+            self.command(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        )
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def stop(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:  # pragma: no cover - parec exits on TERM
+                proc.kill()
+                proc.wait()
 
 
 class LevelReader:
