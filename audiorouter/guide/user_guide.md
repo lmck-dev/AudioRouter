@@ -15,7 +15,7 @@ A few examples of what this makes possible:
 
 ## Getting started
 
-Open **Audio Router** from the application menu. The window opens on the **Mixer** tab; the **Channels** tab next to it holds every setting for one channel at a time. The **User Guide** button opens this guide.
+Open **Audio Router** from the application menu. The window opens on the **Mixer** tab; the **Channels** tab next to it holds every setting for one channel at a time. The **User Guide** button opens this guide, and **About** shows the version, credits and system details, with **Copy details** for a bug report.
 
 Two checkboxes along the top control how Audio Router behaves:
 

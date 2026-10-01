@@ -362,6 +362,14 @@ class Graph:
                 return int(pid)
         return None
 
+    def daemon_version(self) -> str | None:
+        """The running PipeWire daemon's version, as it reports it."""
+        for obj in self._of_type(_CORE):
+            version = (obj.get("info") or {}).get("version")
+            if version:
+                return str(version)
+        return None
+
     def session_manager_pid(self) -> int | None:
         """WirePlumber's process, if it is connected."""
         for obj in self._of_type(_CLIENT):

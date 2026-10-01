@@ -107,3 +107,10 @@ class DumpStreamTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DaemonVersionTest(unittest.TestCase):
+    def test_the_core_reports_its_version(self):
+        graph = Graph([{"id": 0, "type": "PipeWire:Interface:Core", "info": {"version": "1.6.8", "props": {}}}])
+        self.assertEqual(graph.daemon_version(), "1.6.8")
+        self.assertIsNone(Graph([]).daemon_version())

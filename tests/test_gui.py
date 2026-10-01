@@ -210,6 +210,24 @@ class WindowTest(GuiTestCase):
         self.assertIs(self.window._guide, guide)
         guide.close()
 
+    def test_about_shows_the_version_and_copies_the_details(self):
+        from PyQt6.QtGui import QGuiApplication
+
+        from audiorouter import __version__
+
+        self.window.about_button.click()
+        about = self.window._about
+        self.assertTrue(about.isVisible())
+        text = about.body.toPlainText()
+        self.assertIn("Apache License 2.0", text)
+        self.assertIn("Running on", text)
+        about.copy_button.click()
+        copied = QGuiApplication.clipboard().text()
+        self.assertIn(f"Audio Router: {__version__}", copied)
+        self.assertIn("Background service:", copied)
+        self.assertIn("Settings file:", copied)
+        about.close()
+
     def test_renaming_a_channel_saves_and_reaches_the_list(self):
         self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.channel_panel.name.setText("Desk")

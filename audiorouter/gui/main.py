@@ -172,6 +172,10 @@ class MainWindow(QMainWindow):
         self.guide_button.setToolTip("What every part of Audio Router does")
         self.guide_button.clicked.connect(self._show_guide)
         top.addWidget(self.guide_button)
+        self.about_button = QPushButton("About", self)
+        self.about_button.setToolTip("Version, credits and system details")
+        self.about_button.clicked.connect(self._show_about)
+        top.addWidget(self.about_button)
 
         # Outputs and inputs behave nothing alike, so they get a list each.
         self.output_list = QListWidget(self)
@@ -860,6 +864,22 @@ class MainWindow(QMainWindow):
         self._guide.show()
         self._guide.raise_()
         self._guide.activateWindow()
+
+    def _show_about(self) -> None:
+        from .about import AboutWindow, system_facts
+
+        def facts():
+            try:
+                version = self.engine.graph().daemon_version()
+            except PwError:
+                version = None
+            return system_facts(version, daemon_pid() is not None)
+
+        if getattr(self, "_about", None) is None:
+            self._about = AboutWindow(facts, self)
+        self._about.show()
+        self._about.raise_()
+        self._about.activateWindow()
 
     def _monitor_failed(self, message: str) -> None:
         self._set_status(f"Not watching for new apps: {message}", warn=True)
