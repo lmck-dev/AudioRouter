@@ -47,3 +47,10 @@ The login service sends one notification per WirePlumber pid (`notify-send
 prints a warning. The fix runs in a transient `systemd-run` unit, because our
 service is `PartOf=pipewire` and would be killed mid-fix, then re-applies the
 channels if the service is not running to do it.
+
+Measured end to end on the desk (0.8.0, 1 Oct 2026): a lone WirePlumber
+restart at 12:11:44 -> cancellers at ~190 errors/s -> the login service's
+notification -> its button ran `audiorouter-sound-restart-*` at 12:11:51 ->
+all three cancellers flat again (ERR 3). A notification left alone expires
+without pressing its button ("Wait timeout expired" on stdout, which is not
+"fix"), so nothing restarts unless someone clicks. No false alarm while healthy.
