@@ -221,6 +221,10 @@ class WindowTest(GuiTestCase):
         text = about.body.toPlainText()
         self.assertIn("Apache License 2.0", text)
         self.assertIn("Running on", text)
+        self.assertIn("Ko-fi", text)
+        with mock.patch("audiorouter.gui.about.QDesktopServices.openUrl") as open_url:
+            about.support_button.click()
+        self.assertEqual(open_url.call_args.args[0].toString(), "https://ko-fi.com/laughingmanck")
         about.copy_button.click()
         copied = QGuiApplication.clipboard().text()
         self.assertIn(f"Audio Router: {__version__}", copied)

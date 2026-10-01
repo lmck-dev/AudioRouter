@@ -10,8 +10,8 @@ from __future__ import annotations
 import platform
 from collections.abc import Callable
 
-from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR, Qt
-from PyQt6.QtGui import QGuiApplication, QIcon
+from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR, Qt, QUrl
+from PyQt6.QtGui import QDesktopServices, QGuiApplication, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -33,6 +33,9 @@ AUTHOR = "LMCK.DEV"
 YEAR = "2026"
 LICENCE = "Apache License 2.0"
 PROJECT_URL = "https://github.com/lmck-dev/AudioRouter"
+#: Donations (owner's choice of Ko-fi over Buy Me a Coffee, 1 Oct 2026;
+#: ~/Documents/USEFUL_LINKS.md keeps every project's support links).
+SUPPORT_URL = "https://ko-fi.com/laughingmanck"
 #: What Audio Router stands on, and what each part does for it.
 CREDITS = (
     ("PipeWire", "the sound system every channel runs inside"),
@@ -78,7 +81,7 @@ class AboutWindow(QDialog):
     def __init__(self, facts: Callable[[], list[tuple[str, str]]], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("About Audio Router")
-        self.resize(580, 680)
+        self.resize(580, 780)
         self._facts = facts
         theme = Theme(self)
         accent = self.palette().highlight().color().name()
@@ -105,6 +108,10 @@ class AboutWindow(QDialog):
         self._fill(accent, dim)
 
         buttons = QDialogButtonBox(self)
+        self.support_button = QPushButton("Support on Ko-fi", self)
+        self.support_button.setToolTip(f"Opens {SUPPORT_URL} in your browser")
+        self.support_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SUPPORT_URL)))
+        buttons.addButton(self.support_button, QDialogButtonBox.ButtonRole.ActionRole)
         self.copy_button = QPushButton("Copy details", self)
         self.copy_button.setToolTip("Copy the version and system details, for a bug report")
         self.copy_button.clicked.connect(self.copy_details)
@@ -130,6 +137,9 @@ class AboutWindow(QDialog):
         self.body.setHtml(
             f"<p style='line-height:150%'>&copy; {YEAR} {AUTHOR}. Released under the {LICENCE}.<br>"
             f"<a href='{PROJECT_URL}'>{PROJECT_URL.removeprefix('https://')}</a></p>"
+            f"<p style='{heading}'>Support Audio Router</p>"
+            f"<p style='line-height:150%'>Audio Router is free. If it is useful to you, you can buy "
+            f"its developer a coffee on <a href='{SUPPORT_URL}'>Ko-fi</a>.</p>"
             f"<p style='{heading}'>Built with</p><table>{credits}</table>"
             f"<p style='{heading}'>Running on</p><table>{facts}</table>")
 
