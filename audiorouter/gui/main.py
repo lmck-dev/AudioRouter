@@ -28,11 +28,13 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,7 +50,7 @@ from .applier import Applier
 from .channel_panel import ChannelPanel
 from .effects_panel import EffectsPanel
 from .meters import MeterPanel
-from .mixer import MixerView, group_label
+from .mixer import MixerView, desk_order, group_label, kind_label
 from .monitor import GraphBridge
 from .streams_panel import StreamsPanel
 from .theme import Theme
@@ -198,20 +200,22 @@ class MainWindow(QMainWindow):
         self.about_button.clicked.connect(self._show_about)
         top.addWidget(self.about_button)
 
-        # Outputs and inputs behave nothing alike, so they get a list each.
-        self.output_list = QListWidget(self)
-        self.input_list = QListWidget(self)
-        self.add_output_button = QPushButton("New output", self)
-        self.add_input_button = QPushButton("New input", self)
-        self.remove_output_button = QPushButton("Delete", self)
-        self.remove_input_button = QPushButton("Delete", self)
+        # One list, in the mixer's order and with its captions (owner, 2 Oct
+        # 2026): every channel is the same kind of thing, read IN -> OUT.
+        self.channel_list = QListWidget(self)
+        self.add_button = QToolButton(self)
+        self.add_button.setText("New channel")
+        self.add_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.add_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        add_menu = QMenu(self.add_button)
+        add_menu.addAction("Channel for a microphone", lambda: self._add_channel(is_input=True))
+        add_menu.addAction("Channel for apps", lambda: self._add_channel(is_input=False))
+        self.add_button.setMenu(add_menu)
+        self.remove_button = QPushButton("Delete", self)
 
-        output_buttons = QHBoxLayout()
-        output_buttons.addWidget(self.add_output_button)
-        output_buttons.addWidget(self.remove_output_button)
-        input_buttons = QHBoxLayout()
-        input_buttons.addWidget(self.add_input_button)
-        input_buttons.addWidget(self.remove_input_button)
+        list_buttons = QHBoxLayout()
+        list_buttons.addWidget(self.add_button)
+        list_buttons.addWidget(self.remove_button)
 
         # Remembered apps sit beside Playing now and fold away with it.
         self.rules = QWidget(self)
@@ -226,12 +230,9 @@ class MainWindow(QMainWindow):
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(QLabel("Outputs - apps play into these", left))
-        left_layout.addWidget(self.output_list, 2)
-        left_layout.addLayout(output_buttons)
-        left_layout.addWidget(QLabel("Inputs - microphones and line-in", left))
-        left_layout.addWidget(self.input_list, 1)
-        left_layout.addLayout(input_buttons)
+        left_layout.addWidget(QLabel("Channels - as on the mixer, left to right", left))
+        left_layout.addWidget(self.channel_list, 1)
+        left_layout.addLayout(list_buttons)
 
         self.channel_panel = ChannelPanel(self)
         self.effects_panel = EffectsPanel(self)
@@ -283,12 +284,8 @@ class MainWindow(QMainWindow):
         self.addAction(quit_action)
 
     def _connect(self) -> None:
-        self.output_list.currentItemChanged.connect(self._list_item_changed)
-        self.input_list.currentItemChanged.connect(self._list_item_changed)
-        self.add_output_button.clicked.connect(lambda: self._add_channel(is_input=False))
-        self.add_input_button.clicked.connect(lambda: self._add_channel(is_input=True))
-        self.remove_output_button.clicked.connect(self._remove_channel)
-        self.remove_input_button.clicked.connect(self._remove_channel)
+        self.channel_list.currentItemChanged.connect(self._list_item_changed)
+        self.remove_button.clicked.connect(self._remove_channel)
         self.streams_panel.expanded_changed.connect(self._streams_folded)
         self.views.currentChanged.connect(lambda _i: self._update_meters())
         self.mixer.volume_changed.connect(self._set_volume)
@@ -311,6 +308,8 @@ class MainWindow(QMainWindow):
         self.channel_panel.renamed.connect(self._refresh_channel_list)
         self.channel_panel.volume_changed.connect(self._volume_changed)
         self.channel_panel.mute_changed.connect(self._mute_changed)
+        self.channel_panel.remember_app.connect(self._remember_on_selected)
+        self.channel_panel.forget_rule.connect(self._forget_rule_at)
         self.channel_panel.fader_changed.connect(
             lambda db: self.selected_channel and self._set_fader(self.selected_channel.slug, db))
         self.effects_panel.changed.connect(self._config_edited)
@@ -337,18 +336,18 @@ class MainWindow(QMainWindow):
         )
 
     def select_channel(self, slug: str | None) -> None:
-        """Select a channel in whichever list holds it, and load it."""
+        """Select a channel in the list, and load it."""
         self._selected_slug = slug
-        for lst in (self.output_list, self.input_list):
-            lst.blockSignals(True)
-            match = None
-            for i in range(lst.count()):
-                if lst.item(i).data(Qt.ItemDataRole.UserRole) == slug:
-                    match = lst.item(i)
-            lst.setCurrentItem(match)
-            if match is None:
-                lst.clearSelection()
-            lst.blockSignals(False)
+        lst = self.channel_list
+        lst.blockSignals(True)
+        match = None
+        for i in range(lst.count()):
+            if lst.item(i).data(Qt.ItemDataRole.UserRole) == slug:
+                match = lst.item(i)
+        lst.setCurrentItem(match)
+        if match is None:
+            lst.clearSelection()
+        lst.blockSignals(False)
         self._channel_selected()
 
     def _list_item_changed(self, item, _previous) -> None:
@@ -412,29 +411,23 @@ class MainWindow(QMainWindow):
         running = (
             {c["slug"] for c in status["channels"] if c["running"]} if status else set()
         )
-        for lst in (self.output_list, self.input_list):
-            lst.blockSignals(True)
-            lst.clear()
-        for channel in self.engine.config.channels:
-            if channel.companion_of:
-                continue  # a mic channel's hidden mix: shown as part of the mic channel
-            label = channel.name
-            if not channel.is_input and channel.recordable:
-                label += "  (cable)"
+        config = self.engine.config
+        lst = self.channel_list
+        lst.blockSignals(True)
+        lst.clear()
+        channels, groups = desk_order(config)
+        for channel in channels + groups:
+            label = f"{channel.name}  -  {kind_label(config, channel)}"
             if not channel.enabled:
                 label += "  (off)"
             elif channel.slug not in running:
                 label += "  (not running)"
-            item = QListWidgetItem(label, self.input_list if channel.is_input else self.output_list)
+            item = QListWidgetItem(label, lst)
             item.setData(Qt.ItemDataRole.UserRole, channel.slug)
-        for lst in (self.output_list, self.input_list):
-            lst.blockSignals(False)
-        slugs = self.engine.config.channel_slugs
-        if self._selected_slug not in slugs:
-            # The first output, else the first input, else nothing.
-            first = [c.slug for c in self.engine.config.channels if not c.is_input and not c.companion_of]
-            first += [c.slug for c in self.engine.config.channels if c.is_input]
-            self._selected_slug = first[0] if first else None
+        lst.blockSignals(False)
+        shown = [c.slug for c in channels + groups]
+        if self._selected_slug not in shown:
+            self._selected_slug = shown[0] if shown else None
         self.select_channel(self._selected_slug)
 
     def _refresh_rules(self) -> None:
@@ -446,6 +439,8 @@ class MainWindow(QMainWindow):
                 name = rule.channel
             QListWidgetItem(f"{rule.pattern} -> {name}", self.rules_list)
         self.forget_button.setEnabled(bool(self.engine.config.rules.rules))
+        # The channel panel lists the same rules for the channel it shows.
+        self._show_sources(self.selected_channel, getattr(self, "_status", {}))
 
     def _show_echo_cancel(self, broken: bool) -> None:
         self.ec_banner.setHidden(not broken)
@@ -531,14 +526,57 @@ class MainWindow(QMainWindow):
             channel, devices, present=entry["device_present"] if entry else True
         )
         self.channel_panel.show_status(entry)
+        self._show_sources(channel, status)
         self.effects_panel.set_channel(channel)
         try:
             graph = self.engine.graph()
         except PwError:
             graph = None
         self.meters.follow(channel, graph)
-        self.remove_output_button.setEnabled(channel is not None and not channel.is_input)
-        self.remove_input_button.setEnabled(channel is not None and channel.is_input)
+        self.remove_button.setEnabled(channel is not None)
+
+    def _feed_slug(self, channel) -> str:
+        """Where apps sent to this channel actually play: a mic channel's mix."""
+        companion = self.engine.config.companion(channel)
+        return companion.slug if companion is not None else channel.slug
+
+    def _show_sources(self, channel, status: dict) -> None:
+        """The channel panel's IN: apps playing in, channels in, remembered apps."""
+        if channel is None:
+            self.channel_panel.show_sources([], [], [], [])
+            return
+        config = self.engine.config
+        feed = self._feed_slug(channel)
+        target = config.channel(feed)
+        streams = status.get("streams", [])
+        playing = sorted({s["app"] or "?" for s in streams if s.get("channel") == feed})
+        members = [m.name for m in config.members_of(target)]
+        rules = [(i, r.pattern) for i, r in enumerate(config.rules.rules) if r.channel == feed]
+        here = {pattern.casefold() for _i, pattern in rules}
+        offered = [s["app"] for s in streams if s.get("app")]
+        offered += [r.pattern for r in config.rules.rules if r.field == "app"]
+        candidates = sorted({a for a in offered if a.casefold() not in here}, key=str.casefold)
+        self.channel_panel.set_kind_label(kind_label(config, channel))
+        self.channel_panel.show_sources(playing, members, rules, candidates)
+
+    def _remember_on_selected(self, app: str) -> None:
+        channel = self.selected_channel
+        if channel is None:
+            return
+        try:
+            self.engine.remember_app(app, self._feed_slug(channel))
+        except USER_ERRORS as exc:
+            self._error("Could not remember that app", str(exc))
+            return
+        self._refresh_rules()
+
+    def _forget_rule_at(self, index: int) -> None:
+        try:
+            self.engine.remove_rule(index)
+        except USER_ERRORS as exc:
+            self._error("Could not forget that app", str(exc))
+            return
+        self._refresh_rules()
 
     # -- actions -----------------------------------------------------------
 

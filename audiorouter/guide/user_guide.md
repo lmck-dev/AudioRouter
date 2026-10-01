@@ -107,7 +107,7 @@ Automatic placing only happens while **Send new apps to their usual channel** is
 
 A mic channel takes a real microphone, runs it through its effects, and offers the result to other apps as a new microphone with the channel's name. In Teams, Discord or OBS, choose that name as the microphone.
 
-- **Records from:** the real microphone, or **Default input** to follow the desktop's choice. A chosen mic that is unplugged is never swapped for another one.
+- **Source:** the real microphone, or **Default input** to follow the desktop's choice. A chosen mic that is unplugged is never swapped for another one.
 - **Echo cancellation:** removes whatever your speakers are playing from the microphone, so a call hears you and not your music or game. Not needed with headphones. Set it in the Channels tab.
 - **LISTEN:** plays the processed microphone through an output channel so you can hear yourself. Choose **Don't listen** to stop. Listening on speakers can cause feedback.
 - **Mixing apps in:** send an app to "Name (into the mic)" in Playing now, or set another channel's OUT to **Into Name (mic)**. Whatever you send there is heard by everyone using that microphone, on top of your voice.
@@ -153,18 +153,23 @@ An effect whose plugin is no longer installed is marked unavailable; it can stil
 
 ## The Channels view
 
-The Channels tab shows every setting for one channel. Pick a channel on the left: **Outputs** (channels apps play into) are listed above **Inputs** (mic channels). **New output**, **New input** and **Delete** sit under each list. A channel marked "(off)" is switched off; "(not running)" means it should be on but is not.
+The Channels tab shows every setting for one channel. The list on the left holds every channel in the same order as the mixer, left to right, each with its mixer label: **From a mic**, **From apps**, **Cable** or **Group**. **New channel** offers a channel for a microphone or for apps; **Delete** removes the selected one. A channel marked "(off)" is switched off; "(not running)" means it should be on but is not.
 
-| Setting | What it does |
-| --- | --- |
-| Name | The channel's name, also what other apps see. |
-| Volume and Mute | The same as TRIM and M on the mixer strip. |
-| Fader | The same as the mixer's fader; the two stay in step. |
-| Plays through / Records from | Where an output channel plays, or which microphone a mic channel records. |
-| Apps can record this channel (virtual cable) | Offers the channel's processed sound as a microphone in other apps, so OBS or a recorder can capture it. |
-| Listen through | On a mic channel: hear it through an output channel. |
-| Echo cancellation | On a mic channel: keep the speakers out of the mic. |
-| Switched on | Untick to stop the channel without deleting it. |
+Every channel's settings read the same way as its strip, top to bottom in the order the sound travels: **IN**, **LEVEL**, **OUT**.
+
+| Section | Setting | What it does |
+| --- | --- | --- |
+| | Name | The channel's name, also what other apps see. Its mixer label is shown beside it. |
+| IN | Source | On a mic channel, the microphone it records (**Default input** follows the desktop's choice). On any other channel, the apps and channels you send to it. |
+| IN | Echo cancellation | On a mic channel: keep the speakers out of the mic. |
+| IN | Channels in | The channels playing into this one, which makes it a group (or, on a mic channel, mixes them into the mic). |
+| IN | Playing in | The apps playing into the channel right now. On a mic channel, the apps mixed into the mic. |
+| IN | Remembered | The apps that always start on this channel. **Add app** picks one that is playing now or remembered on another channel, or **Another app...** to type a name. **Forget** stops sending one here. The same list as Remembered apps under Playing now. |
+| LEVEL | Trim and Mute | The same as TRIM and M on the mixer strip: the volume before the effects. |
+| LEVEL | Fader | The same as the mixer's fader; the two stay in step. |
+| OUT | Plays through | Where the channel's sound goes: a device, **Into** another channel, or **Nowhere**. On a mic channel this is where you hear yourself (the strip's LISTEN); **Nowhere** means only recording apps get it. |
+| OUT | Recording apps see it as | Offers the channel's processed sound as a microphone in other apps, so OBS, Teams or a recorder can use it. Always on for a mic channel, since that is what it is for. |
+| | Switched on | Untick to stop the channel without deleting it. |
 
 Below the settings, **Levels** shows what goes into and comes out of the channel. With **Show the highlighted effect** ticked, it shows what the effect selected in the Effects list receives and puts out instead. Under that, the **Effects** list and the selected effect's settings.
 

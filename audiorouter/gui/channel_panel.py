@@ -1,9 +1,12 @@
-"""The settings for one channel: what it is called and where its sound goes.
+"""The settings for one channel, in the order its sound travels.
 
-An output channel plays through a device (or nowhere) and may also be offered
-to recording apps as a virtual cable. An input channel records from a
-microphone or line-in, always appears in apps' input lists, and may be heard
-through one of the output channels.
+Every channel reads the same way, as a mixer strip does (owner, 2 Oct 2026):
+IN - where the sound comes from (a microphone, or the apps and channels sent
+here); LEVEL - trim before the effects, fader after; OUT - where it plays
+through, and whether recording apps see it as a microphone. Only the IN
+source differs: a mic channel picks a microphone, an apps channel lists apps.
+On a mic channel, "plays through" is its listen-through, and recording apps
+always see it, since that is what it is for.
 """
 
 from __future__ import annotations
@@ -13,6 +16,9 @@ import time
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QInputDialog,
+    QMenu,
+    QToolButton,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -46,6 +52,10 @@ class ChannelPanel(QGroupBox):
     mute_changed = pyqtSignal(bool)
     #: The user moved the fader (dB after the effects, as on the mixer).
     fader_changed = pyqtSignal(float)
+    #: Always send this app (by name) to the channel shown.
+    remember_app = pyqtSignal(str)
+    #: Forget the rule at this position in the rule list.
+    forget_rule = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Channel", parent)
@@ -55,16 +65,52 @@ class ChannelPanel(QGroupBox):
 
         self.name = QLineEdit(self)
         self.name.editingFinished.connect(self._name_edited)
-        self.device = QComboBox(self)
+        self.kind = QLabel(self)
+
+        # -- IN: where the sound comes from.
+        self.source = QComboBox(self)  # a mic channel's microphone
+        self.source.activated.connect(self._source_chosen)
+        self.source_text = QLabel("Apps and channels you send here", self)  # any other channel
+        self.channels_in = QLabel(self)
+        self.channels_in.setWordWrap(True)
+        self.playing = QLabel(self)
+        self.playing.setWordWrap(True)
+        # One line of text, like Playing in: the panel never scrolls and has
+        # no height to spare, and a squeezed list drew its buttons over each other.
+        self.remembered = QLabel(self)
+        self.remembered.setWordWrap(True)
+        self.remembered.setToolTip("Apps that always start on this channel")
+        self.add_app = QToolButton(self)
+        self.add_app.setText("Add app")
+        self.add_app.setToolTip("Always send an app to this channel")
+        self.add_app.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.add_app_menu = QMenu(self.add_app)
+        self.add_app.setMenu(self.add_app_menu)
+        self.forget = QToolButton(self)
+        self.forget.setText("Forget")
+        self.forget.setToolTip("Stop sending an app here; it stays where it is for now")
+        self.forget.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.forget_menu = QMenu(self.forget)
+        self.forget.setMenu(self.forget_menu)
+        self._rules: list[tuple[int, str]] = []
+        self._candidates: list[str] = []
+        remembered_box = QWidget(self)
+        remembered_layout = QHBoxLayout(remembered_box)
+        remembered_layout.setContentsMargins(0, 0, 0, 0)
+        remembered_layout.addWidget(self.remembered, 1)
+        remembered_layout.addWidget(self.add_app, 0, Qt.AlignmentFlag.AlignTop)
+        remembered_layout.addWidget(self.forget, 0, Qt.AlignmentFlag.AlignTop)
+        self.remembered_box = remembered_box
+
+        # -- OUT: where it goes.
+        self.device = QComboBox(self)  # plays through: a device, a group, or a listen-through
         self.device.activated.connect(self._device_chosen)
-        self.recordable = QCheckBox("Apps can record this channel (virtual cable)", self)
+        self.recordable = QCheckBox(self)
         self.recordable.setToolTip(
             "Offers this channel's sound, after its effects, in every app's list of "
             "microphones - so OBS, Discord or a recorder can capture it."
         )
         self.recordable.toggled.connect(self._recordable_toggled)
-        self.listen = QComboBox(self)
-        self.listen.activated.connect(self._listen_chosen)
         self.echo_cancel = QCheckBox("Echo cancellation (keep the speakers out of this mic)", self)
         self.echo_cancel.setToolTip(
             "Subtracts whatever your speakers are playing - a video, music, a game - from "
@@ -111,43 +157,112 @@ class ChannelPanel(QGroupBox):
         # Room where the volume row has Mute, so the two sliders line up.
         fader_row.addSpacing(self.mute.sizeHint().width() + volume_row.spacing())
 
+        self.volume.setToolTip("TRIM: the channel's volume before its effects - the same "
+                               "volume the desktop's sound settings show.")
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(self.name, 1)
+        name_row.addWidget(self.kind)
         self.form = QFormLayout(self)
-        self.form.addRow("Name", self.name)
-        self.form.addRow("Volume", volume_row)
+        self.form.addRow("Name", name_row)
+        self.form.addRow(self._section("IN"))
+        self.form.addRow("Source", self.source)
+        self.form.addRow("Source ", self.source_text)
+        self.form.addRow("", self.echo_cancel)
+        self.form.addRow("Channels in", self.channels_in)
+        self.form.addRow("Playing in", self.playing)
+        self.form.addRow("Remembered", self.remembered_box)
+        self.form.addRow(self._section("LEVEL"))
+        self.form.addRow("Trim", volume_row)
         self.form.addRow("Fader", fader_row)
+        self.form.addRow(self._section("OUT"))
         self.form.addRow("Plays through", self.device)
         self.form.addRow("", self.recordable)
-        self.form.addRow("Listen through", self.listen)
-        self.form.addRow("", self.echo_cancel)
         self.form.addRow("", self.hint)
         self.form.addRow("", self.enabled)
         self.form.addRow("", self.status)
         self._show_kind(None)
 
+    def _section(self, title: str) -> QLabel:
+        """A section title, in the mixer's small dim capitals."""
+        label = QLabel(title, self)
+        theme = Theme(self)
+        label.setStyleSheet(f"{theme.css(theme.dim)} font-weight: bold; padding-top: 6px;")
+        return label
+
     # -- population --------------------------------------------------------
 
     def _show_kind(self, channel: Channel | None) -> None:
         is_input = channel is not None and channel.is_input
-        label = self.form.labelForField(self.device)
-        if label is not None:
-            label.setText("Records from" if is_input else "Plays through")
-        self.form.setRowVisible(self.recordable, channel is not None and not is_input)
-        self.form.setRowVisible(self.listen, is_input)
+        self.form.setRowVisible(self.source, is_input)
+        self.form.setRowVisible(self.source_text, not is_input)
         self.form.setRowVisible(self.echo_cancel, is_input)
 
+    def set_kind_label(self, text: str) -> None:
+        """The mixer's caption for this channel: From a mic, From apps, Cable, Group."""
+        theme = Theme(self)
+        self.kind.setText(text)
+        self.kind.setStyleSheet(theme.css(theme.dim))
+
     def set_outputs(self, outputs: list[tuple[str, str]]) -> None:
-        """The output channels an input can be listened through: (slug, name)."""
+        """The output channels a mic channel can play through: (slug, name)."""
         self._outputs = outputs
-        self.listen.blockSignals(True)
-        self.listen.clear()
-        self.listen.addItem("Don't listen", NOT_LISTENING)
-        for slug, name in outputs:
-            self.listen.addItem(name, slug)
+        if self.channel is not None and self.channel.is_input:
+            self._fill_listen()
+
+    def _fill_listen(self) -> None:
+        """A mic channel's OUT: nowhere (apps only record it) or an output channel."""
+        self.device.blockSignals(True)
+        self.device.clear()
+        self.device.addItem("Nowhere (only apps record it)", NOT_LISTENING)
+        for slug, name in self._outputs:
+            self.device.addItem(name, slug)
         target = self.channel.listen if self.channel is not None else NOT_LISTENING
-        if target and self.listen.findData(target) < 0:
-            self.listen.addItem(f"{target} (missing)", target)
-        self.listen.setCurrentIndex(max(0, self.listen.findData(target)))
-        self.listen.blockSignals(False)
+        if target and self.device.findData(target) < 0:
+            self.device.addItem(f"{target} (missing)", target)
+        self.device.setCurrentIndex(max(0, self.device.findData(target)))
+        self.device.blockSignals(False)
+
+    def show_sources(self, playing: list[str], members: list[str], rules: list[tuple[int, str]],
+                     candidates: list[str]) -> None:
+        """What feeds the channel: apps playing in now, channels playing in,
+        and the remembered apps as (rule position, app name).
+
+        `candidates` are the apps the Add menu offers: playing now, or
+        remembered on another channel.
+        """
+        theme = Theme(self)
+        self.channels_in.setText(", ".join(members))
+        self.form.setRowVisible(self.channels_in, bool(members))
+        self.playing.setText(", ".join(playing) if playing else "nothing playing")
+        self.playing.setStyleSheet("" if playing else theme.css(theme.dim))
+        self._rules = list(rules)
+        self.remembered.setText(", ".join(app for _i, app in rules) if rules else "none")
+        self.remembered.setStyleSheet("" if rules else theme.css(theme.dim))
+        self.forget_menu.clear()
+        for index, app in rules:
+            self.forget_menu.addAction(app, lambda i=index: self.forget_rule.emit(i))
+        self.forget.setEnabled(bool(rules))
+        self._candidates = list(candidates)
+        self.add_app_menu.clear()
+        for app in candidates:
+            self.add_app_menu.addAction(app, lambda a=app: self._remember(a))
+        if candidates:
+            self.add_app_menu.addSeparator()
+        self.add_app_menu.addAction("Another app...", self._remember_other)
+
+    def _remember(self, app: str) -> None:
+        if self.channel is not None and app.strip():
+            self.remember_app.emit(app.strip())
+
+    def _remember_other(self) -> None:
+        if self.channel is None:
+            return
+        app, ok = QInputDialog.getText(
+            self, "Always send an app here",
+            f"The app's name, as Playing now shows it. It will start on {self.channel.name}.")
+        if ok:
+            self._remember(app)
 
     def set_devices(self, devices: list[tuple[str, str]], present: bool = True) -> None:
         """Rebuild the device list, keeping whatever the channel points at.
@@ -160,22 +275,26 @@ class ChannelPanel(QGroupBox):
         is perfectly connected.
         """
         is_input = self.channel is not None and self.channel.is_input
-        chosen = self.device.currentData()
-        self.device.blockSignals(True)
-        self.device.clear()
-        self.device.addItem("Default input" if is_input else "Default output", FOLLOW_DEFAULT)
+        # A mic channel's device is its microphone (IN); any other's is where it plays (OUT).
+        combo = self.source if is_input else self.device
+        chosen = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Default input" if is_input else "Default output", FOLLOW_DEFAULT)
         for name, label in devices:
-            self.device.addItem(label, name)
+            combo.addItem(label, name)
         if not is_input:
-            self.device.addItem("Nowhere (recording only)", NOWHERE)
+            combo.addItem("Nowhere (recording only)", NOWHERE)
         if self.channel is not None and self.channel.device:
-            if self.device.findData(self.channel.device) < 0:
+            if combo.findData(self.channel.device) < 0:
                 suffix = "" if present else " (not connected)"
-                self.device.addItem(f"{self.channel.device}{suffix}", self.channel.device)
+                combo.addItem(f"{self.channel.device}{suffix}", self.channel.device)
         target = self.channel.device if self.channel is not None else chosen
-        index = self.device.findData(target)
-        self.device.setCurrentIndex(max(0, index))
-        self.device.blockSignals(False)
+        index = combo.findData(target)
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(False)
+        if is_input:
+            self._fill_listen()
 
     def set_channel(
         self,
@@ -195,7 +314,6 @@ class ChannelPanel(QGroupBox):
         self._show_kind(channel)
         self.show_fader()
         self.set_devices(devices, present)
-        self.set_outputs(self._outputs)
         self._sync_options()
         self._loading = False
 
@@ -204,9 +322,16 @@ class ChannelPanel(QGroupBox):
         channel = self.channel
         theme = Theme(self)
         self.recordable.blockSignals(True)
-        if channel is None or channel.is_input:
+        if channel is None:
             self.recordable.setChecked(False)
+            self.recordable.setText("Recording apps see it as a microphone")
+        elif channel.is_input:
+            # What a mic channel is for: always offered, so never unticked.
+            self.recordable.setChecked(True)
+            self.recordable.setEnabled(False)
+            self.recordable.setText(f'Recording apps see it as "{channel.name}"')
         else:
+            self.recordable.setText(f'Recording apps see it as "{channel.name} (recording)"')
             self.recordable.setChecked(channel.recordable)
             # Playing nowhere is only useful as a cable, so it cannot be unticked.
             self.recordable.setEnabled(channel.device != NOWHERE)
@@ -217,13 +342,9 @@ class ChannelPanel(QGroupBox):
         self.echo_cancel.blockSignals(False)
 
         text, colour = "", theme.dim
-        if channel is not None and channel.is_input:
-            text = f'Apps list it as a microphone called "{channel.name}".'
-            if channel.listen:
-                text += " Listening: use headphones - through speakers a mic can feed back into itself."
-                colour = theme.warn
-        elif channel is not None and channel.recordable:
-            text = f'Apps list it as a microphone called "{channel.name} (recording)".'
+        if channel is not None and channel.is_input and channel.listen:
+            text = "You hear this mic: use headphones - through speakers a mic can feed back into itself."
+            colour = theme.warn
         self.hint.setText(text)
         self.hint.setStyleSheet(f"color: {colour.name()};")
         self.form.setRowVisible(self.hint, bool(text))
@@ -288,8 +409,20 @@ class ChannelPanel(QGroupBox):
             self.renamed.emit()
             self.changed.emit()
 
+    def _source_chosen(self, index: int) -> None:
+        if self._loading or self.channel is None or not self.channel.is_input:
+            return
+        device = self.source.itemData(index) or FOLLOW_DEFAULT
+        if device != self.channel.device:
+            self.channel.device = device
+            self._sync_options()
+            self.changed.emit()
+
     def _device_chosen(self, index: int) -> None:
         if self._loading or self.channel is None:
+            return
+        if self.channel.is_input:
+            self._listen_chosen(index)
             return
         device = self.device.itemData(index) or FOLLOW_DEFAULT
         if device != self.channel.device:
@@ -318,7 +451,7 @@ class ChannelPanel(QGroupBox):
     def _listen_chosen(self, index: int) -> None:
         if self._loading or self.channel is None or not self.channel.is_input:
             return
-        through = self.listen.itemData(index) or NOT_LISTENING
+        through = self.device.itemData(index) or NOT_LISTENING
         if through != self.channel.listen:
             self.channel.listen = through
             self._sync_options()

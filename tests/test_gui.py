@@ -132,10 +132,10 @@ class GuiTestCase(unittest.TestCase):
 
 class WindowTest(GuiTestCase):
     def test_channels_are_listed_with_their_state(self):
-        outputs = self.window.output_list
-        labels = [outputs.item(i).text() for i in range(outputs.count())]
-        self.assertEqual(labels, ["Speakers  (not running)", "Headphones  (not running)"])
-        self.assertEqual(self.window.input_list.count(), 0)
+        channels = self.window.channel_list
+        labels = [channels.item(i).text() for i in range(channels.count())]
+        self.assertEqual(labels, ["Speakers  -  From apps  (not running)",
+                                  "Headphones  -  From apps  (not running)"])
 
     def test_selecting_a_channel_loads_its_settings_and_effects(self):
         self.window.select_channel(self.engine.config.channels[0].slug)
@@ -237,7 +237,7 @@ class WindowTest(GuiTestCase):
         self.window.channel_panel.name.setText("Desk")
         self.window.channel_panel.name.editingFinished.emit()
         self.assertEqual(Config.load(self.engine.path).channel("speakers").name, "Desk")
-        self.assertIn("Desk", self.window.output_list.item(0).text())
+        self.assertIn("Desk", self.window.channel_list.item(0).text())
 
     def test_an_edit_schedules_one_apply_instead_of_restarting_at_once(self):
         # Every keystroke restarting the audio would be unusable.
@@ -991,15 +991,37 @@ class InputAndCableGuiTest(GuiTestCase):
     def select(self, slug):
         self.window.select_channel(slug)
 
-    def test_an_input_shows_records_from_and_listen_instead_of_the_cable_box(self):
+    def test_a_mic_channel_reads_in_level_out_like_any_other(self):
         self.select("mic")
-        self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Records from")
-        self.assertEqual(self.panel.device.itemText(0), "Default input")
-        self.assertTrue(self.panel.form.isRowVisible(self.panel.listen))
-        self.assertFalse(self.panel.form.isRowVisible(self.panel.recordable))
-        self.assertIn('microphone called "Desk mic"', self.panel.hint.text())
-        self.assertEqual(self.window.input_list.item(0).text(), "Desk mic  (not running)")
-        self.assertEqual(self.window.output_list.count(), 2)
+        # IN: a microphone instead of apps.
+        self.assertTrue(self.panel.form.isRowVisible(self.panel.source))
+        self.assertFalse(self.panel.form.isRowVisible(self.panel.source_text))
+        self.assertEqual(self.panel.source.itemText(0), "Default input")
+        # OUT: plays through (its listen-through), and recording apps always see it.
+        self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Plays through")
+        self.assertEqual(self.panel.device.itemText(0), "Nowhere (only apps record it)")
+        self.assertTrue(self.panel.form.isRowVisible(self.panel.recordable))
+        self.assertTrue(self.panel.recordable.isChecked())
+        self.assertFalse(self.panel.recordable.isEnabled())
+        self.assertIn('"Desk mic"', self.panel.recordable.text())
+        self.assertEqual(self.panel.kind.text(), "From a mic")
+
+    def test_one_list_in_the_mixers_order(self):
+        channels = self.window.channel_list
+        labels = [channels.item(i).text() for i in range(channels.count())]
+        # Mic channels first, as on the desk; the companion never appears.
+        self.assertEqual(labels, ["Desk mic  -  From a mic  (not running)",
+                                  "Speakers  -  From apps  (not running)",
+                                  "Headphones  -  From apps  (not running)"])
+
+    def test_choosing_a_mic_changes_the_source_not_the_listen_through(self):
+        self.select("mic")
+        self.panel.source.addItem("USB mic", "alsa_input.usb")
+        index = self.panel.source.findData("alsa_input.usb")
+        self.panel.source.setCurrentIndex(index)
+        self.panel.source.activated.emit(index)
+        saved = Config.load(self.engine.path).channel("mic")
+        self.assertEqual((saved.device, saved.listen), ("alsa_input.usb", ""))
 
     def test_echo_cancellation_is_offered_for_inputs_only_and_saved(self):
         self.select("phones")
@@ -1015,10 +1037,10 @@ class InputAndCableGuiTest(GuiTestCase):
 
     def test_listen_offers_output_channels_only_and_warns_about_feedback(self):
         self.select("mic")
-        names = [self.panel.listen.itemText(i) for i in range(self.panel.listen.count())]
-        self.assertEqual(names, ["Don't listen", "Speakers", "Headphones"])
-        self.panel.listen.setCurrentIndex(1)
-        self.panel.listen.activated.emit(1)
+        names = [self.panel.device.itemText(i) for i in range(self.panel.device.count())]
+        self.assertEqual(names, ["Nowhere (only apps record it)", "Speakers", "Headphones"])
+        self.panel.device.setCurrentIndex(1)
+        self.panel.device.activated.emit(1)
         self.assertEqual(Config.load(self.engine.path).channel("mic").listen, "speakers")
         self.assertIn("headphones", self.panel.hint.text())
 
@@ -1027,14 +1049,14 @@ class InputAndCableGuiTest(GuiTestCase):
 
         self.select("phones")
         self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Plays through")
-        self.assertFalse(self.panel.form.isRowVisible(self.panel.listen))
+        self.assertFalse(self.panel.form.isRowVisible(self.panel.source))
         self.panel.recordable.setChecked(True)
         self.assertTrue(Config.load(self.engine.path).channel("phones").recordable)
         index = self.panel.device.findData(NOWHERE)
         self.panel.device.setCurrentIndex(index)
         self.panel.device.activated.emit(index)
         self.assertFalse(self.panel.recordable.isEnabled())
-        self.assertIn("(recording)", self.panel.hint.text())
+        self.assertIn('"Headphones (recording)"', self.panel.recordable.text())
 
     def test_apps_cannot_be_sent_into_an_input(self):
         streams = self.window.streams_panel
@@ -1043,15 +1065,12 @@ class InputAndCableGuiTest(GuiTestCase):
         self.assertNotIn("mic", options)
         self.assertIn("speakers", options)
 
-    def test_inputs_and_outputs_select_across_the_two_lists(self):
+    def test_clicking_in_the_list_selects_any_kind_of_channel(self):
         self.select("mic")
-        self.assertIs(self.window.input_list.currentItem(), self.window.input_list.item(0))
-        self.assertIsNone(self.window.output_list.currentItem())
-        self.assertTrue(self.window.remove_input_button.isEnabled())
-        self.assertFalse(self.window.remove_output_button.isEnabled())
-        self.window.output_list.setCurrentRow(1)  # a click in the other list
+        self.assertIs(self.window.channel_list.currentItem(), self.window.channel_list.item(0))
+        self.assertTrue(self.window.remove_button.isEnabled())
+        self.window.channel_list.setCurrentRow(2)
         self.assertEqual(self.window.selected_channel.slug, "phones")
-        self.assertIsNone(self.window.input_list.currentItem())
         self.assertEqual(self.panel.name.text(), "Headphones")
 
     def test_the_selection_survives_a_refresh(self):
@@ -1062,7 +1081,7 @@ class InputAndCableGuiTest(GuiTestCase):
     def test_new_input_creates_an_input_on_the_default_mic_and_selects_it(self):
         with mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Streaming mic", True)), \
              mock.patch.object(Engine, "apply"):
-            self.window.add_input_button.click()
+            self.window.add_button.menu().actions()[0].trigger()
         created = self.engine.config.channels[-2]  # its hidden companion follows it
         self.assertEqual((created.name, created.kind, created.device), ("Streaming mic", "input", ""))
         self.assertEqual(self.window.selected_channel.slug, created.slug)
@@ -1071,9 +1090,63 @@ class InputAndCableGuiTest(GuiTestCase):
         with mock.patch("audiorouter.gui.main.QInputDialog.getItem") as ask_kind, \
              mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Game", True)), \
              mock.patch.object(Engine, "apply"):
-            self.window.add_output_button.click()
+            self.window.add_button.menu().actions()[1].trigger()
         ask_kind.assert_not_called()
         self.assertEqual(self.engine.config.channels[-1].kind, "output")
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class ChannelSourcesTest(GuiTestCase):
+    """The panel's IN section: what feeds the channel, and remembering apps."""
+
+    def setUp(self):
+        super().setUp()
+        from audiorouter.channels import INPUT
+
+        self.engine.config.add_channel(Channel("mic", "Desk mic", "", kind=INPUT))
+        self.engine.add_rule("app", "spotify", "speakers")
+        self.window.refresh()
+        self.panel = self.window.channel_panel
+
+    def rows(self):
+        return [a.text() for a in self.panel.forget_menu.actions()]
+
+    def test_remembered_apps_are_listed_on_their_channel(self):
+        self.window.select_channel("speakers")
+        self.assertEqual(self.rows(), ["spotify"])
+        self.assertEqual(self.panel.remembered.text(), "spotify")
+        self.window.select_channel("phones")
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(self.panel.forget.isEnabled())
+
+    def test_playing_apps_are_shown_on_the_channel_they_play_through(self):
+        status = dict(self.window._status)
+        status["streams"] = [{"id": 1, "app": "Zen", "channel": "speakers"}]
+        self.window._show_sources(self.engine.channel("speakers"), status)
+        self.assertEqual(self.panel.playing.text(), "Zen")
+        self.window._show_sources(self.engine.channel("phones"), status)
+        self.assertEqual(self.panel.playing.text(), "nothing playing")
+
+    def test_add_app_moves_an_apps_rule_here_and_forget_removes_it(self):
+        self.window.select_channel("phones")
+        offered = [a.text() for a in self.panel.add_app_menu.actions() if a.text()]
+        self.assertIn("spotify", offered)  # remembered elsewhere: can be moved here
+        next(a for a in self.panel.add_app_menu.actions() if a.text() == "spotify").trigger()
+        self.assertEqual(self.rows(), ["spotify"])
+        rules = Config.load(self.engine.path).rules.rules
+        self.assertEqual([(r.pattern, r.channel) for r in rules], [("spotify", "phones")])
+        self.panel.forget_menu.actions()[0].trigger()
+        self.assertEqual(Config.load(self.engine.path).rules.rules, [])
+        self.assertEqual(self.rows(), [])
+
+    def test_an_app_remembered_on_a_mic_channel_goes_into_its_mix(self):
+        self.window.select_channel("mic")
+        with mock.patch("audiorouter.gui.channel_panel.QInputDialog.getText", return_value=("obs", True)):
+            self.panel.add_app_menu.actions()[-1].trigger()  # Another app...
+        companion = self.engine.config.companion(self.engine.channel("mic"))
+        rule = Config.load(self.engine.path).rules.rules[-1]
+        self.assertEqual((rule.pattern, rule.channel), ("obs", companion.slug))
+        self.assertEqual(self.rows(), ["obs"])
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")

@@ -128,6 +128,29 @@ def group_label(name: str, mic: bool = False) -> str:
     return f"Into {name} (mic)" if mic else f"Into {name}"
 
 
+def desk_order(config: Config) -> tuple[list[Channel], list[Channel]]:
+    """The channels as the desk shows them: (channels, groups), left to right.
+
+    Mic channels first, then app channels, then groups (right of the channels
+    feeding them, as on a console). Companions are plumbing and never shown.
+    The Channels tab lists them in this same order.
+    """
+    shown = [c for c in config.channels if not c.companion_of]
+    groups = [c for c in shown if not c.is_input and config.is_group(c)]
+    channels = ([c for c in shown if c.is_input]
+                + [c for c in shown if not c.is_input and c not in groups])
+    return channels, groups
+
+
+def kind_label(config: Config, channel: Channel) -> str:
+    """Where a channel's sound comes from, as its strip's caption says it."""
+    if channel.is_input:
+        return "From a mic"
+    if config.is_group(channel):
+        return "Group"
+    return "Cable" if channel.recordable else "From apps"
+
+
 #: The pan slider's travel each side of centre.
 PAN_TRAVEL = 100
 
@@ -924,11 +947,7 @@ class MixerView(QWidget):
                 widget.deleteLater()
         self.strips.clear()
         self.device_strips.clear()
-        config = self._config
-        # Groups sit right of the channels feeding them, as on a console.
-        groups = [c for c in self._channels if not c.is_input and config.is_group(c)]
-        channels = ([c for c in self._channels if c.is_input]
-                    + [c for c in self._channels if not c.is_input and c not in groups])
+        channels, groups = desk_order(self._config)
 
         self._add_devices("Mics", self._mics, is_mic=True)
         self.row.addWidget(self._group_header("Channels", "new"))
@@ -943,12 +962,7 @@ class MixerView(QWidget):
 
     def _add_strip(self, channel: Channel, group: bool) -> None:
         strip = ChannelStrip(channel, self.desk)
-        if group:
-            strip.kind.setText("GROUP")
-        elif channel.is_input:
-            strip.kind.setText("FROM A MIC")
-        else:
-            strip.kind.setText("CABLE" if channel.recordable else "FROM APPS")
+        strip.kind.setText(kind_label(self._config, channel).upper())
         for name in ("volume_changed", "fader_changed", "mute_toggled", "pan_changed", "solo_toggled",
                      "effect_toggled", "effect_opened", "add_effect", "device_chosen",
                      "listen_chosen", "open_settings"):

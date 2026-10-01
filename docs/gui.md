@@ -103,14 +103,24 @@ kinds, through the real window. Two taps cost ~1.5% of one core.
 - The two `ResourceWarning: subprocess ... still running` lines in a full run
   come from `tests/test_channels.py` and predate the meters.
 
-## Two channel lists and a foldable Playing now (30 Sep 2026)
+## One channel list, IN / LEVEL / OUT, and a foldable Playing now
 
-- **Outputs and inputs are separate lists** (`output_list`, `input_list`),
-  each item carrying its slug in `UserRole`. The selection is a slug
-  (`MainWindow._selected_slug`), not a row: select with
-  `MainWindow.select_channel(slug)`, which also clears the other list. Tests
-  select by slug for the same reason.
-- "New output" / "New input" replace the old "what kind?" question.
+- **One list since 2 Oct 2026** (`channel_list`), in the mixer's order and
+  with its captions: `mixer.desk_order()` and `mixer.kind_label()` are shared,
+  so the two views cannot drift. Each item carries its slug in `UserRole`; the
+  selection is a slug (`MainWindow._selected_slug`), so select with
+  `MainWindow.select_channel(slug)`. **New channel** is a menu (mic / apps),
+  as the mixer's +. (30 Sep - 2 Oct there were two lists, outputs and inputs.)
+- **`ChannelPanel` reads IN / LEVEL / OUT for every channel.** A mic channel's
+  `device` is its microphone, shown in `source` (IN); every other channel's is
+  where it plays, in `device` (OUT). On a mic channel `device` (OUT, "Plays
+  through") holds the listen-through instead. Remembered apps for a mic channel
+  are rules on its COMPANION (`MainWindow._feed_slug`), since apps sent into a
+  mic play into the companion.
+- **The panel has no spare height** (Fixed in the window, never scrolls): a
+  QListWidget for remembered apps was squeezed until its buttons overlapped,
+  whatever height it asked for. Remembered apps are a text line with Add/Forget
+  menus for that reason.
 - **Playing now folds** behind its heading, which counts the streams, and
   Remembered apps (`MainWindow.rules`, placed with `StreamsPanel.add_beside`)
   folds with it. The state
