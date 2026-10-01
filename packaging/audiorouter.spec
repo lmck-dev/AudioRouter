@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        0.7.2
+Version:        0.8.0
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        Apache-2.0
@@ -35,6 +35,8 @@ Requires:       pipewire-module-filter-chain-lv2
 Requires:       lsp-plugins-lv2
 
 # The effects toolbox. Installed by default, removable without breaking the app.
+# The echo-cancel notice's Fix button (session.py); the window has its own.
+Recommends:     libnotify
 Recommends:     lv2-calf-plugins
 Recommends:     lv2-zam-plugins
 Recommends:     lv2-mdala-plugins
@@ -96,6 +98,9 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/applications/audiorouter.desktop
 
 %changelog
+* Thu Oct 01 2026 lmck-dev <lmck.dev@gmail.com> - 0.8.0-1
+- Notice when a lone WirePlumber restart breaks echo cancellation, with a Fix button
+
 * Thu Oct 01 2026 lmck-dev <lmck.dev@gmail.com> - 0.7.2-1
 - Input strips on the mixer meter the mic without anything recording it
 

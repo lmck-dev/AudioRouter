@@ -21,6 +21,7 @@ from PyQt6.QtGui import QAction, QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -36,7 +37,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .. import install, native
+from .. import install, native, session
 from ..channels import INPUT, NOWHERE, ChannelError, validate_slug
 from ..config import ConfigError
 from ..effects import EffectError
@@ -58,6 +59,8 @@ APPLY_DELAY_MS = 700
 #: at once; this only batches the flood of values a slider drag produces.
 TUNE_DELAY_MS = 60
 
+#: After "Restart the sound system", the button stays disabled this long.
+EC_FIX_SETTLE_S = 20.0
 USER_ERRORS = (EngineError, ChannelError, ConfigError, EffectError, RoutingError, PwError)
 
 
@@ -137,6 +140,21 @@ class MainWindow(QMainWindow):
         self.conflict_banner = QLabel(self)
         self.conflict_banner.setWordWrap(True)
         self.conflict_banner.setHidden(True)
+        # WirePlumber restarted on its own breaks echo cancellation until the
+        # whole sound system restarts; the user chooses when (see session.py).
+        self.ec_banner = QFrame(self)
+        self.ec_label = QLabel(session.MESSAGE, self.ec_banner)
+        self.ec_label.setWordWrap(True)
+        self.ec_fix = QPushButton("Restart the sound system", self.ec_banner)
+        self.ec_fix.setToolTip("Restarts PipeWire, its Pulse server and WirePlumber, then brings "
+                               "your channels back. Every sound stops for a few seconds.")
+        self.ec_fix.clicked.connect(self._restart_sound_system)
+        ec_row = QHBoxLayout(self.ec_banner)
+        ec_row.setContentsMargins(6, 6, 6, 6)
+        ec_row.addWidget(self.ec_label, 1)
+        ec_row.addWidget(self.ec_fix)
+        self.ec_banner.setHidden(True)
+        self._ec_fix_started = 0.0
 
         top = QHBoxLayout()
         top.addWidget(self.auto_route)
@@ -214,6 +232,7 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         self._layout = layout = QVBoxLayout(central)
         layout.addWidget(self.conflict_banner)
+        layout.addWidget(self.ec_banner)
         layout.addLayout(top)
         layout.addWidget(self.views, 2)
         layout.addWidget(self.streams_panel, 1)
@@ -317,6 +336,7 @@ class MainWindow(QMainWindow):
             return
         self._status = status
         self._show_conflicts(status.get("conflicts", []))
+        self._show_echo_cancel(bool(status.get("echo_cancel_broken")))
         self._refresh_channel_list(status)
         self._refresh_rules()
         self.streams_panel.refresh(status)
@@ -383,6 +403,29 @@ class MainWindow(QMainWindow):
                 name = rule.channel
             QListWidgetItem(f"{rule.pattern} -> {name}", self.rules_list)
         self.forget_button.setEnabled(bool(self.engine.config.rules.rules))
+
+    def _show_echo_cancel(self, broken: bool) -> None:
+        self.ec_banner.setHidden(not broken)
+        if not broken:
+            return
+        theme = Theme(self)
+        self.ec_banner.setStyleSheet(
+            f"QFrame {{ border: 1px solid {theme.warn.name()}; border-radius: 4px; }}"
+            f"QLabel {{ border: none; color: {theme.warn.name()}; font-weight: bold; }}")
+        # A restart takes several seconds; one click is enough.
+        restarting = time.monotonic() - self._ec_fix_started < EC_FIX_SETTLE_S
+        self.ec_fix.setEnabled(not restarting)
+        self.ec_fix.setText("Restarting..." if restarting else "Restart the sound system")
+
+    def _restart_sound_system(self) -> None:
+        self._ec_fix_started = time.monotonic()
+        self.ec_fix.setEnabled(False)
+        self.ec_fix.setText("Restarting...")
+        try:
+            session.restart_sound_system()
+        except OSError as exc:
+            self._ec_fix_started = 0.0
+            self._error("Could not restart the sound system", str(exc))
 
     def _show_conflicts(self, conflicts: list[str]) -> None:
         self.conflict_banner.setHidden(not conflicts)

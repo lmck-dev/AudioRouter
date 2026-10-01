@@ -18,7 +18,7 @@ from typing import Any
 from .channels import INPUT, NOWHERE, OUTPUT, ChannelError
 from .config import ConfigError, config_path
 from .effects import EffectError, all_specs, plugin_spec, plugin_specs
-from . import install, native
+from . import install, native, session
 from .engine import AutoRouter, DaemonRecord, Engine, EngineError, MoveResult, daemon_pid
 from .pwgraph import PwError
 from .routing import MATCH_FIELDS, RoutingError
@@ -116,6 +116,10 @@ def cmd_status(engine: Engine, args: argparse.Namespace) -> int:
 
     for conflict in status.get("conflicts", ()):
         print(f"! WARNING: {conflict}")
+        print()
+    if status.get("echo_cancel_broken"):
+        print(f"! WARNING: {session.MESSAGE}")
+        print("  Fix: systemctl --user restart pipewire pipewire-pulse wireplumber")
         print()
     print(f"auto-route: {'on' if status['auto_route'] else 'off'}")
     print()
@@ -366,7 +370,9 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, _signal)
     signal.signal(signal.SIGTERM, _signal)
     code = 0
-    with DaemonRecord(), AutoRouter(engine, on_move=_report, follow_config=True) as auto:
+    notifier = session.EchoCancelNotifier()
+    with DaemonRecord(), AutoRouter(engine, on_move=_report, follow_config=True,
+                                    on_graph=lambda graph: notifier.check(engine.config.channels, graph)) as auto:
         print("watching for new streams; Ctrl-C to stop", flush=True)
         while not stop.wait(1.0):
             if auto.ended:

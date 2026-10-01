@@ -25,3 +25,25 @@ change (restart). mic -> `ar_<slug>_ec_mic` (capture) -> WebRTC AEC ->
   wake-word detector on the raw mic and 0.00 on the echo-cancelled channel;
   whisper heard "[inaudible]" raw and "[Silence]" through the channel.
 - Owner-tested on a real call with a remote listener on 20 Sep 2026: "very good".
+
+## A lone WirePlumber restart breaks it (1 Oct 2026)
+
+Measured on the owner's desk: `systemctl --user restart wireplumber` alone
+leaves every canceller counting ~190 errors/s (pw-top ERR on `ar_<slug>_ec`),
+because PipeWire then runs the mic one cycle late (pw-top WAIT 5.3 ms, healthy
+~0.4 ms). Node props are identical before and after; links are correct.
+**Restarting the channel, suspending the card, and toggling the card profile
+off and on all left it broken** (the profile toggle also destroyed the
+cancellers outright: their capture is dont-fallback, see CLAUDE.md, and
+`apply` had to restart them). Only restarting PipeWire cures it. A private
+PipeWire + WirePlumber (`wireplumber -p policy`, null devices, two clocks)
+did NOT reproduce it: test on real hardware.
+
+So `session.py` notices instead (owner ruling: notify with a Fix button,
+never restart on its own): WirePlumber started > 10 s after PipeWire (from
+`/proc/<pid>/stat`, no state kept) while an enabled input has echo cancel.
+The login service sends one notification per WirePlumber pid (`notify-send
+--action`, waiting on its own thread); the window shows a banner; `status`
+prints a warning. The fix runs in a transient `systemd-run` unit, because our
+service is `PartOf=pipewire` and would be killed mid-fix, then re-applies the
+channels if the service is not running to do it.

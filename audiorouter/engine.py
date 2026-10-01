@@ -37,6 +37,7 @@ from .channels import (
     runtime_dir,
     validate_slug,
 )
+from . import session
 from .config import Config, ConfigError, config_path, default_config
 from .effects import Effect, EffectError, make_effect
 from .meter import sweep_stale
@@ -776,6 +777,8 @@ class Engine:
             "rules": [r.describe() for r in self.config.rules.rules],
             "problems": self.config.problems(),
             "conflicts": [conflict_message(name) for name in graph.conflicting_routers()],
+            # WirePlumber restarted alone: echo cancellation needs a full restart.
+            "echo_cancel_broken": session.echo_cancel_broken(self.config.channels, graph) is not None,
             "orphans": self.orphan_slugs(),
         }
 
@@ -803,9 +806,12 @@ class AutoRouter:
         engine: Engine,
         on_move: Callable[[MoveResult], None] | None = None,
         follow_config: bool = False,
+        on_graph: Callable[[Graph], None] | None = None,
     ) -> None:
         self.engine = engine
         self.on_move = on_move
+        #: Called with every graph update, before any routing.
+        self.on_graph = on_graph
         #: Re-read the config file on each graph event. For the daemon, whose
         #: settings are edited by the GUI in another process; never for the GUI,
         #: whose panels hold the very objects a reload would replace.
@@ -846,6 +852,8 @@ class AutoRouter:
     def _changed(self, graph: Graph) -> None:
         if self.follow_config:
             self.engine.reload_if_changed()
+        if self.on_graph is not None:
+            self.on_graph(graph)
         if not self.engine.config.auto_route:
             return
         with self._lock:

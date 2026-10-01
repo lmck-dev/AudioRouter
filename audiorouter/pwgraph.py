@@ -41,6 +41,7 @@ _NODE = "PipeWire:Interface:Node"
 _PORT = "PipeWire:Interface:Port"
 _LINK = "PipeWire:Interface:Link"
 _CLIENT = "PipeWire:Interface:Client"
+_CORE = "PipeWire:Interface:Core"
 
 
 class PwError(RuntimeError):
@@ -350,6 +351,22 @@ class Graph:
                 node = self.node(link.input_node)
                 if node is not None and node.is_sink:
                     return node
+        return None
+
+    def daemon_pid(self) -> int | None:
+        """The PipeWire daemon's own process."""
+        for obj in self._of_type(_CORE):
+            pid = ((obj.get("info") or {}).get("props") or {}).get("application.process.id")
+            if pid is not None:
+                return int(pid)
+        return None
+
+    def session_manager_pid(self) -> int | None:
+        """WirePlumber's process, if it is connected."""
+        for obj in self._of_type(_CLIENT):
+            props = (obj.get("info") or {}).get("props") or {}
+            if props.get("wireplumber.daemon") and props.get("application.process.id") is not None:
+                return int(props["application.process.id"])
         return None
 
     def client_pid(self, client_id: int | None) -> int | None:

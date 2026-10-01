@@ -157,6 +157,21 @@ class WindowTest(GuiTestCase):
         # Another channel's sink is a group, offered by name.
         self.assertEqual(self.window.channel_panel.device.currentText(), "Into Speakers")
 
+    def test_a_broken_echo_canceller_shows_a_banner_whose_button_restarts_the_sound(self):
+        from audiorouter import session
+
+        self.assertTrue(self.window.ec_banner.isHidden())
+        with mock.patch.object(session, "echo_cancel_broken", return_value=200):
+            self.window.refresh()
+        self.assertFalse(self.window.ec_banner.isHidden())
+        with mock.patch.object(session, "restart_sound_system") as restart:
+            self.window.ec_fix.click()
+        restart.assert_called_once_with()
+        self.assertFalse(self.window.ec_fix.isEnabled())  # one click is enough
+        with mock.patch.object(session, "echo_cancel_broken", return_value=None):
+            self.window.refresh()
+        self.assertTrue(self.window.ec_banner.isHidden())
+
     def test_renaming_a_channel_saves_and_reaches_the_list(self):
         self.window.select_channel(self.engine.config.channels[0].slug)
         self.window.channel_panel.name.setText("Desk")
