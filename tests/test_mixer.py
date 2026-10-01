@@ -226,6 +226,25 @@ class MixerTest(GuiTestCase):
         labels = [combo.itemText(i) for i in range(combo.count())]
         self.assertIn("Desk mic (into the mic)", [l.replace(" (stopped)", "") for l in labels])
 
+    def test_mic_app_and_group_strips_line_up_row_for_row(self):
+        # Measured on the rendered desk, not the layout code: a mic strip has
+        # a mic list that the others lack, which pushed every row out of line.
+        from PyQt6.QtCore import QCoreApplication
+
+        self.engine.config.add_channel(Channel("master", "Master", "alsa_output.a"))
+        self.engine.config.channel("speakers").device = "ar_master"
+        self.window.refresh()
+        self.window.resize(1250, 800)
+        self.window.show()
+        for _ in range(4):
+            QCoreApplication.processEvents()
+        def rows(strip):
+            return tuple(w.mapTo(self.mixer.desk, w.rect().topLeft()).y()
+                         for w in (strip.trim, strip.inserts_toggle, strip.route, strip.pan, strip.fader))
+        self.assertEqual({rows(s) for s in self.mixer.strips.values()}.__len__(), 1,
+                         {slug: rows(s) for slug, s in self.mixer.strips.items()})
+        self.window.hide()
+
     def test_mute_mutes_that_channel(self):
         with mock.patch.object(Engine, "set_channel_muted") as set_muted:
             self.strip("speakers").mute.setEnabled(True)

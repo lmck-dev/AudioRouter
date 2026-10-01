@@ -247,9 +247,24 @@ class ChannelStrip(QFrame):
         if self.source is not None:
             self.source.setToolTip("Records from")
             self.source.activated.connect(self._source_chosen)
+        # Every strip has the same two-row source area, so everything below it
+        # lines up across the desk (owner, 1 Oct): row 1 is the mic's list on a
+        # mic channel and the apps (or a group's members) on any other; row 2
+        # is the apps mixed into a mic, kept even when empty.
         self.apps = caption("")
-        self.apps.setWordWrap(True)
         self.apps.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.apps.setFixedHeight(self.apps.fontMetrics().height() + 2)
+        probe = QComboBox()  # parentless: only measured, never shown
+        row_height = probe.sizeHint().height()
+        probe.deleteLater()
+        if self.source is not None:
+            self.source.setFixedHeight(row_height)
+            self.source_rows = (self.source, self.apps)
+        else:
+            self.apps.setFixedHeight(row_height)
+            spare = caption("")
+            spare.setFixedHeight(self.apps.fontMetrics().height() + 2)
+            self.source_rows = (self.apps, spare)
 
         # The inserts scroll inside the strip: a long chain must never push
         # the fader off the bottom of the desk.
@@ -395,9 +410,8 @@ class ChannelStrip(QFrame):
         layout.setSpacing(4)
         layout.addWidget(self.name)
         layout.addWidget(self.kind)
-        if self.source is not None:
-            layout.addWidget(self.source)
-        layout.addWidget(self.apps)
+        for row in self.source_rows:
+            layout.addWidget(row)
         layout.addLayout(trim_row)
         layout.addWidget(self.trim_label)
         layout.addWidget(self.inserts_toggle)
@@ -496,7 +510,11 @@ class ChannelStrip(QFrame):
             self.apps.setText("no apps playing")
         else:
             self.apps.setText("")
-        self.apps.setHidden(not self.apps.text())
+        # One line, shortened to fit; the whole list is in the tooltip.
+        full = self.apps.text()
+        self.apps.setToolTip(full)
+        self.apps.setText(self.apps.fontMetrics().elidedText(full, Qt.TextElideMode.ElideRight,
+                                                             STRIP_WIDTH - 16))
         volume = entry.get("volume") if entry else None
         running = bool(entry and entry.get("running"))
         self.trim.setEnabled(volume is not None)

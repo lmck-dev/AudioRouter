@@ -162,7 +162,11 @@ meter on the mic), every channel in one CHANNELS section ("FROM A MIC" /
 monitor). The "+" offers a channel for a microphone or for apps. A mic
 channel's companion is never a strip; apps sent into it show as "+ app" on
 the mic channel's strip, and "Send to" lists it as "<mic> (into the mic)".
-Device meters are parec `LevelReader`s, run only while the mixer is seen;
+Every strip has the same two-row source area (`ChannelStrip.source_rows`):
+row 1 is the mic list or the apps line at dropdown height, row 2 one text
+line (apps mixed into a mic), kept when empty. Without it a mic strip sat
+7-11 px lower on every row (owner's screenshot); a test measures the
+rendered rows. Device meters are parec `LevelReader`s, run only while the mixer is seen;
 GUI tests patch `gui.mixer.LevelReader` too.
 
 ## The window survives a PipeWire restart (1 Oct 2026)
