@@ -108,7 +108,7 @@ Automatic placing only happens while **Send new apps to their usual channel** is
 A mic channel takes a real microphone, runs it through its effects, and offers the result to other apps as a new microphone with the channel's name. In Teams, Discord or OBS, choose that name as the microphone.
 
 - **Source:** the real microphone, or **Default input** to follow the desktop's choice. A chosen mic that is unplugged is never swapped for another one.
-- **Echo cancellation:** removes whatever your speakers are playing from the microphone, so a call hears you and not your music or game. Not needed with headphones. Set it in the Channels tab.
+- **Echo cancellation:** removes whatever your speakers are playing from the microphone, so a call hears you and not your music or game. On for every new mic channel; turn it off in the Channels tab if you use headphones.
 - **LISTEN:** plays the processed microphone through an output channel so you can hear yourself. Choose **Don't listen** to stop. Listening on speakers can cause feedback.
 - **Mixing apps in:** send an app to "Name (into the mic)" in Playing now, or set another channel's OUT to **Into Name (mic)**. Whatever you send there is heard by everyone using that microphone, on top of your voice.
 

@@ -221,10 +221,17 @@ class EngineInputTest(EngineTestCase):
         with self.assertRaises(EngineError):
             self.engine.set_listen("speakers", "mic")
 
+    def test_a_new_mic_starts_echo_cancelled(self):
+        self.engine.create_channel("mic", "Mic", kind=INPUT)
+        self.assertTrue(Config.load(self.engine.path).channel("mic").echo_cancel)
+        self.engine.create_channel("out", "Out")
+        self.assertFalse(self.engine.channel("out").echo_cancel)
+
     def test_echo_cancelling_is_for_inputs_and_restarts_the_channel(self):
         self.engine.create_channel("mic", "Mic", kind=INPUT)
         with self.assertRaises(EngineError):
             self.engine.set_echo_cancel("speakers", True)
+        self.engine.set_echo_cancel("mic", False)
         mic = self.engine.channel("mic")
         before = mic.render_config_text()
         self.engine.set_echo_cancel("mic", True)

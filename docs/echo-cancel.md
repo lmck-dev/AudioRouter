@@ -26,6 +26,12 @@ change (restart). mic -> `ar_<slug>_ec_mic` (capture) -> WebRTC AEC ->
   whisper heard "[inaudible]" raw and "[Silence]" through the channel.
 - Owner-tested on a real call with a remote listener on 20 Sep 2026: "very good".
 
+## New mics start with it on (2 Oct 2026)
+
+Owner ruling: `Engine.create_channel` sets `echo_cancel` on every new input
+(GUI and CLI; `channel add --no-echo-cancel` opts out). `Channel` and
+`from_dict` still default to off, so saved channels keep what they had.
+
 ## A lone WirePlumber restart breaks it (1 Oct 2026)
 
 Measured on the owner's desk: `systemctl --user restart wireplumber` alone

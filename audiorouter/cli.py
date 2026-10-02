@@ -204,8 +204,8 @@ def cmd_channel_add(engine: Engine, args: argparse.Namespace) -> int:
         engine.set_recordable(channel.slug, True)
     if args.listen:
         engine.set_listen(channel.slug, args.listen)
-    if args.echo_cancel:
-        engine.set_echo_cancel(channel.slug, True)
+    if args.no_echo_cancel and channel.is_input:
+        engine.set_echo_cancel(channel.slug, False)
     default = "(default input)" if channel.is_input else "(default sink)"
     print(f"added {channel.kind} channel {channel.slug} ({channel.name}) -> {channel.device or default}")
     if channel.recording_name:
@@ -461,8 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--input", action="store_true", help="a microphone or line-in channel")
     add.add_argument("--recordable", action="store_true", help="output: apps can record it (virtual cable)")
     add.add_argument("--listen", metavar="OUTPUT", help="input: also play it through this output channel")
-    add.add_argument("--echo-cancel", action="store_true",
-                     help="input: remove what the speakers play from the mic")
+    add.add_argument("--no-echo-cancel", action="store_true",
+                     help="input: leave echo cancellation off (new mics have it on)")
     add.set_defaults(func=cmd_channel_add)
     remove = channel.add_parser("rm", help="delete a channel")
     remove.add_argument("slug")

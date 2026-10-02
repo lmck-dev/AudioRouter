@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .channels import (
+    INPUT,
     MAX_VOLUME,
     NODE_PREFIX,
     NOWHERE,
@@ -204,7 +205,10 @@ class Engine:
         kind: str = OUTPUT,
     ) -> Channel:
         validate_slug(slug)
-        channel = Channel(slug=slug, name=name, device=device, effects=list(effects or []), kind=kind)
+        # A new mic starts echo-cancelled (owner ruling, 2 Oct 2026): without
+        # it a call hears the speakers. Saved channels keep what they had.
+        channel = Channel(slug=slug, name=name, device=device, effects=list(effects or []), kind=kind,
+                          echo_cancel=kind == INPUT)
         self.config.add_channel(channel)
         self.save()
         return channel
