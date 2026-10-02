@@ -50,6 +50,10 @@ _CORE = "PipeWire:Interface:Core"
 _ALSA_PLUGIN_NAME = re.compile(r"PipeWire ALSA \[(.+)\]")
 
 
+def _truthy(value: Any) -> bool:
+    return str(value).lower() in {"true", "1"}
+
+
 class PwError(RuntimeError):
     """PipeWire was unreachable or a pw-* tool failed."""
 
@@ -117,8 +121,23 @@ class Node:
 
     @property
     def is_app_recorder(self) -> bool:
-        """A recording stream belonging to an application, safe to point elsewhere."""
-        return self.is_input_stream and not self.is_ours and not self.is_meter
+        """A recording stream belonging to an application, safe to point elsewhere.
+
+        A stream that named its own source when it started (`target.object` in
+        its props: `pw-record --target`, an app's own device menu) chose on
+        purpose, and one with `node.dont-reconnect` cannot be moved at all - a
+        move only ADDS links, so it then records two sources at once. Measured
+        2 Oct 2026 on the owner's wake-word recorders: moved from the window,
+        one went deaf to the speakers' monitor and the other heard the wrong
+        mic. Apps that pick their own device list our channels by name anyway.
+        """
+        return (
+            self.is_input_stream
+            and not self.is_ours
+            and not self.is_meter
+            and not self.props.get("target.object")
+            and not _truthy(self.props.get("node.dont-reconnect"))
+        )
 
     @property
     def is_device(self) -> bool:

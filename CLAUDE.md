@@ -69,6 +69,12 @@ These rules come from those files, and they apply even when you haven't opened t
 - **`log.level: 0` in a channel conf hides the reason it died.** Raise it to 2
   or 4 in the rendered conf when a channel will not start, then read
   `$XDG_RUNTIME_DIR/audiorouter/<slug>.log`.
+- **Never offer a recorder that chose its own source** (`target.object` in its
+  props, or `node.dont-reconnect`). The owner moved the wake-word `pw-record`s
+  from Record from on 2 Oct 2026: the dont-reconnect one kept its old link and
+  GAINED two more (it recorded three sources and the menu "reverted"), the
+  other heard the wrong mic, and a `pw-record` record rule was remembered.
+  `Node.is_app_recorder` excludes both kinds.
 - **ALSA apps (Audacity) are all named `PipeWire ALSA [<binary>]`.** The
   brackets made a remembered rule a glob that never matched its own app.
   `Node.app_name` unwraps it (`audacity.bin` -> `audacity`) and `Rule.matches`

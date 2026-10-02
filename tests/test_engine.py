@@ -438,6 +438,10 @@ def recording_graph():
                        **{"application.name": "Audacity"}),
             fakes.node(71, "Audio Router meter", "Stream/Input/Audio", serial=710,
                        **{"audiorouter.meter": True}),
+            fakes.node(72, "wakeword-mic", "Stream/Input/Audio", serial=720,
+                       **{"application.name": "pw-record", "target.object": "ar_listener"}),
+            fakes.node(73, "wakeword-gate", "Stream/Input/Audio", serial=730,
+                       **{"application.name": "pw-record", "node.dont-reconnect": True}),
             fakes.port(82, 52, "out"),
             fakes.port(83, 70, "in"),
             fakes.link(91, 82, 83),
@@ -474,6 +478,16 @@ class RecordingTest(EngineTestCase):
     def test_level_meters_are_not_recording_apps(self):
         ids = [s["id"] for s in self.engine.status(refresh=False)["streams"]]
         self.assertNotIn(71, ids)
+
+    def test_a_recorder_that_chose_its_own_source_is_left_alone(self):
+        # The owner's wake-word recorders: one pins its mic, one cannot move.
+        ids = [s["id"] for s in self.engine.status(refresh=False)["streams"]]
+        self.assertNotIn(72, ids)
+        self.assertNotIn(73, ids)
+        self.engine.remember_app("pw-record", "teams", record=True)
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            self.engine.route(refresh=False)
+        metadata.assert_not_called()
 
     def test_record_from_points_the_app_at_the_source_and_remembers_it(self):
         with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
