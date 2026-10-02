@@ -99,7 +99,8 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 
 %changelog
 * Fri Oct 02 2026 lmck-dev <lmck.dev@gmail.com> - 1.1.0-1
-- 1.1.0: recording apps (Audacity, OBS) choose a channel in Playing now
+- 1.1.0: recording apps (Audacity, OBS) choose a channel in Playing now;
+  Playing now can be dragged taller
 
 * Fri Oct 02 2026 lmck-dev <lmck.dev@gmail.com> - 1.0.1-1
 - 1.0.1: new mic channels start with echo cancellation on

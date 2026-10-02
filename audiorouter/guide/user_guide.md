@@ -87,7 +87,7 @@ A Bluetooth headset's microphone only appears while the headset is in its call (
 
 ## Sending apps to channels
 
-The **Playing now** panel at the bottom lists every app making sound and the channel it plays through, and every app recording (see below). Click the heading to fold it away; the number beside it counts the apps.
+The **Playing now** panel at the bottom lists every app making sound and the channel it plays through, and every app recording (see below). Click the heading to fold it away; the number beside it counts the apps. Drag the line just above it up or down to make it taller or shorter; the window remembers the height.
 
 1. Find the app in the list.
 2. Pick a channel in its **Send to** column. The app moves at once.

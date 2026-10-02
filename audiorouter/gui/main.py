@@ -19,6 +19,7 @@ import time
 from PyQt6.QtCore import QSettings, Qt, QTimer
 from PyQt6.QtGui import QAction, QFontMetrics, QGuiApplication
 from PyQt6.QtWidgets import (
+    QWIDGETSIZE_MAX,
     QApplication,
     QCheckBox,
     QFrame,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QTabWidget,
@@ -261,19 +263,38 @@ class MainWindow(QMainWindow):
         self.mixer = MixerView(self)
         self.views = QTabWidget(self)
         self.views.addTab(self.mixer, "Mixer")
-        self.views.addTab(splitter, "Channels")
+        # The Channels view is tall (its panel never squeezes, see above), and
+        # a tab widget is as tall as its tallest tab: unscrolled, it alone kept
+        # Playing now a sliver at the bottom. It scrolls when short instead.
+        channels_view = QScrollArea(self)
+        channels_view.setWidgetResizable(True)
+        channels_view.setFrameShape(QFrame.Shape.NoFrame)
+        channels_view.setWidget(splitter)
+        self.views.addTab(channels_view, "Channels")
 
         self.streams_panel = StreamsPanel(self.engine, self)
         self.streams_panel.add_beside(self.rules)
 
         central = QWidget(self)
-        self._layout = layout = QVBoxLayout(central)
+        layout = QVBoxLayout(central)
         layout.addWidget(self.bypass_banner)
         layout.addWidget(self.conflict_banner)
         layout.addWidget(self.ec_banner)
         layout.addLayout(top)
-        layout.addWidget(self.views, 2)
-        layout.addWidget(self.streams_panel, 1)
+        # Dragging the handle between the views and Playing now sets how tall
+        # Playing now is; the window remembers it.
+        self.streams_splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self.streams_splitter.setChildrenCollapsible(False)
+        self.streams_splitter.setHandleWidth(8)
+        self.streams_splitter.addWidget(self.views)
+        self.streams_splitter.addWidget(self.streams_panel)
+        self.streams_splitter.setStretchFactor(0, 2)
+        self.streams_splitter.setStretchFactor(1, 1)
+        state = self.settings.value("streams_splitter")
+        if state is not None:
+            self.streams_splitter.restoreState(state)
+        self.streams_splitter.splitterMoved.connect(self._streams_resized)
+        layout.addWidget(self.streams_splitter, 1)
         self.setCentralWidget(central)
         self._streams_folded(self._setting_bool("streams_expanded", True))
         self.meters.follow_effect.setChecked(self._setting_bool("meters_follow_effect", True))
@@ -360,9 +381,15 @@ class MainWindow(QMainWindow):
 
     def _streams_folded(self, expanded: bool) -> None:
         self.streams_panel.set_expanded(expanded)
-        # Folded, the table's share of the height goes to the channel editor.
-        self._layout.setStretchFactor(self.streams_panel, 1 if expanded else 0)
+        # Folded, the panel is only its heading and the rest goes to the views;
+        # unfolded, it may be dragged to any height again.
+        heading = self.streams_panel.toggle.sizeHint().height()
+        self.streams_panel.setMaximumHeight(QWIDGETSIZE_MAX if expanded else heading)
         self.settings.setValue("streams_expanded", expanded)
+
+    def _streams_resized(self, _pos: int, _index: int) -> None:
+        if self.streams_panel.expanded:
+            self.settings.setValue("streams_splitter", self.streams_splitter.saveState())
 
     def refresh(self) -> None:
         """Redraw everything from one engine status reading."""

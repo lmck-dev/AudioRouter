@@ -127,6 +127,11 @@ kinds, through the real window. Two taps cost ~1.5% of one core.
   is view state, so it lives in `QSettings` (`~/.config/audiorouter/gui.conf`),
   never in `config.json` (the daemon's file). **Tests must use
   `isolated_settings(tmp)`** or they write to the real `gui.conf`.
+- **Playing now sits in a vertical splitter** (`streams_splitter`, 2 Oct 2026),
+  its state saved as `streams_splitter` in `gui.conf`; folded, its maximum
+  height is the heading. **The Channels tab is inside a `QScrollArea`**: a
+  `QTabWidget` is as tall as its TALLEST tab, and the Channels view's Fixed
+  panel needed 780 px, which kept Playing now a sliver on the Mixer tab too.
 
 ## Levels follow the highlighted effect (30 Sep 2026)
 

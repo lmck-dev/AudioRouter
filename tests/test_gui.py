@@ -1185,3 +1185,32 @@ class PlayingNowFoldTest(GuiTestCase):
         again = MainWindow(self.engine, settings=self.window.settings)
         self.addCleanup(again.close)
         self.assertFalse(again.streams_panel.expanded)
+
+    def test_playing_now_is_resized_by_dragging_and_remembered(self):
+        window = self.window
+        window.resize(1200, 900)
+        window.show()
+        self.app.processEvents()
+        splitter = window.streams_splitter
+        splitter.setSizes([300, 500])
+        splitter.splitterMoved.emit(300, 1)  # what a drag of the handle sends
+        tall = splitter.sizes()[1]
+        self.assertGreater(tall, 400)
+
+        from audiorouter.gui.main import MainWindow
+
+        again = MainWindow(self.engine, settings=window.settings)
+        self.addCleanup(again.close)
+        again.resize(1200, 900)
+        again.show()
+        self.app.processEvents()
+        self.assertAlmostEqual(again.streams_splitter.sizes()[1], tall, delta=20)
+
+    def test_folded_playing_now_is_only_its_heading(self):
+        window = self.window
+        window.resize(1200, 900)
+        window.show()
+        window.streams_panel.toggle.click()
+        self.app.processEvents()
+        self.assertLessEqual(window.streams_splitter.sizes()[1],
+                             window.streams_panel.toggle.sizeHint().height())
