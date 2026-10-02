@@ -159,6 +159,7 @@ class CatalogueTest(unittest.TestCase):
         write_bundle(self.root)
         env = mock.patch.dict(os.environ, {
             "LV2_PATH": str(self.root), "XDG_CACHE_HOME": str(Path(self.tmp.name) / "cache"),
+            "LADSPA_PATH": str(Path(self.tmp.name) / "ladspa"),  # none of this machine's
         })
         env.start()
         self.addCleanup(env.stop)

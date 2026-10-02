@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import lv2
 from .effects import Effect, render_chain, taps_available, unsatisfied_requirements
 from .pwgraph import OWNER_KEY, Graph, Node, PwError, require_tools
 
@@ -683,11 +684,15 @@ class Channel:
         previous_conf = self.config_path.read_text() if old_pid and self.config_path.exists() else None
         self.config_path.write_text(self.render_config_text())
         with self.log_path.open("w") as log:
+            # The user's plugin folders reach the host's LV2 loader this way;
+            # LADSPA effects carry their file's full path instead.
+            lv2_path = lv2.host_lv2_path()
             proc = subprocess.Popen(
                 ["pipewire", "-c", str(self.config_path)],
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                env={**os.environ, "LV2_PATH": lv2_path} if lv2_path else None,
             )
         self.pid_path.write_text(str(proc.pid))
         try:

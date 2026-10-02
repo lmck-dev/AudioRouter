@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import turtle
+from . import ladspa, turtle
 from .turtle import IRI, BNode, Store
 
 LV2 = "http://lv2plug.in/ns/lv2core#"
@@ -33,7 +33,7 @@ PP = "http://lv2plug.in/ns/ext/port-props#"
 ATOM = "http://lv2plug.in/ns/ext/atom#"
 
 #: Bump when the cached catalogue's shape changes.
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 
 #: Plugins that load but do not work in a channel, measured. The werman RNNoise
 #: build (1.10) came out at half level, ~63 ms late and more distortion than
@@ -151,18 +151,38 @@ def categorise(name: str, classes: tuple[str, ...] | list[str]) -> str:
 
 
 def search_path() -> list[Path]:
-    """Where LV2 bundles live, honouring LV2_PATH the way hosts do."""
+    """Where LV2 bundles live, honouring LV2_PATH the way hosts do, then the
+    user's own plugin folders."""
     configured = os.environ.get("LV2_PATH")
     if configured:
-        return [Path(p).expanduser() for p in configured.split(":") if p]
-    return [
-        Path.home() / ".lv2",
-        Path("/usr/local/lib64/lv2"),
-        Path("/usr/local/lib/lv2"),
-        Path("/usr/lib64/lv2"),
-        Path("/usr/lib/lv2"),
-        Path("/usr/lib/x86_64-linux-gnu/lv2"),
-    ]
+        found = [Path(p).expanduser() for p in configured.split(":") if p]
+    else:
+        found = [
+            Path.home() / ".lv2",
+            Path("/usr/local/lib64/lv2"),
+            Path("/usr/local/lib/lv2"),
+            Path("/usr/lib64/lv2"),
+            Path("/usr/lib/lv2"),
+            Path("/usr/lib/x86_64-linux-gnu/lv2"),
+        ]
+    from . import plugins  # imported late: plugins imports this module lazily too
+
+    return found + [r for r in plugins.extra_lv2_roots() if r not in found]
+
+
+def host_lv2_path() -> str | None:
+    """LV2_PATH for a channel host, when the user's folders add to the usual
+    places; None to leave the host's environment alone."""
+    from . import plugins
+
+    if not plugins.extra_lv2_roots():
+        return None
+    return ":".join(str(p) for p in search_path())
+
+
+def _maker_label(maker: str) -> str:
+    """'Steve Harris <steve@plugin.org.uk>' -> 'Steve Harris'."""
+    return re.sub(r"\s*[<(].*$", "", maker).strip() or maker
 
 
 @dataclass(frozen=True)
@@ -212,6 +232,8 @@ class Plugin:
     problems: tuple[str, ...] = ()
     #: Symbol of the port that switches the plugin on, which we pin to 1.
     enable_port: str = ""
+    #: Who made it, when the plugin says (LADSPA's Maker); LV2 reads the URI.
+    maker: str = ""
 
     @property
     def usable(self) -> bool:
@@ -224,6 +246,8 @@ class Plugin:
     @property
     def vendor(self) -> str:
         """Who makes it, as a person would say it, from the plugin's URI."""
+        if self.maker:
+            return _maker_label(self.maker)
         uri = self.uri.lower()
         # Specific needles only: a bare "tap" matched SWH's tapeDelay.
         for needle, label in _VENDORS:
@@ -439,6 +463,17 @@ def _fingerprint(bundles: list[Path]) -> list[list[Any]]:
     return marks
 
 
+def _file_marks(files: list[Path]) -> list[list[Any]]:
+    marks: list[list[Any]] = []
+    for path in files:
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        marks.append([str(path), info.st_mtime_ns, info.st_size])
+    return marks
+
+
 def cache_path() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "audiorouter" / "lv2-catalogue.json"
@@ -464,8 +499,19 @@ class Catalogue:
         )
 
 
-def build(bundles: list[Path] | None = None) -> Catalogue:
+def build(bundles: list[Path] | None = None, ladspa_files: list[Path] | None = None) -> Catalogue:
     catalogue = Catalogue()
+    if ladspa_files:
+        found, unreadable = ladspa.read_files(ladspa_files)
+        # The same plugin in two folders (a DAW folder holding a copy of a
+        # system one) is listed once: the first found wins, as LV2's do.
+        seen: set[tuple[str, str]] = set()
+        for data in found:
+            key = (ladspa.split(data["uri"])[1], data.get("name", ""))
+            if key not in seen:
+                seen.add(key)
+                catalogue.plugins.setdefault(data["uri"], Plugin.from_dict(data))
+        catalogue.unreadable.update(unreadable)
     for bundle in _bundles() if bundles is None else bundles:
         try:
             plugins = read_bundle(bundle)
@@ -481,8 +527,11 @@ def build(bundles: list[Path] | None = None) -> Catalogue:
 @functools.lru_cache(maxsize=1)
 def catalogue() -> Catalogue:
     """The installed plugins, from cache when nothing has changed."""
+    from . import plugins
+
     bundles = _bundles()
-    fingerprint = _fingerprint(bundles)
+    ladspa_files = plugins.ladspa_files()
+    fingerprint = _fingerprint(bundles) + _file_marks(ladspa_files)
     path = cache_path()
     try:
         cached = json.loads(path.read_text())
@@ -493,7 +542,7 @@ def catalogue() -> Catalogue:
             )
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    result = build(bundles)
+    result = build(bundles, ladspa_files)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(".tmp")

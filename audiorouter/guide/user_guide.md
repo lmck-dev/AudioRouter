@@ -161,6 +161,16 @@ The built-in effects:
 
 An effect whose plugin is no longer installed is marked unavailable; it can still be switched off or removed.
 
+### More plugins: plugin folders
+
+Audio Router uses LV2 and LADSPA plugins: the ones installed in the usual places on the computer, plus any folder you add. To add one, such as the plugin folder of your music software:
+
+1. Open **Add effect...** (or **+ Insert**) and click **Plugin folders...**.
+2. Click **Add folder...**, choose the folder, and click **OK**. Folders inside it are searched too.
+3. The new plugins appear in the list straight away, in their group, with their maker.
+
+A plugin that is in two folders is listed once. VST plugins cannot be used: the sound system cannot run them. If you remove a folder, any effect using a plugin from it is marked unavailable.
+
 ## The Channels view
 
 The Channels tab shows every setting for one channel. The list on the left holds every channel in the same order as the mixer, left to right, each with its mixer label: **From a mic**, **From apps**, **Cable** or **Group**. **New channel** offers a channel for a microphone or for apps; **Delete** removes the selected one. A channel marked "(off)" is switched off; "(not running)" means it should be on but is not.

@@ -42,6 +42,10 @@ class Config:
     #: were not installed. Saved, so it lasts across logins until switched
     #: off; switching it off brings everything back from these same settings.
     bypass: bool = False
+    #: Folders the user added for more LV2 and LADSPA plugins (a DAW's plugin
+    #: folder, say), searched at any depth. Here, not in the window's settings,
+    #: because the login service starts the channels that load them.
+    plugin_folders: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.ensure_companions()
@@ -282,6 +286,7 @@ class Config:
             "bypass": self.bypass,
             "channels": [c.to_dict() for c in self.channels],
             "rules": self.rules.to_list(),
+            "plugin_folders": list(self.plugin_folders),
         }
 
     @classmethod
@@ -301,6 +306,7 @@ class Config:
             rules=RuleSet.from_list(data.get("rules")),
             auto_route=bool(data.get("auto_route", True)),
             bypass=bool(data.get("bypass", False)),
+            plugin_folders=[str(f) for f in (data.get("plugin_folders") or []) if f],
         )
 
     # -- files ------------------------------------------------------------

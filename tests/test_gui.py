@@ -1214,3 +1214,37 @@ class PlayingNowFoldTest(GuiTestCase):
         self.app.processEvents()
         self.assertLessEqual(window.streams_splitter.sizes()[1],
                              window.streams_panel.toggle.sizeHint().height())
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class PluginFoldersTest(GuiTestCase):
+    def test_folders_chosen_in_the_dialog_are_saved_and_the_browser_reloads(self):
+        from audiorouter.gui import effects_panel
+
+        folder = Path(self.tmp.name) / "daw"
+        folder.mkdir()
+
+        def choose(dialog):
+            dialog.add_folder(str(folder))
+            return effects_panel.QDialog.DialogCode.Accepted
+
+        with mock.patch.object(effects_panel.PluginFoldersDialog, "exec", choose):
+            changed = self.window.effects_panel.edit_plugin_folders(self.window)
+        self.addCleanup(__import__("audiorouter.plugins").plugins.set_extra_folders, [])
+        self.assertTrue(changed)
+        self.assertEqual(Config.load(self.engine.path).plugin_folders, [str(folder)])
+
+        browser = effects_panel.EffectBrowser(self.window, edit_folders=lambda parent: True)
+        self.addCleanup(browser.close)
+        self.assertTrue(browser.folders_button.isVisibleTo(browser))
+        with mock.patch.object(browser, "_populate") as populate:
+            browser.folders_button.click()
+        populate.assert_called_once()
+
+    def test_cancelling_the_dialog_changes_nothing(self):
+        from audiorouter.gui import effects_panel
+
+        with mock.patch.object(effects_panel.PluginFoldersDialog, "exec",
+                               lambda d: effects_panel.QDialog.DialogCode.Rejected):
+            self.assertFalse(self.window.effects_panel.edit_plugin_folders(self.window))
+        self.assertEqual(self.engine.config.plugin_folders, [])

@@ -10,6 +10,7 @@ on or off, which the engine applies to the running channel in place. The window 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
@@ -283,9 +284,16 @@ class ParameterForm(QWidget):
 class EffectBrowser(QDialog):
     """Pick an effect: the built-in ones first, then every installed plugin."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        edit_folders: Callable[[QWidget], bool] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add effect")
+        #: Opens the plugin folders; True when they changed and the list must
+        #: be read again.
+        self.edit_folders = edit_folders
         self.resize(560, 560)
         self.choice: tuple[str, str] | None = None
 
@@ -310,12 +318,19 @@ class EffectBrowser(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
         )
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add")
+        self.folders_button = QPushButton("Plugin folders...", self)
+        self.folders_button.setToolTip("Add folders of LV2 or LADSPA plugins, such as your DAW's")
+        self.folders_button.setVisible(edit_folders is not None)
+        self.folders_button.clicked.connect(self._edit_folders)
 
+        options = QHBoxLayout()
+        options.addWidget(self.show_unusable, 1)
+        options.addWidget(self.folders_button)
         layout = QVBoxLayout(self)
         layout.addWidget(self.search)
         layout.addWidget(self.tree, 1)
         layout.addWidget(self.detail)
-        layout.addWidget(self.show_unusable)
+        layout.addLayout(options)
         layout.addWidget(self.buttons)
 
         self.search.textChanged.connect(self._filter)
@@ -327,6 +342,16 @@ class EffectBrowser(QDialog):
 
         self._populate()
         self.search.setFocus()
+
+    def _edit_folders(self) -> None:
+        if self.edit_folders is None or not self.edit_folders(self):
+            return
+        # New folders mean reading every new plugin once, which takes a moment.
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        try:
+            self._populate()
+        finally:
+            QGuiApplication.restoreOverrideCursor()
 
     def _populate(self) -> None:
         """One group per kind of effect; built-in effects first within each."""
@@ -429,6 +454,64 @@ class EffectBrowser(QDialog):
         self.accept()
 
 
+class PluginFoldersDialog(QDialog):
+    """The user's own plugin folders, beside the places plugins usually live."""
+
+    def __init__(self, folders: list[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Plugin folders")
+        self.resize(520, 340)
+        intro = QLabel(
+            "Audio Router finds LV2 and LADSPA plugins in the usual places on "
+            "this computer. Add any other folder that holds them - your music "
+            "software's plugin folder, say - and the folders inside it are "
+            "searched too. VST plugins cannot be used.",
+            self,
+        )
+        intro.setWordWrap(True)
+        self.list = QListWidget(self)
+        for folder in folders:
+            QListWidgetItem(folder, self.list)
+        self.add_button = QPushButton("Add folder...", self)
+        self.add_button.clicked.connect(self._add)
+        self.remove_button = QPushButton("Remove", self)
+        self.remove_button.clicked.connect(self._remove)
+        self.list.currentRowChanged.connect(lambda row: self.remove_button.setEnabled(row >= 0))
+        self.remove_button.setEnabled(False)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        row = QHBoxLayout()
+        row.addWidget(self.add_button)
+        row.addWidget(self.remove_button)
+        row.addStretch(1)
+        layout = QVBoxLayout(self)
+        layout.addWidget(intro)
+        layout.addWidget(self.list, 1)
+        layout.addLayout(row)
+        layout.addWidget(buttons)
+
+    def folders(self) -> list[str]:
+        return [self.list.item(i).text() for i in range(self.list.count())]
+
+    def add_folder(self, folder: str) -> None:
+        if folder and folder not in self.folders():
+            QListWidgetItem(folder, self.list)
+
+    def _add(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+
+        self.add_folder(QFileDialog.getExistingDirectory(self, "Choose a plugin folder"))
+
+    def _remove(self) -> None:
+        row = self.list.currentRow()
+        if row >= 0:
+            self.list.takeItem(row)
+
+
 class EffectsPanel(QGroupBox):
     """Add, order, switch off and adjust the effects on one channel."""
 
@@ -442,6 +525,8 @@ class EffectsPanel(QGroupBox):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Effects", parent)
         self.channel: Channel | None = None
+        #: Set by the window: opens the plugin folders, True if they changed.
+        self.edit_plugin_folders: Callable[[QWidget], bool] | None = None
 
         self.list = QListWidget(self)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -607,7 +692,7 @@ class EffectsPanel(QGroupBox):
         # (after installing or updating plugins); a tenth of a second otherwise.
         QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
         try:
-            browser = EffectBrowser(self)
+            browser = EffectBrowser(self, edit_folders=self.edit_plugin_folders)
         finally:
             QGuiApplication.restoreOverrideCursor()
         if browser.exec() == QDialog.DialogCode.Accepted and browser.choice is not None:

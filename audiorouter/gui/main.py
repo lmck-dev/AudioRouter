@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QWIDGETSIZE_MAX,
     QApplication,
     QCheckBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -344,6 +345,7 @@ class MainWindow(QMainWindow):
         self.bypass.toggled.connect(self._bypass_toggled)
         self.auto_route.toggled.connect(self._auto_route_toggled)
         self.background.toggled.connect(self._background_toggled)
+        self.effects_panel.edit_plugin_folders = self._edit_plugin_folders
         self.streams_panel.send_requested.connect(self._send_stream)
         self.streams_panel.remember_requested.connect(self._remember_stream)
         self.forget_button.clicked.connect(self._forget_rule)
@@ -912,6 +914,22 @@ class MainWindow(QMainWindow):
             # The user has spoken; do not let the rules drag it back.
             self.auto.remember(stream_id)
         self.refresh()
+
+    def _edit_plugin_folders(self, parent: QWidget) -> bool:
+        """The plugin folders dialog. True when the folders changed."""
+        from .effects_panel import PluginFoldersDialog
+
+        dialog = PluginFoldersDialog(list(self.engine.config.plugin_folders), parent)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        if dialog.folders() == self.engine.config.plugin_folders:
+            return False
+        try:
+            self.engine.set_plugin_folders(dialog.folders())
+        except USER_ERRORS as exc:
+            self._error("Could not use those plugin folders", str(exc))
+            return False
+        return True
 
     def _remember_stream(self, stream_id: int, slug: str) -> None:
         node = self.engine.graph().node(stream_id)

@@ -40,7 +40,7 @@ from .channels import (
     runtime_dir,
     validate_slug,
 )
-from . import session
+from . import plugins, session
 from .config import Config, ConfigError, config_path, default_config
 from .effects import Effect, EffectError, make_effect
 from .meter import sweep_stale
@@ -113,6 +113,7 @@ class Engine:
         self.router = Router(dry_run=dry_run)
         self._graph: Graph | None = None
         self._loaded_stamp = self._config_stamp()
+        plugins.set_extra_folders(self.config.plugin_folders)
 
     # -- construction and persistence -------------------------------------
 
@@ -153,6 +154,7 @@ class Engine:
             return False
         self.config = config
         self._loaded_stamp = stamp
+        plugins.set_extra_folders(config.plugin_folders)
         return True
 
     # -- the graph ---------------------------------------------------------
@@ -210,6 +212,22 @@ class Engine:
     def _targets(self, stream: Node, graph: Graph) -> dict[str, Node]:
         """Where a stream can go: sinks to play into, or sources to record."""
         return self.source_map(graph) if stream.is_input_stream else self.sink_map(graph)
+
+    # -- plugin folders ----------------------------------------------------
+
+    def set_plugin_folders(self, folders: Iterable[str]) -> list[str]:
+        """Search these folders for LV2 and LADSPA plugins, in this order."""
+        cleaned: list[str] = []
+        for folder in folders:
+            path = str(Path(folder).expanduser())
+            if not Path(path).is_dir():
+                raise EngineError(f"{path} is not a folder")
+            if path not in cleaned:
+                cleaned.append(path)
+        self.config.plugin_folders = cleaned
+        self.save()
+        plugins.set_extra_folders(cleaned)
+        return cleaned
 
     # -- channels ----------------------------------------------------------
 

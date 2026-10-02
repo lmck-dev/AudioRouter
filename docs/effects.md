@@ -102,5 +102,33 @@ loader. The agreed route is a Carla host per channel (`Carla`, `Carla-vst` in
 the Nobara repos): sink -> Carla -> device, VST block at the end of the chain,
 each plugin's own editor window, state in a Carla project file.
 
+## Plugin folders and LADSPA (2 Oct 2026)
+
+Owner: "the ability to add more effects in the LV2 and LADSPA formats" (no VST).
+`Config.plugin_folders` (config.json, because the login service starts the
+hosts) -> `plugins.set_extra_folders`, called by every `Engine` on load and
+reload. Each folder is walked to depth 5 (at most 5000 `.so`): directories
+holding `*.lv2` bundles join `lv2.search_path()`, and every other `.so` (never
+one inside a bundle) is a LADSPA candidate. A channel host gets `LV2_PATH` =
+the whole search path only when the user's folders add something
+(`lv2.host_lv2_path`); LADSPA needs nothing, because filter-chain loads an
+absolute `plugin` path as given.
+
+- **LADSPA plugins live in the same catalogue as LV2**, as `lv2.Plugin`s with
+  uri `ladspa:<file>#<label>` and `maker`; effect kind stays `"lv2"` (the
+  plugin kind) and `_lv2_node` renders `{"type": "ladspa", "plugin": <file>,
+  "label": ...}`. **Controls are keyed by PORT NAME** - that is how
+  filter-chain addresses LADSPA controls.
+- **Reading a LADSPA file runs its code** (`ladspa_descriptor`), so it happens
+  in a child (`python -m audiorouter.ladspa FILE...`). A batch that crashes is
+  retried file by file and the bad one listed in `unreadable`.
+- `LADSPA_PATH`, when set, REPLACES the standard folders (as `LV2_PATH` does);
+  tests set both to keep this machine's plugins out.
+- The same LADSPA plugin in two folders is listed once (label + name, first
+  wins), like LV2's first-on-the-path rule.
+- Measured in the lab (2 Oct 2026): a hand-built LV2 gain (`urn:lab:gain`) and
+  a copy of LADSPA `amp.so`, both only in a user folder, both at 0.5: each
+  channel measured -6.02 dB against the reference.
+
 Plugins with 1 in / 2 out (wideners), several ins/outs, or instruments are
 listed as unusable with the reason. Plugin windows (LV2 UIs) are not shown.

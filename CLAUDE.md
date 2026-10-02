@@ -13,7 +13,8 @@ needed, no dependencies).
 |---------------|-----------------------------------------------------------|
 | `plugins.py`  | what plugin backends this machine can load                 |
 | `turtle.py`   | dependency-free Turtle reader (LV2 descriptions)           |
-| `lv2.py`      | installed LV2 plugins, their controls, which we can host; cached |
+| `lv2.py`      | installed LV2 (and LADSPA) plugins, their controls, which we can host; cached |
+| `ladspa.py`   | LADSPA files read in a child process, as `lv2.Plugin`s     |
 | `effects.py`  | curated effects + plugin effects, rendered as a stereo graph |
 | `channels.py` | conf generation, process lifecycle, pid files              |
 | `pwgraph.py`  | read-only `pw-dump` model + live monitor                   |
@@ -39,7 +40,7 @@ keeps a Claude Docs copy (1 Oct 2026); the repo file is the source of truth.
 
 | Working on | Read first |
 |---|---|
-| Effects, LV2 plugins, bypass/crossfade switches, RNNoise | `docs/effects.md` |
+| Effects, LV2/LADSPA plugins, plugin folders, bypass/crossfade switches, RNNoise | `docs/effects.md` |
 | Anything in `audiorouter/gui/`, level meters | `docs/gui.md` |
 | `install.py`, launcher, login service, `packaging/` | `docs/packaging.md` |
 | Echo cancellation | `docs/echo-cancel.md` |

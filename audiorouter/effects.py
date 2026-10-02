@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import lv2
+from . import ladspa, lv2
 from .plugins import Requirement, Unusable
 
 LSP = "http://lsp-plug.in/plugins/lv2/"
@@ -230,7 +230,12 @@ def _lv2_node(
     audio_in: tuple[str, ...],
     audio_out: tuple[str, ...],
 ) -> Fragment:
-    node = {"type": "lv2", "name": name, "plugin": uri, "control": control}
+    if ladspa.is_ladspa(uri):
+        # filter-chain loads an absolute LADSPA path as given, by label.
+        path, label = ladspa.split(uri)
+        node = {"type": "ladspa", "name": name, "plugin": path, "label": label, "control": control}
+    else:
+        node = {"type": "lv2", "name": name, "plugin": uri, "control": control}
     if len(audio_in) == 2:
         return Fragment(
             [node], [],
@@ -401,12 +406,14 @@ def _param_from_control(control: lv2.Control) -> ParamSpec:
 
 def plugin_spec(uri: str) -> EffectSpec:
     """The spec for one LV2 plugin, whether or not it is installed."""
-    requirement = Requirement("lv2", uri, LV2_PACKAGE)
+    requirement = (Requirement("ladspa", uri, "the plugin's file") if ladspa.is_ladspa(uri)
+                   else Requirement("lv2", uri, LV2_PACKAGE))
     plugin = lv2.catalogue().get(uri)
     if plugin is None:
         return EffectSpec(
             kind=PLUGIN_KIND,
-            label=uri.rstrip("/").rsplit("/", 1)[-1] or uri,
+            label=(ladspa.split(uri)[1] if ladspa.is_ladspa(uri)
+                   else uri.rstrip("/").rsplit("/", 1)[-1]) or uri,
             summary="This plugin is not installed.",
             params=(),
             requires=(requirement,),
@@ -414,12 +421,14 @@ def plugin_spec(uri: str) -> EffectSpec:
             problems=(Unusable(uri, "is not installed"),),
             group="Missing",
         )
-    classes = ", ".join(c for c in plugin.classes if c) or "Effect"
+    classes = ", ".join(c for c in plugin.classes if c).lower() or "effect"
+    if ladspa.is_ladspa(uri):
+        classes = "LADSPA effect"
     layout = "stereo" if plugin.stereo else "mono, run on each side"
     return EffectSpec(
         kind=PLUGIN_KIND,
         label=plugin.name,
-        summary=f"{plugin.vendor} {classes.lower()} ({layout}).",
+        summary=f"{plugin.vendor} {classes} ({layout}).",
         params=tuple(_param_from_control(c) for c in plugin.controls),
         requires=(requirement,),
         plugin=uri,

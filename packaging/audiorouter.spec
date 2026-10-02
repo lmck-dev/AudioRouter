@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.1.0
+Version:        1.2.0
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        Apache-2.0
@@ -98,6 +98,9 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/applications/audiorouter.desktop
 
 %changelog
+* Fri Oct 02 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.0-1
+- 1.2.0: plugin folders; LADSPA plugins as effects
+
 * Fri Oct 02 2026 lmck-dev <lmck.dev@gmail.com> - 1.1.0-1
 - 1.1.0: recording apps (Audacity, OBS) choose a channel in Playing now;
   Playing now can be dragged taller
