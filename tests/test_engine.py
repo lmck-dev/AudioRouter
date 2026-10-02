@@ -425,6 +425,89 @@ class RoutingTest(EngineTestCase):
         self.assertEqual([s["id"] for s in self.engine.status(refresh=False)["streams"]], [60])
 
 
+def recording_graph():
+    """Audacity recording the real mic, beside a recordable output and a mic channel."""
+    return Graph(
+        list(live_graph()._objects.values()) + [
+            fakes.node(52, "alsa_input.a", "Audio/Source", serial=520, description="Built-in Mic"),
+            fakes.node(53, "ar_teams_rec", "Audio/Source", serial=530,
+                       description="Teams (recording)", **{"audiorouter.channel": "teams"}),
+            fakes.node(54, "ar_voice", "Audio/Source", serial=540,
+                       description="Voice", **{"audiorouter.channel": "voice_mix"}),
+            fakes.node(70, "alsa_capture.audacity", "Stream/Input/Audio", serial=700,
+                       **{"application.name": "Audacity"}),
+            fakes.node(71, "Audio Router meter", "Stream/Input/Audio", serial=710,
+                       **{"audiorouter.meter": True}),
+            fakes.port(82, 52, "out"),
+            fakes.port(83, 70, "in"),
+            fakes.link(91, 82, 83),
+        ]
+    )
+
+
+class RecordingTest(EngineTestCase):
+    """Apps that record (Audacity, OBS) choose which channel they hear."""
+
+    def setUp(self):
+        super().setUp()
+        config = self.engine.config
+        config.add_channel(Channel("teams", "Teams", "alsa_output.a", recordable=True))
+        config.add_channel(Channel("voice", "Voice", "alsa_input.a", kind="input"))
+        config.ensure_companions()
+        self.engine.use_graph(recording_graph())
+        snapshot = mock.patch.object(Graph, "snapshot", staticmethod(recording_graph))
+        snapshot.start()
+        self.addCleanup(snapshot.stop)
+
+    def test_mics_and_recordable_channels_can_be_recorded(self):
+        sources = self.engine.source_map(recording_graph())
+        self.assertEqual({slug: node.id for slug, node in sources.items()}, {"teams": 53, "voice": 54})
+
+    def test_status_lists_a_recording_app_and_what_it_hears(self):
+        status = self.engine.status(refresh=False)
+        (audacity,) = [s for s in status["streams"] if s["recording"]]
+        self.assertEqual((audacity["app"], audacity["sink"], audacity["channel"]),
+                         ("Audacity", "Built-in Mic", None))
+        self.assertEqual([(s["slug"], s["input"]) for s in status["sources"]],
+                         [("teams", False), ("voice", True)])
+
+    def test_level_meters_are_not_recording_apps(self):
+        ids = [s["id"] for s in self.engine.status(refresh=False)["streams"]]
+        self.assertNotIn(71, ids)
+
+    def test_record_from_points_the_app_at_the_source_and_remembers_it(self):
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            result = self.engine.send(70, "teams", remember_new=True)
+        metadata.assert_called_once_with(70, 530)
+        self.assertEqual(result.reason, "manual, remembered")
+        (rule,) = Config.load(self.path).rules.rules
+        self.assertEqual((rule.pattern, rule.channel, rule.record), ("Audacity", "teams", True))
+
+    def test_a_remembered_recording_app_is_placed_when_it_starts(self):
+        self.engine.remember_app("Audacity", "voice", record=True)
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            AutoRouter(self.engine)._changed(recording_graph())
+        metadata.assert_called_once_with(70, 540)
+
+    def test_a_recording_rule_never_moves_the_same_app_playing(self):
+        self.engine.remember_app("firefox", "teams", record=True)
+        with mock.patch("audiorouter.routing.Router._set_metadata") as metadata:
+            self.engine.route(refresh=False)
+        metadata.assert_not_called()
+
+    def test_playing_and_recording_rules_for_one_app_are_separate(self):
+        self.engine.remember_app("Audacity", "speakers")
+        self.engine.remember_app("Audacity", "teams", record=True)
+        self.assertEqual([(r.channel, r.record) for r in self.engine.config.rules.rules],
+                         [("speakers", False), ("teams", True)])
+        self.assertEqual(self.engine.config.problems(), [])
+
+    def test_a_channel_with_nothing_to_record_explains_itself(self):
+        with self.assertRaises(EngineError) as caught:
+            self.engine.send(70, "speakers")
+        self.assertIn("recordable", str(caught.exception))
+
+
 class AutoRouterTest(EngineTestCase):
     def setUp(self):
         super().setUp()

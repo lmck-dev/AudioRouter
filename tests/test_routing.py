@@ -49,6 +49,24 @@ class RuleTest(unittest.TestCase):
     def test_nothing_matching_means_no_opinion(self):
         self.assertIsNone(RuleSet([Rule("app", "vlc", "x")]).resolve(stream()))
 
+    def test_a_recording_rule_matches_only_recording_streams(self):
+        recorder = Graph([fakes.node(61, "rec", "Stream/Input/Audio",
+                                     **{"application.name": "player"})]).node(61)
+        self.assertTrue(Rule("app", "player", "x", record=True).matches(recorder))
+        self.assertFalse(Rule("app", "player", "x", record=True).matches(stream()))
+        self.assertFalse(Rule("app", "player", "x").matches(recorder))
+
+    def test_a_name_with_brackets_matches_itself(self):
+        self.assertTrue(Rule("app", "Game [demo]", "x").matches(stream(**{"application.name": "Game [demo]"})))
+
+    def test_alsa_apps_are_named_by_their_program(self):
+        self.assertEqual(stream(**{"application.name": "PipeWire ALSA [audacity.bin]"}).app_name, "audacity")
+
+    def test_a_recording_rule_survives_a_round_trip(self):
+        rule = Rule("app", "audacity", "teams", record=True)
+        self.assertTrue(Rule.from_dict(rule.to_dict()).record)
+        self.assertNotIn("record", Rule("app", "a", "b").to_dict())
+
     def test_round_trip_through_a_dict(self):
         rule = Rule("title", "news", "speakers", enabled=False)
         self.assertEqual(Rule.from_dict(rule.to_dict()).to_dict(), rule.to_dict())
@@ -150,7 +168,7 @@ class RouterTest(unittest.TestCase):
                 with mock.patch("audiorouter.routing.Router._set_metadata", side_effect=failure), \
                      mock.patch("audiorouter.routing.Router._pactl_move") as pactl:
                     self.assertTrue(Router().move(self.graph.node(60), self.graph.node(50)))
-                pactl.assert_called_once_with(60, "ar_speakers")
+                pactl.assert_called_once_with(60, "ar_speakers", recording=False)
 
     def test_a_failure_on_both_paths_names_the_stream_and_the_sink(self):
         with mock.patch("audiorouter.routing.Router._set_metadata", side_effect=OSError("gone")), \

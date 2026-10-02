@@ -437,7 +437,8 @@ class MainWindow(QMainWindow):
                 name = self.engine.config.channel(rule.channel).name
             except ConfigError:
                 name = rule.channel
-            QListWidgetItem(f"{rule.pattern} -> {name}", self.rules_list)
+            arrow = "records" if rule.record else "->"
+            QListWidgetItem(f"{rule.pattern} {arrow} {name}", self.rules_list)
         self.forget_button.setEnabled(bool(self.engine.config.rules.rules))
         # The channel panel lists the same rules for the channel it shows.
         self._show_sources(self.selected_channel, getattr(self, "_status", {}))
@@ -549,12 +550,16 @@ class MainWindow(QMainWindow):
         feed = self._feed_slug(channel)
         target = config.channel(feed)
         streams = status.get("streams", [])
+        # IN is what plays into the channel: recording apps and their rules
+        # belong elsewhere.
+        streams = [s for s in streams if not s.get("recording")]
         playing = sorted({s["app"] or "?" for s in streams if s.get("channel") == feed})
         members = [m.name for m in config.members_of(target)]
-        rules = [(i, r.pattern) for i, r in enumerate(config.rules.rules) if r.channel == feed]
+        rules = [(i, r.pattern) for i, r in enumerate(config.rules.rules)
+                 if r.channel == feed and not r.record]
         here = {pattern.casefold() for _i, pattern in rules}
         offered = [s["app"] for s in streams if s.get("app")]
-        offered += [r.pattern for r in config.rules.rules if r.field == "app"]
+        offered += [r.pattern for r in config.rules.rules if r.field == "app" and not r.record]
         candidates = sorted({a for a in offered if a.casefold() not in here}, key=str.casefold)
         self.channel_panel.set_kind_label(kind_label(config, channel))
         self.channel_panel.show_sources(playing, members, rules, candidates)
@@ -886,7 +891,7 @@ class MainWindow(QMainWindow):
         if node is None:
             return
         try:
-            self.engine.remember_app(node.app_name, slug)
+            self.engine.remember_app(node.app_name, slug, record=node.is_input_stream)
         except USER_ERRORS as exc:
             self._error("Could not remember that app", str(exc))
             return

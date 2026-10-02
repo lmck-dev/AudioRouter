@@ -48,6 +48,9 @@ class Rule:
     pattern: str
     channel: str
     enabled: bool = True
+    #: A recording rule: the app RECORDS FROM `channel` (a mic channel or a
+    #: recordable output) instead of playing into it.
+    record: bool = False
 
     def __post_init__(self) -> None:
         if self.field not in MATCH_FIELDS:
@@ -58,23 +61,28 @@ class Rule:
             raise RoutingError("a rule needs a pattern")
 
     def matches(self, node: Node) -> bool:
-        if not self.enabled:
+        if not self.enabled or self.record != node.is_input_stream:
             return False
         value = (_FIELD_READERS[self.field](node) or "").casefold()
         if not value:
             return False
         pattern = self.pattern.casefold()
+        if pattern == value:
+            return True  # a remembered name may itself contain glob characters
         if any(ch in pattern for ch in "*?["):
             return fnmatch.fnmatchcase(value, pattern)
         return pattern in value
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "field": self.field,
             "pattern": self.pattern,
             "channel": self.channel,
             "enabled": self.enabled,
         }
+        if self.record:
+            data["record"] = True
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Rule:
@@ -83,11 +91,13 @@ class Rule:
             pattern=str(data.get("pattern", "")),
             channel=str(data.get("channel", "")),
             enabled=bool(data.get("enabled", True)),
+            record=bool(data.get("record", False)),
         )
 
     def describe(self) -> str:
         state = "" if self.enabled else " (disabled)"
-        return f"{self.field} contains {self.pattern!r} -> {self.channel}{state}"
+        arrow = "records from" if self.record else "->"
+        return f"{self.field} contains {self.pattern!r} {arrow} {self.channel}{state}"
 
 
 @dataclass
@@ -111,7 +121,7 @@ class RuleSet:
 
 
 class Router:
-    """Moves playback streams between sinks."""
+    """Moves playback streams between sinks, and recording streams between sources."""
 
     def __init__(self, dry_run: bool = False) -> None:
         self.dry_run = dry_run
@@ -131,11 +141,12 @@ class Router:
         )
 
     @staticmethod
-    def _pactl_move(node_id: int, sink_name: str) -> None:
+    def _pactl_move(node_id: int, sink_name: str, recording: bool = False) -> None:
         if shutil.which("pactl") is None:
             raise PwError("pactl is not installed")
+        verb = "move-source-output" if recording else "move-sink-input"
         subprocess.run(
-            ["pactl", "move-sink-input", str(int(node_id)), sink_name],
+            ["pactl", verb, str(int(node_id)), sink_name],
             capture_output=True,
             text=True,
             timeout=10,
@@ -145,7 +156,7 @@ class Router:
     # -- operations -------------------------------------------------------
 
     def move(self, stream: Node, sink: Node) -> bool:
-        """Point `stream` at `sink`. False if it was already there.
+        """Point `stream` at `sink` (or, for a recording stream, at a source).
 
         Tries the native metadata route first and falls back to pactl, because
         pipewire-pulse is not guaranteed to be running while pw-metadata is part
@@ -167,7 +178,7 @@ class Router:
             # exactly the case the pactl fallback exists for, so it must not
             # escape as a raw exception.
             try:
-                self._pactl_move(stream.id, sink.name)
+                self._pactl_move(stream.id, sink.name, recording=stream.is_input_stream)
                 return True
             except Exception:
                 raise RoutingError(
@@ -231,17 +242,28 @@ def plan(
     rules: RuleSet,
     sink_for_channel: Mapping[str, Node],
     streams: Iterable[Node] | None = None,
+    source_for_channel: Mapping[str, Node] | None = None,
 ) -> list[Placement]:
-    """Work out where every routable stream should go, without moving anything."""
+    """Work out where every routable stream should go, without moving anything.
+
+    Recording streams are placed on `source_for_channel`'s sources; without
+    that map they are left out.
+    """
+    sources = source_for_channel or {}
+    if streams is None:
+        streams = graph.app_streams() + (graph.app_recorders() if sources else [])
     result = []
-    for stream in streams if streams is not None else graph.app_streams():
+    for stream in streams:
+        recording = stream.is_input_stream
+        targets = sources if recording else sink_for_channel
         channel = rules.resolve(stream)
+        current = graph.source_of_stream(stream.id) if recording else graph.sink_of_stream(stream.id)
         result.append(
             Placement(
                 stream=stream,
                 channel=channel,
-                current_sink=graph.sink_of_stream(stream.id),
-                target_sink=sink_for_channel.get(channel) if channel else None,
+                current_sink=current,
+                target_sink=targets.get(channel) if channel else None,
             )
         )
     return result

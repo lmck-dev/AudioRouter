@@ -155,13 +155,13 @@ def cmd_status(engine: Engine, args: argparse.Namespace) -> int:
     _print_table(rows, ("id", "name", "state", "output", "effects"))
 
     print()
-    print("Playing")
+    print("Playing and recording")
     rows = []
     for stream in status["streams"]:
         rows.append(
             (
                 stream["id"],
-                stream["app"],
+                f"{stream['app']} (recording)" if stream.get("recording") else stream["app"],
                 (stream["title"] or "")[:32],
                 stream["channel"] or (stream["sink"] or "-"),
                 stream["rule_channel"] or "-",

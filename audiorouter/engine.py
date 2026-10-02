@@ -191,6 +191,26 @@ class Engine:
                 found[channel.slug] = node
         return found
 
+    def source_map(self, graph: Graph | None = None) -> dict[str, Node]:
+        """slug -> the live source apps record, for channels that offer one.
+
+        A mic channel's source is published by its hidden companion, so it is
+        listed under the mic's slug and the companion itself is left out.
+        """
+        graph = graph if graph is not None else self.graph()
+        found: dict[str, Node] = {}
+        for channel in self.config.channels:
+            if channel.companion_of or not channel.recording_name:
+                continue
+            node = channel.recording_node(graph)
+            if node is not None:
+                found[channel.slug] = node
+        return found
+
+    def _targets(self, stream: Node, graph: Graph) -> dict[str, Node]:
+        """Where a stream can go: sinks to play into, or sources to record."""
+        return self.source_map(graph) if stream.is_input_stream else self.sink_map(graph)
+
     # -- channels ----------------------------------------------------------
 
     def channel(self, slug: str) -> Channel:
@@ -402,10 +422,12 @@ class Engine:
 
     # -- rules -------------------------------------------------------------
 
-    def add_rule(self, field_name: str, pattern: str, slug: str, index: int | None = None) -> Rule:
+    def add_rule(
+        self, field_name: str, pattern: str, slug: str, index: int | None = None, record: bool = False
+    ) -> Rule:
         if not self.config.has_channel(slug):
             raise ConfigError(f"no channel {slug!r} to route to")
-        rule = Rule(field=field_name, pattern=pattern, channel=slug)
+        rule = Rule(field=field_name, pattern=pattern, channel=slug, record=record)
         rules = self.config.rules.rules
         if index is None:
             rules.append(rule)
@@ -414,20 +436,23 @@ class Engine:
         self.save()
         return rule
 
-    def remember_app(self, app_name: str, slug: str) -> Rule:
-        """Always send this app to `slug`: update its own rule, or add one.
+    def remember_app(self, app_name: str, slug: str, record: bool = False) -> Rule:
+        """Always send this app to `slug` (or, with `record`, always record
+        from it): update its own rule, or add one.
 
         Updating matters because rules are first-match-wins: appending a second
         rule for the same app would be saved, listed, and never take effect.
+        An app's playing and recording rules are separate.
         """
         if not self.config.has_channel(slug):
             raise ConfigError(f"no channel {slug!r} to route to")
         for rule in self.config.rules.rules:
-            if rule.field == "app" and rule.pattern.casefold() == app_name.casefold():
+            if (rule.field == "app" and rule.record == record
+                    and rule.pattern.casefold() == app_name.casefold()):
                 rule.channel = slug
                 self.save()
                 return rule
-        return self.add_rule("app", app_name, slug)
+        return self.add_rule("app", app_name, slug, record=record)
 
     def remove_rule(self, index: int) -> Rule:
         rules = self.config.rules.rules
@@ -752,18 +777,20 @@ class Engine:
 
     def placements(self, refresh: bool = True) -> list[Placement]:
         graph = self.graph(refresh=refresh)
-        return plan(graph, self.config.rules, self.sink_map(graph))
+        return plan(graph, self.config.rules, self.sink_map(graph),
+                    source_for_channel=self.source_map(graph))
 
     def route(
         self,
         streams: Iterable[Node] | None = None,
         refresh: bool = True,
     ) -> list[MoveResult]:
-        """Apply the rules to the streams that are playing now."""
+        """Apply the rules to the streams that are playing or recording now."""
         graph = self.graph(refresh=refresh)
         chosen = list(streams) if streams is not None else None
         results: list[MoveResult] = []
-        for placement in plan(graph, self.config.rules, self.sink_map(graph), chosen):
+        for placement in plan(graph, self.config.rules, self.sink_map(graph), chosen,
+                              source_for_channel=self.source_map(graph)):
             if not placement.needs_move:
                 results.append(
                     MoveResult(placement.stream.app_name, placement.channel, False, placement.reason)
@@ -784,6 +811,8 @@ class Engine:
     def send(self, stream_id: int, slug: str, remember_new: bool = False) -> MoveResult:
         """Move one stream to one channel, ignoring the rules. The manual override.
 
+        A recording stream is pointed at the channel's recording source instead.
+
         With `remember_new`, an app no rule covers yet is remembered on this
         channel - the first choice someone makes for an app is almost always
         where they want it next time. An app that already has a rule is left
@@ -793,12 +822,16 @@ class Engine:
         stream = graph.node(stream_id)
         if stream is None:
             raise EngineError(f"no stream with id {stream_id}")
-        sink = self.sink_map(graph).get(slug)
+        sink = self._targets(stream, graph).get(slug)
         if sink is None:
+            if stream.is_input_stream and self.config.has_channel(slug):
+                channel = self.config.channel(slug)
+                if not channel.recording_name or channel.companion_of:
+                    raise EngineError(f"channel {slug!r} cannot be recorded; make it recordable first")
             raise EngineError(f"channel {slug!r} is not running; start it first")
         self.router.move(stream, sink)
         if remember_new and stream.app_name and self.config.rules.resolve(stream) is None:
-            self.add_rule("app", stream.app_name, slug)
+            self.add_rule("app", stream.app_name, slug, record=stream.is_input_stream)
             return MoveResult(stream.app_name, slug, True, "manual, remembered")
         return MoveResult(stream.app_name, slug, True, "manual")
 
@@ -808,6 +841,7 @@ class Engine:
         """Everything a UI needs for one refresh, from a single graph snapshot."""
         graph = self.graph(refresh=refresh)
         sinks = self.sink_map(graph)
+        sources = self.source_map(graph)
         channels = []
         for channel in self.config.channels:
             entry = channel.status(graph)
@@ -815,15 +849,19 @@ class Engine:
             entry["problems"] = channel.missing_plugins()
             channels.append(entry)
         streams = []
-        for stream in graph.app_streams():
-            current = graph.sink_of_stream(stream.id)
-            slug = next((s for s, node in sinks.items() if current and node.id == current.id), None)
+        for stream in graph.app_streams() + graph.app_recorders():
+            recording = stream.is_input_stream
+            current = graph.source_of_stream(stream.id) if recording else graph.sink_of_stream(stream.id)
+            targets = sources if recording else sinks
+            slug = next((s for s, node in targets.items() if current and node.id == current.id), None)
             streams.append(
                 {
                     "id": stream.id,
                     "app": stream.app_name,
                     "binary": stream.binary,
                     "title": stream.media_name,
+                    # A recording stream reads from a source instead of playing.
+                    "recording": recording,
                     "sink": current.label if current else None,
                     "channel": slug,
                     "rule_channel": self.config.rules.resolve(stream),
@@ -838,6 +876,10 @@ class Engine:
             "input_devices": [{"name": n.name, "label": n.label, "volume": n.volume, "muted": n.muted}
                               for n in graph.input_devices()],
             "channels": channels,
+            # What a recording app can be pointed at, in mixer order.
+            "sources": [{"slug": slug, "name": self.config.channel(slug).name,
+                         "input": self.config.channel(slug).is_input}
+                        for slug in sources],
             "streams": streams,
             "rules": [r.describe() for r in self.config.rules.rules],
             "problems": self.config.problems(),
@@ -936,9 +978,9 @@ class AutoRouter:
         if not self.engine.config.auto_route:
             return
         with self._lock:
-            live = {n.id for n in graph.app_streams()}
-            self._placed &= live
-            fresh = [n for n in graph.app_streams() if n.id not in self._placed]
+            apps = graph.app_streams() + graph.app_recorders()
+            self._placed &= {n.id for n in apps}
+            fresh = [n for n in apps if n.id not in self._placed]
             if not fresh:
                 return
             self._placed |= {n.id for n in fresh}

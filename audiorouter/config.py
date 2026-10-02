@@ -269,7 +269,7 @@ class Config:
         for rule in self.rules.rules:
             if rule.channel not in seen:
                 issues.append(f"rule {rule.pattern!r} points at unknown channel {rule.channel!r}")
-            elif kinds.get(rule.channel) == "input":
+            elif kinds.get(rule.channel) == "input" and not rule.record:
                 issues.append(f"rule {rule.pattern!r} sends playback to input channel {rule.channel!r}")
         return issues
 

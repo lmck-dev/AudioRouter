@@ -722,6 +722,25 @@ class BallisticsTest(unittest.TestCase):
 
 
 class StreamsTest(GuiTestCase):
+    def test_a_recording_app_chooses_what_it_hears(self):
+        panel = self.window.streams_panel
+        status = {
+            "channels": [],
+            "sources": [{"slug": "teams", "name": "Teams", "input": False},
+                        {"slug": "voice", "name": "Voice", "input": True}],
+            "streams": [{"id": 70, "app": "Audacity", "title": "ALSA Capture", "recording": True,
+                         "sink": "Built-in Mic", "channel": None}],
+        }
+        panel.refresh(status)
+        self.assertEqual(panel.table.item(0, 1).text(), "Recording")
+        combo = panel.table.cellWidget(0, 2)
+        self.assertEqual([combo.itemText(i) for i in range(combo.count())],
+                         ["Built-in Mic", "Teams", "Voice (mic)"])
+        panel.table.selectRow(0)
+        self.assertEqual(panel.remember.text(), "Always record from here")
+        with mock.patch.object(Engine, "send") as send:
+            combo.activated.emit(1)
+        send.assert_called_once_with(70, "teams", remember_new=True)
     def test_playing_apps_are_listed_with_a_destination(self):
         table = self.window.streams_panel.table
         self.assertEqual(table.rowCount(), 1)

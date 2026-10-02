@@ -1,7 +1,8 @@
-"""What is playing, and where it is going.
+"""What is playing, and where it is going - and what is recording, and from where.
 
 This is the table the user actually came for: every application making sound,
-with a menu to send it somewhere else. Moving something here takes effect
+with a menu to send it somewhere else, and every application recording (Audacity,
+OBS, a call), with a menu to choose which channel it hears. Moving something here takes effect
 immediately, because a routing change the user cannot hear straight away is
 indistinguishable from one that did not work.
 """
@@ -28,6 +29,8 @@ from ..engine import Engine
 from .theme import Theme
 
 UNROUTED = "-"
+#: On a row's name item: True for an app recording rather than playing.
+RECORDING_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class StreamsPanel(QWidget):
@@ -56,7 +59,7 @@ class StreamsPanel(QWidget):
         self.body = QFrame(self)
 
         self.table = QTableWidget(0, 3, self.body)
-        self.table.setHorizontalHeaderLabels(["Application", "Playing", "Send to"])
+        self.table.setHorizontalHeaderLabels(["Application", "Doing", "Send to / record from"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -65,7 +68,7 @@ class StreamsPanel(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
-        self.empty = QLabel("Nothing is playing.", self.body)
+        self.empty = QLabel("Nothing is playing or recording.", self.body)
         self.remember = QPushButton("Always send this app here", self.body)
         self.remember.setEnabled(False)
         self.remember.clicked.connect(self._remember)
@@ -135,8 +138,16 @@ class StreamsPanel(QWidget):
         for row, stream in enumerate(streams):
             name = QTableWidgetItem(stream["app"])
             name.setData(Qt.ItemDataRole.UserRole, stream["id"])
+            name.setData(RECORDING_ROLE, bool(stream.get("recording")))
             self.table.setItem(row, 0, name)
-            self.table.setItem(row, 1, QTableWidgetItem(stream["title"] or ""))
+            doing = "Recording" if stream.get("recording") else (stream["title"] or "")
+            self.table.setItem(row, 1, QTableWidgetItem(doing))
+            combo = self._record_combo(stream, status) if stream.get("recording") else None
+            if combo is not None:
+                combo.setProperty("stream_id", stream["id"])
+                combo.activated.connect(self._combo_activated)
+                self.table.setCellWidget(row, 2, combo)
+                continue
 
             combo = QComboBox(self)
             combo.addItem("Not routed", UNROUTED)
@@ -163,6 +174,22 @@ class StreamsPanel(QWidget):
         if selected is not None:
             self._select_stream(selected)
         self._selection_changed()
+
+    def _record_combo(self, stream: dict, status: dict) -> QComboBox:
+        """Which channel a recording app hears: every mic and recordable channel.
+
+        Anything else it records from (a real mic, a device) shows by name, so
+        the menu never claims it is on a channel when it is not.
+        """
+        combo = QComboBox(self)
+        if stream["channel"] is None:
+            combo.addItem(stream["sink"] or "Nothing yet", UNROUTED)
+        for source in status.get("sources", []):
+            label = f"{source['name']} (mic)" if source["input"] else source["name"]
+            combo.addItem(label, source["slug"])
+        current = combo.findData(stream["channel"] or UNROUTED)
+        combo.setCurrentIndex(max(0, current))
+        return combo
 
     # -- interaction -------------------------------------------------------
 
@@ -194,6 +221,9 @@ class StreamsPanel(QWidget):
     def _selection_changed(self) -> None:
         row = self.table.currentRow()
         combo = self.table.cellWidget(row, 2) if row >= 0 else None
+        name = self.table.item(row, 0) if row >= 0 else None
+        recording = name is not None and bool(name.data(RECORDING_ROLE))
+        self.remember.setText("Always record from here" if recording else "Always send this app here")
         has_channel = isinstance(combo, QComboBox) and combo.currentData() != UNROUTED
         self.remember.setEnabled(bool(self.table.selectedItems()) and has_channel)
 

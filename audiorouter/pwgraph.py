@@ -16,6 +16,7 @@ Two hard-won rules are encoded here:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -43,6 +44,10 @@ _PORT = "PipeWire:Interface:Port"
 _LINK = "PipeWire:Interface:Link"
 _CLIENT = "PipeWire:Interface:Client"
 _CORE = "PipeWire:Interface:Core"
+
+
+#: How PipeWire's ALSA plugin names the apps that use it.
+_ALSA_PLUGIN_NAME = re.compile(r"PipeWire ALSA \[(.+)\]")
 
 
 class PwError(RuntimeError):
@@ -111,6 +116,11 @@ class Node:
         return self.is_output_stream and not self.is_ours
 
     @property
+    def is_app_recorder(self) -> bool:
+        """A recording stream belonging to an application, safe to point elsewhere."""
+        return self.is_input_stream and not self.is_ours and not self.is_meter
+
+    @property
     def is_device(self) -> bool:
         """True for a sink backed by real hardware rather than a virtual node.
 
@@ -121,10 +131,18 @@ class Node:
 
     @property
     def app_name(self) -> str:
-        """Best available human name for the application behind a stream."""
+        """Best available human name for the application behind a stream.
+
+        Apps that use ALSA (Audacity) reach PipeWire through its ALSA plugin,
+        which names every one "PipeWire ALSA [<binary>]"; the binary inside is
+        the name a person knows (`audacity.bin` is the Flatpak's wrapper).
+        """
         for key in ("application.name", "application.process.binary", "node.name"):
             value = self.props.get(key)
             if value:
+                match = _ALSA_PLUGIN_NAME.fullmatch(str(value))
+                if match:
+                    return match.group(1).removesuffix(".bin")
                 return str(value)
         return f"node {self.id}"
 
@@ -295,6 +313,10 @@ class Graph:
         """Playback streams belonging to applications. What the router may move."""
         return [n for n in self.nodes if n.is_app_stream]
 
+    def app_recorders(self) -> list[Node]:
+        """Recording streams belonging to applications (Audacity, OBS, a call)."""
+        return [n for n in self.nodes if n.is_app_recorder]
+
     def conflicting_routers(self) -> list[str]:
         """Programs in the graph that move app streams themselves.
 
@@ -351,6 +373,18 @@ class Graph:
             if link.output_node == int(stream_id) and link.input_node is not None:
                 node = self.node(link.input_node)
                 if node is not None and node.is_sink:
+                    return node
+        return None
+
+    def source_of_stream(self, stream_id: int) -> Node | None:
+        """Which source a recording stream is reading, resolved through links.
+
+        A stream recording a sink's monitor reads from the sink itself.
+        """
+        for link in self.links():
+            if link.input_node == int(stream_id) and link.output_node is not None:
+                node = self.node(link.output_node)
+                if node is not None and (node.is_source or node.is_sink):
                     return node
         return None
 

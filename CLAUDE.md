@@ -69,6 +69,10 @@ These rules come from those files, and they apply even when you haven't opened t
 - **`log.level: 0` in a channel conf hides the reason it died.** Raise it to 2
   or 4 in the rendered conf when a channel will not start, then read
   `$XDG_RUNTIME_DIR/audiorouter/<slug>.log`.
+- **ALSA apps (Audacity) are all named `PipeWire ALSA [<binary>]`.** The
+  brackets made a remembered rule a glob that never matched its own app.
+  `Node.app_name` unwraps it (`audacity.bin` -> `audacity`) and `Rule.matches`
+  accepts an exact name before trying a glob.
 - **`application.process.binary` is the executable, not the command.** `paplay`
   reports `pacat`; a `binary` rule for "paplay" matches nothing. Prefer `app`.
 - **A filter-chain's own playback node has `media.class = Stream/Output/Audio`,
@@ -151,8 +155,9 @@ These rules come from those files, and they apply even when you haven't opened t
   its device is `NOWHERE`, a loopback plays that to the device. Measured: -6.00
   and -12.00 dB exactly, recorded as an app would. **Filter controls live on the
   capture-side node** (`control_name`): the sink for outputs, `ar_<slug>_in`
-  for inputs. Apps pick inputs from their own list - there is no input-side
-  routing, and `sink_map` holds outputs only.
+  for inputs. Recording apps are pointed at a channel's recording source by
+  `Engine.send` (2 Oct 2026; `source_map`, rules with `record: true`, listed in
+  Playing now as "Recording"); `sink_map` holds outputs only.
 - **Every input channel has a hidden COMPANION output** (`<slug>_mix`,
   `Channel.companion_of`, made and kept in step by `Config.ensure_companions`;
   1 Oct 2026). The mic channel's filter-chain no longer publishes the virtual

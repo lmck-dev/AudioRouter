@@ -87,7 +87,7 @@ A Bluetooth headset's microphone only appears while the headset is in its call (
 
 ## Sending apps to channels
 
-The **Playing now** panel at the bottom lists every app making sound and the channel it plays through. Click the heading to fold it away; the number beside it counts the apps.
+The **Playing now** panel at the bottom lists every app making sound and the channel it plays through, and every app recording (see below). Click the heading to fold it away; the number beside it counts the apps.
 
 1. Find the app in the list.
 2. Pick a channel in its **Send to** column. The app moves at once.
@@ -102,6 +102,16 @@ A mic channel appears in Send to as **"Name (into the mic)"**. Sending an app th
 | **Forget** | Removes the selected app from Remembered apps; it stays where it is for now. |
 
 Automatic placing only happens while **Send new apps to their usual channel** is ticked.
+
+## Recording a channel (Audacity, OBS, a call)
+
+Apps that are recording appear in **Playing now** too, marked **Recording**. Their menu picks what they hear: any mic channel, or any channel whose **Recording apps see it as** is on.
+
+1. In the recording app, leave the microphone on its default (in Audacity: **Audio Setup → Recording Device → default**) and start recording.
+2. In **Playing now**, pick the channel in its **record from** menu. The recording switches at once.
+3. Audio Router remembers that choice, so next time the app records from the same channel the moment it starts.
+
+The app's own device list never shows your channels by name: Audacity and other ALSA apps only list sound cards. Choosing in Playing now is the way in. **Always record from here** and **Forget** work as they do for playing apps; Remembered apps shows these as "app records Channel".
 
 ## Mic channels
 
