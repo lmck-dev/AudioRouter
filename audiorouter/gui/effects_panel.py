@@ -462,10 +462,8 @@ class PluginFoldersDialog(QDialog):
         self.setWindowTitle("Plugin folders")
         self.resize(520, 340)
         intro = QLabel(
-            "Audio Router finds LV2 and LADSPA plugins in the usual places on "
-            "this computer. Add any other folder that holds them - your music "
-            "software's plugin folder, say - and the folders inside it are "
-            "searched too. VST plugins cannot be used.",
+            "Audio Router finds LV2 and LADSPA plugins in default folders on "
+            "this computer. Add your custom folders here.",
             self,
         )
         intro.setWordWrap(True)
