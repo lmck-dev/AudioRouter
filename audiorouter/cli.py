@@ -426,9 +426,14 @@ def cmd_remote(engine: Engine, args: argparse.Namespace) -> int:
         settings.ensure_token()
         if args.port is not None:
             settings.port = args.port
+        if args.outside is not None:
+            settings.allow_outside = args.outside == "on"
         settings.save()
     elif args.state == "off":
         settings.enabled = False
+        settings.save()
+    elif args.outside is not None:
+        settings.allow_outside = args.outside == "on"
         settings.save()
     print(f"phone remote: {'on' if settings.enabled else 'off'}")
     if not settings.enabled:
@@ -436,8 +441,10 @@ def cmd_remote(engine: Engine, args: argparse.Namespace) -> int:
     if daemon_pid() is None:
         print("note: the background service is not running, so nothing answers the phone yet "
               "('audiorouter login on')")
-    addresses = remote.local_addresses()
+    addresses = remote.local_addresses(outside=settings.allow_outside)
     print(f"port: {settings.port}")
+    print("networks: " + ("home network and others (--outside on)" if settings.allow_outside
+                          else "home network only"))
     for address in addresses:
         print(f"address: {address}")
     if not addresses:
@@ -609,6 +616,8 @@ def build_parser() -> argparse.ArgumentParser:
     phone.add_argument("state", nargs="?", choices=("on", "off", "status", "new-token"),
                        default="status", help="new-token: unpair every phone")
     phone.add_argument("--port", type=int, help=f"default {remote.DEFAULT_PORT}")
+    phone.add_argument("--outside", choices=("on", "off"),
+                       help="also answer phones on other networks, e.g. a VPN (default off)")
     phone.set_defaults(func=cmd_remote)
 
     launcher = sub.add_parser("launcher", help="add the window to the application menu")

@@ -201,7 +201,9 @@ The **Phone remote** button at the top lets the Audio Router Remote app on an An
 2. In the app, tap **Pair** and scan the code shown.
 3. When the window says **Ready**, the phone can reach the desk.
 
-The phone must be on the same network as the computer. The remote never answers anything outside your home network, even with the code, so it cannot be used from elsewhere.
+The phone must be on the same network as the computer: the remote answers nothing outside your home network, even with the code.
+
+**Also allow other networks** lets a phone on another network reach the desk, such as over a VPN like Tailscale. It is off unless you tick it, and then the pairing code includes the computer's other addresses too. The connection itself is not encrypted, so only use it on networks you trust; Tailscale encrypts its own traffic.
 
 The phone talks to the background service, so **Keep routing with this window closed** must be ticked; the window says so if it is not. Changes made from the phone show in this window as they happen.
 

@@ -113,11 +113,22 @@ class PhoneRemoteWindow(QDialog):
 
         intro = QLabel(
             "Control the mixer from your phone with the Audio Router Remote app. "
-            "The phone must be on the same network as this computer.", self)
+            "Unless you allow other networks below, the phone must be on the same "
+            "network as this computer.", self)
         intro.setWordWrap(True)
         self.enabled = QCheckBox("Let the phone app control this desk", self)
         self.enabled.setChecked(self.settings.enabled)
         self.enabled.toggled.connect(self._toggled)
+        self.outside = QCheckBox("Also allow other networks, such as a VPN like Tailscale", self)
+        self.outside.setChecked(self.settings.allow_outside)
+        self.outside.setToolTip(
+            "Off: only phones on this computer's home network are answered.\n"
+            "On: phones on any network that can reach this computer, with the pairing code.")
+        self.outside.toggled.connect(self._outside_toggled)
+        self.outside_note = QLabel(
+            f"<span style='color:{self._warn}'>The connection is not encrypted. "
+            "Only use this on networks you trust; Tailscale encrypts its own traffic.</span>", self)
+        self.outside_note.setWordWrap(True)
 
         self.code = QrCode(self)
         self.how = QLabel(self)
@@ -140,6 +151,8 @@ class PhoneRemoteWindow(QDialog):
         layout.setSpacing(14)
         layout.addWidget(intro)
         layout.addWidget(self.enabled)
+        layout.addWidget(self.outside)
+        layout.addWidget(self.outside_note)
         layout.addWidget(self.code, 1)
         layout.addWidget(self.how)
         layout.addWidget(self.state)
@@ -172,6 +185,15 @@ class PhoneRemoteWindow(QDialog):
             self.settings.enabled = not on
         self.show_pairing()
 
+    def _outside_toggled(self, on: bool) -> None:
+        self.settings.allow_outside = on
+        if not self._save():
+            self.outside.blockSignals(True)
+            self.outside.setChecked(not on)
+            self.outside.blockSignals(False)
+            self.settings.allow_outside = not on
+        self.show_pairing()
+
     def _unpair(self) -> None:
         answer = QMessageBox.question(
             self, "Unpair all phones",
@@ -185,7 +207,7 @@ class PhoneRemoteWindow(QDialog):
     # -- display ---------------------------------------------------------------
 
     def pairing_link(self) -> str | None:
-        addresses = remote.local_addresses()
+        addresses = remote.local_addresses(outside=self.settings.allow_outside)
         if not self.settings.enabled or not self.settings.token or not addresses:
             return None
         return remote.pairing_url(addresses, self.settings.port, self.settings.token)
@@ -196,7 +218,9 @@ class PhoneRemoteWindow(QDialog):
         self.code.set_text(link)
         self.code.setVisible(link is not None and self.code.matrix is not None)
         self.unpair_button.setEnabled(on)
-        addresses = remote.local_addresses()
+        self.outside.setEnabled(on)
+        self.outside_note.setVisible(on and self.settings.allow_outside)
+        addresses = remote.local_addresses(outside=self.settings.allow_outside)
         if not on:
             self.how.setText("")
         elif not addresses:

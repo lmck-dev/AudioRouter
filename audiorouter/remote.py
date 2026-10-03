@@ -8,8 +8,8 @@ there would otherwise be nothing to answer the phone.
 Off until switched on (`audiorouter remote on`). Every request but `/api/hello`
 carries the pairing token as `Authorization: Bearer <token>`; the token is made
 once and kept in `remote.json` beside the config, readable only by the user.
-Local only: requests from outside the home network (Tailscale included) are
-refused before the token is even looked at. Plain HTTP: the token is the lock, so whoever can read the
+Local only unless `allow_outside` is set: requests from outside the home
+network (Tailscale included) are refused before the token is even looked at. Plain HTTP: the token is the lock, so whoever can read the
 LAN can read it. TLS with the certificate pinned through the pairing code is a
 planned step, not done.
 
@@ -87,6 +87,10 @@ class RemoteSettings:
     enabled: bool = False
     port: int = DEFAULT_PORT
     token: str = ""
+    #: Answer phones on other networks too (a VPN such as Tailscale). Off:
+    #: local only, the owner's default (3 Oct 2026), for the rare user who
+    #: needs it to switch on.
+    allow_outside: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> RemoteSettings:
@@ -101,6 +105,7 @@ class RemoteSettings:
             enabled=bool(data.get("enabled", False)),
             port=int(data.get("port", DEFAULT_PORT)),
             token=str(data.get("token", "")),
+            allow_outside=bool(data.get("allow_outside", False)),
         )
 
     def save(self, path: Path | None = None) -> Path:
@@ -183,19 +188,22 @@ def is_home_network(address: str) -> bool:
     return ip.is_private and not ip.is_link_local
 
 
-def local_addresses() -> list[str]:
-    """This computer's home-network IPv4 addresses, best first.
+def local_addresses(outside: bool = False) -> list[str]:
+    """The addresses a phone can reach this computer on, best first.
 
     The default route's address first, then any other home-network interface.
-    Loopback, link-local and Tailscale addresses are left out: the phone must
-    be on the same network as the desk.
+    With `outside`, every other interface follows (a Tailscale address, say).
+    Loopback and link-local addresses are always left out.
     """
     found: list[str] = []
     for address in [_default_route_address(), *_interface_addresses()]:
-        if (address and address not in found and is_home_network(address)
-                and not address.startswith("127.")):
+        if (not address or address in found or address.startswith("127.")
+                or address.startswith("169.254.")):
+            continue
+        if is_home_network(address) or outside:
             found.append(address)
-    return found
+    # Home-network addresses first: they are what a phone at the desk uses.
+    return sorted(found, key=lambda a: not is_home_network(a))
 
 
 def pairing_url(addresses: list[str], port: int, token: str) -> str:
@@ -494,7 +502,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _local(self) -> bool:
-        if is_home_network(self.client_address[0]):
+        if self.server.allow_outside or is_home_network(self.client_address[0]):
             return True
         self.close_connection = True
         self._send_json(HTTPStatus.FORBIDDEN, {"error": "only the home network may use the remote"})
@@ -591,19 +599,22 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], remote: Remote, token: str) -> None:
+    def __init__(self, address: tuple[str, int], remote: Remote, token: str,
+                 allow_outside: bool = False) -> None:
         super().__init__(address, _Handler)
         self.remote = remote
         self.token = token
+        self.allow_outside = allow_outside
         self.stopping = threading.Event()
 
 
 class RemoteServer:
     """Serves one `Remote` on a port in a background thread."""
 
-    def __init__(self, remote: Remote, port: int, token: str, host: str = "0.0.0.0") -> None:
+    def __init__(self, remote: Remote, port: int, token: str, allow_outside: bool = False,
+                 host: str = "0.0.0.0") -> None:
         self.remote = remote
-        self._server = _Server((host, port), remote, token)
+        self._server = _Server((host, port), remote, token, allow_outside)
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         name="audiorouter-remote", daemon=True)
 
@@ -644,7 +655,8 @@ class RemoteSwitch:
             return
         self._stamp = stamp
         settings = RemoteSettings.load(self.path)
-        wanted = (settings.port, settings.token) if settings.enabled and settings.token else None
+        wanted = ((settings.port, settings.token, settings.allow_outside)
+                  if settings.enabled and settings.token else None)
         if wanted == self._serving:
             return
         self.stop()
@@ -656,7 +668,8 @@ class RemoteSwitch:
             self.log(f"phone remote: could not listen on port {wanted[0]}: {exc}")
             return
         self._serving = wanted
-        self.log(f"phone remote: listening on port {wanted[0]}")
+        self.log(f"phone remote: listening on port {wanted[0]}"
+                 + (", other networks allowed" if wanted[2] else ", home network only"))
 
     def stop(self) -> None:
         if self.server is not None:

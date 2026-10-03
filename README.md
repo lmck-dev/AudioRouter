@@ -90,8 +90,8 @@ python -m audiorouter send 143 speakers        # move one stream by hand
 
 ## Phone remote (in progress)
 
-The login service can answer a phone app on the home network (never from
-outside it): faders, pan, mute, solo, effects on/off, moving apps and Bypass.
+The login service can answer a phone app on the home network (other networks,
+such as a VPN, only with `--outside on`): faders, pan, mute, solo, effects on/off, moving apps and Bypass.
 It is off until switched on, from the window's **Phone remote** button (which
 shows a QR code to pair with) or here:
 

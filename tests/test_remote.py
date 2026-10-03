@@ -57,6 +57,13 @@ class SettingsTest(unittest.TestCase):
             again = RemoteSettings.load(path)
             self.assertEqual((again.enabled, again.port, again.token), (True, 48000, token))
 
+    def test_other_networks_are_off_unless_saved_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "remote.json"
+            self.assertFalse(RemoteSettings.load(path).allow_outside)
+            RemoteSettings(enabled=True, token="t", allow_outside=True).save(path)
+            self.assertTrue(RemoteSettings.load(path).allow_outside)
+
     def test_a_missing_or_broken_file_means_off(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "remote.json"
@@ -89,8 +96,10 @@ class SettingsTest(unittest.TestCase):
         with mock.patch.object(remote, "_default_route_address", return_value="192.168.1.50"), \
              mock.patch.object(remote, "_interface_addresses",
                                return_value=["127.0.0.1", "192.168.1.50", "100.79.138.27", "169.254.3.4"]):
-            # Tailscale is left out: the remote is local only.
+            # Tailscale is left out: the remote is local only...
             self.assertEqual(remote.local_addresses(), ["192.168.1.50"])
+            # ...unless other networks are allowed, and then home comes first.
+            self.assertEqual(remote.local_addresses(outside=True), ["192.168.1.50", "100.79.138.27"])
 
 
 class StateTest(RemoteTestCase):
@@ -203,6 +212,12 @@ class HttpTest(RemoteTestCase):
             self.assertEqual(self.request("GET", "/api/state")[0], 403)
             self.assertEqual(self.request("POST", "/api/command", {"cmd": "pan"})[0], 403)
 
+    def test_other_networks_once_allowed_still_need_the_token(self):
+        self.server._server.allow_outside = True
+        with mock.patch.object(remote, "is_home_network", return_value=False):
+            self.assertEqual(self.request("GET", "/api/state")[0], 200)
+            self.assertEqual(self.request("GET", "/api/state", token="wrong")[0], 401)
+
     def test_hello_needs_no_token(self):
         status, body = self.request("GET", "/api/hello", token=None)
         self.assertEqual(status, 200)
@@ -261,6 +276,12 @@ class SwitchTest(RemoteTestCase):
         RemoteSettings(enabled=True, port=0, token="t").save(path)
         switch.check()
         self.assertIsNotNone(switch.server)
+        # Allowing other networks takes effect without switching off and on.
+        RemoteSettings(enabled=True, port=0, token="t", allow_outside=True).save(path)
+        os.utime(path, ns=(1, 1))
+        switch.check()
+        self.assertTrue(switch.server._server.allow_outside)
+        self.assertIn("other networks allowed", lines[-1])
         RemoteSettings(enabled=False, port=0, token="t").save(path)
         os.utime(path, ns=(2, 2))
         switch.check()

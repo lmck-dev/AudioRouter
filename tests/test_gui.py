@@ -1373,6 +1373,21 @@ class PhoneRemoteWindowTest(unittest.TestCase):
             self.assertIsNotNone(window.code.matrix)
         self.assertIn("Ready", window.state.text())
 
+    def test_other_networks_add_their_addresses_and_a_warning(self):
+        from audiorouter import remote
+
+        window = self.window()
+        self.assertFalse(window.outside.isEnabled())  # only once the remote is on
+        window.enabled.setChecked(True)
+        self.assertTrue(window.outside_note.isHidden())
+        with mock.patch("audiorouter.remote.local_addresses",
+                        side_effect=lambda outside=False: ["192.168.1.50"] + (["100.79.138.27"] if outside else [])):
+            window.outside.setChecked(True)
+            self.assertTrue(remote.RemoteSettings.load().allow_outside)
+            self.assertFalse(window.outside_note.isHidden())
+            self.assertEqual(remote.parse_pairing_url(window.pairing_link())[0],
+                             ["192.168.1.50", "100.79.138.27"])
+
     def test_says_when_the_service_is_not_running(self):
         window = self.window(running=False)
         window.enabled.setChecked(True)
