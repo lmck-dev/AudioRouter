@@ -193,6 +193,20 @@ Every channel's settings read the same way as its strip, top to bottom in the or
 
 Below the settings, **Levels** shows what goes into and comes out of the channel. With **Show the highlighted effect** ticked, it shows what the effect selected in the Effects list receives and puts out instead. Under that, the **Effects** list and the selected effect's settings.
 
+## Phone remote
+
+The **Phone remote** button at the top lets the Audio Router Remote app on an Android phone work the mixer: faders, pan, mute, solo, switching effects on and off, sending apps to channels, and Bypass.
+
+1. Click **Phone remote** and tick **Let the phone app control this desk**.
+2. In the app, tap **Pair** and scan the code shown.
+3. When the window says **Ready**, the phone can reach the desk.
+
+The phone must be on the same network as the computer. The remote never answers anything outside your home network, even with the code, so it cannot be used from elsewhere.
+
+The phone talks to the background service, so **Keep routing with this window closed** must be ticked; the window says so if it is not. Changes made from the phone show in this window as they happen.
+
+**Unpair all phones** makes a new code: every phone stops working until it scans the new one. Use it if a phone is lost or given away. Untick the box to switch the remote off.
+
 ## Warnings and how to fix them
 
 | You see | What it means | What to do |
@@ -202,6 +216,7 @@ Below the settings, **Levels** shows what goes into and comes out of the channel
 | **No output devices - is anything plugged in?** | No speakers or headphones are connected. | Plug a device in or check the desktop's sound settings. |
 | **(not connected)** after a device name | The channel's chosen device is unplugged. The channel keeps that choice rather than switching silently. | Plug it back in, or choose another device. |
 | **not running** on a strip | The channel should be on but is not. | Usually clears within a second or two. If it stays, switch the channel off and on in the Channels tab. |
+| **The phone talks to the background service, which is not running** (Phone remote) | The phone remote is on, but nothing is there to answer the phone. | Tick **Keep routing with this window closed**. |
 | **Bypassed** banner across the window | Bypass is on: every channel is stopped and nothing is routed. | Click **Bypassed** to bring everything back. |
 | **cut by a solo** on a strip | Another channel of the same kind is soloed. | Turn off the lit **S**. |
 
@@ -220,4 +235,5 @@ Below the settings, **Levels** shows what goes into and comes out of the channel
 | Solo | Hear only one channel by cutting the others. |
 | dB (decibel) | The unit for level. 0 dB leaves the level unchanged; -6 dB halves the signal, which sounds noticeably quieter; positive values are louder. |
 | Echo cancellation | Removing the speakers' sound from a microphone. |
+| Pairing | Letting a phone control the desk, by scanning the code in the Phone remote window. |
 | Default output / input | Whichever speakers or microphone the desktop is set to use. |

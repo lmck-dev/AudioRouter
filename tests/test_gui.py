@@ -1326,3 +1326,71 @@ class SingleWindowTest(unittest.TestCase):
         lock = single.WindowLock(name)
         self.addCleanup(lock.close)
         self.assertTrue(lock.server.isListening())
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class PhoneRemoteWindowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        addresses = mock.patch("audiorouter.remote.local_addresses", return_value=["192.168.1.50"])
+        addresses.start()
+        self.addCleanup(addresses.stop)
+
+    def window(self, running=True, answers=True):
+        from audiorouter.gui.phone import PhoneRemoteWindow
+
+        window = PhoneRemoteWindow(service_running=lambda: running, answers=lambda port: answers)
+        self.addCleanup(window.close)
+        return window
+
+    def test_off_by_default_with_no_code(self):
+        window = self.window()
+        self.assertFalse(window.enabled.isChecked())
+        self.assertIsNone(window.pairing_link())
+        self.assertFalse(window.unpair_button.isEnabled())
+
+    def test_switching_on_saves_a_token_and_shows_the_code(self):
+        from audiorouter import remote
+
+        window = self.window()
+        window.enabled.setChecked(True)
+        saved = remote.RemoteSettings.load()
+        self.assertTrue(saved.enabled)
+        self.assertTrue(saved.token)
+        self.assertEqual(remote.parse_pairing_url(window.pairing_link()),
+                         (["192.168.1.50"], saved.port, saved.token))
+        self.assertIsNotNone(window.code.matrix)
+        self.assertIn("Ready", window.state.text())
+
+    def test_says_when_the_service_is_not_running(self):
+        window = self.window(running=False)
+        window.enabled.setChecked(True)
+        self.assertIn("not running", window.state.text())
+
+    def test_unpair_makes_a_new_token(self):
+        from PyQt6.QtWidgets import QMessageBox
+        from audiorouter import remote
+
+        window = self.window()
+        window.enabled.setChecked(True)
+        first = remote.RemoteSettings.load().token
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            window.unpair_button.click()
+        self.assertNotEqual(remote.RemoteSettings.load().token, first)
+
+    def test_the_code_reads_back(self):
+        from audiorouter.gui.phone import qr_matrix
+
+        matrix = qr_matrix("audiorouter://pair?h=192.168.1.50&p=47800&t=abc")
+        if matrix is None:
+            self.skipTest("python3-qrcode is not installed")
+        self.assertEqual(len(matrix), len(matrix[0]))
+        self.assertGreaterEqual(len(matrix), 21)

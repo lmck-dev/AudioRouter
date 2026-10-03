@@ -205,6 +205,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.background)
         top.addStretch(1)
         top.addWidget(self.status_label)
+        self.phone_button = QPushButton("Phone remote", self)
+        self.phone_button.setToolTip("Control the mixer from your phone, and pair it")
+        self.phone_button.clicked.connect(self._show_phone)
+        top.addWidget(self.phone_button)
         self.guide_button = QPushButton("User Guide", self)
         self.guide_button.setToolTip("What every part of Audio Router does")
         self.guide_button.clicked.connect(self._show_guide)
@@ -1076,6 +1080,16 @@ class MainWindow(QMainWindow):
         self._about.show()
         self._about.raise_()
         self._about.activateWindow()
+
+    def _show_phone(self) -> None:
+        from .phone import PhoneRemoteWindow
+
+        # Made afresh each time: the settings file may have changed meanwhile
+        # (`audiorouter remote on` from a terminal).
+        if getattr(self, "_phone", None) is not None:
+            self._phone.close()
+        self._phone = PhoneRemoteWindow(self)
+        self._phone.show()
 
     def _monitor_failed(self, message: str) -> None:
         self._set_status(f"Not watching for new apps: {message}", warn=True)

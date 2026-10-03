@@ -90,11 +90,13 @@ python -m audiorouter send 143 speakers        # move one stream by hand
 
 ## Phone remote (in progress)
 
-The login service can answer a phone app over the home network: faders, pan,
-mute, solo, effects on/off, moving apps and Bypass. It is off until switched on:
+The login service can answer a phone app on the home network (never from
+outside it): faders, pan, mute, solo, effects on/off, moving apps and Bypass.
+It is off until switched on, from the window's **Phone remote** button (which
+shows a QR code to pair with) or here:
 
 ```sh
-audiorouter remote on          # prints the pairing address and token
+audiorouter remote on          # prints the pairing link
 audiorouter remote new-token   # unpair every phone
 audiorouter remote off
 ```

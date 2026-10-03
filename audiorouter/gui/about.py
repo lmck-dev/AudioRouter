@@ -44,6 +44,7 @@ CREDITS = (
     ("LSP Plugins", "the built-in compressor and limiter"),
     ("RNNoise", "voice noise suppression"),
     ("WebRTC audio processing", "echo cancellation"),
+    ("python-qrcode", "the phone remote's pairing code"),
 )
 
 

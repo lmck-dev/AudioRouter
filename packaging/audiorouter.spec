@@ -22,6 +22,8 @@ BuildRequires:  desktop-file-utils
 BuildRequires:  python3-pyqt6
 
 Requires:       python3-pyqt6
+# The phone remote's pairing code (without it the window shows the link as text)
+Requires:       python3-qrcode
 Requires:       pipewire
 Requires:       wireplumber
 # pw-dump, pw-cli, pw-metadata
