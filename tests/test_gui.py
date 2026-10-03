@@ -1291,3 +1291,38 @@ class AdoptSavedSettingsTest(GuiTestCase):
         with mock.patch.object(self.window, "refresh") as refresh:
             self.window.adopt_saved_settings()
         refresh.assert_not_called()
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class SingleWindowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_a_second_start_brings_the_first_window_forward(self):
+        from audiorouter.gui import single
+
+        name = f"audiorouter-test-{os.getpid()}"
+        self.assertFalse(single.show_running_window(name))  # nobody open yet
+        lock = single.WindowLock(name)
+        self.addCleanup(lock.close)
+        shown = []
+        lock.show_requested.connect(lambda: shown.append(True))
+        self.assertTrue(single.show_running_window(name))
+        for _ in range(50):
+            self.app.processEvents()
+            if shown:
+                break
+        self.assertEqual(shown, [True])
+
+    def test_a_crashed_windows_socket_does_not_block_the_next(self):
+        from PyQt6.QtNetwork import QLocalServer
+        from audiorouter.gui import single
+
+        name = f"audiorouter-test-stale-{os.getpid()}"
+        stale = QLocalServer()
+        stale.listen(name)
+        stale.close()  # what a crash leaves behind, as near as a test can
+        lock = single.WindowLock(name)
+        self.addCleanup(lock.close)
+        self.assertTrue(lock.server.isListening())

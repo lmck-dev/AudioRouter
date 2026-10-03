@@ -436,9 +436,13 @@ def cmd_remote(engine: Engine, args: argparse.Namespace) -> int:
     if daemon_pid() is None:
         print("note: the background service is not running, so nothing answers the phone yet "
               "('audiorouter login on')")
+    addresses = remote.local_addresses()
     print(f"port: {settings.port}")
-    for address in remote.local_addresses():
-        print(f"pair with: {remote.pairing_url(address, settings.port, settings.token)}")
+    for address in addresses:
+        print(f"address: {address}")
+    if not addresses:
+        print("note: this computer has no home-network address, so no phone can reach it")
+    print(f"pairing link: {remote.pairing_url(addresses, settings.port, settings.token)}")
     return 0
 
 

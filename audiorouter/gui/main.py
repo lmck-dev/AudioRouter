@@ -53,6 +53,7 @@ from .applier import Applier
 from .channel_panel import ChannelPanel
 from .effects_panel import EffectsPanel
 from .meters import MeterPanel
+from . import single
 from .mixer import MixerView, desk_order, group_label, kind_label
 from .monitor import GraphBridge
 from .streams_panel import StreamsPanel
@@ -444,6 +445,14 @@ class MainWindow(QMainWindow):
             self._set_status("Updating...")
         else:
             self._set_status("")
+
+    def bring_forward(self) -> None:
+        """Audio Router was opened again: show this window rather than a second."""
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def adopt_saved_settings(self) -> None:
         """Show settings another process saved, without applying them.
@@ -1124,6 +1133,13 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Audio Router")
     app.setDesktopFileName(install.APP_ID)
+    if single.show_running_window():
+        return 0  # one window at a time: the open one comes forward instead
+    try:
+        lock = single.WindowLock()
+    except OSError as exc:  # pragma: no cover - the socket directory is unwritable
+        print(f"audiorouter: could not claim the window lock: {exc}", file=sys.stderr)
+        lock = None
     try:
         engine = Engine.load()
     except ConfigError as exc:
@@ -1132,6 +1148,8 @@ def main(argv: list[str] | None = None) -> int:
     native.ensure_all()  # well under a second each, and only when missing or stale
     _set_up_package()
     window = MainWindow(engine)
+    if lock is not None:
+        lock.show_requested.connect(window.bring_forward)
     window.show()
     return app.exec()
 

@@ -8,13 +8,17 @@ there would otherwise be nothing to answer the phone.
 Off until switched on (`audiorouter remote on`). Every request but `/api/hello`
 carries the pairing token as `Authorization: Bearer <token>`; the token is made
 once and kept in `remote.json` beside the config, readable only by the user.
-Plain HTTP on the home network: the token is the lock, so whoever can read the
+Local only: requests from outside the home network (Tailscale included) are
+refused before the token is even looked at. Plain HTTP: the token is the lock, so whoever can read the
 LAN can read it. TLS with the certificate pinned through the pairing code is a
 planned step, not done.
 
 Endpoints (JSON in and out):
 
     GET  /api/hello    who this is; no token needed, so the phone can check an address
+
+Pairing link (QR code in the window, or `audiorouter remote`):
+`audiorouter://pair?h=<address>&h=<address>&p=<port>&t=<token>`
     GET  /api/state    the whole desk (see `Remote.state`)
     POST /api/command  one change: {"cmd": "fader", "slug": "music", "db": -6}
     GET  /api/events   Server-Sent Events: `state` whenever the desk changes
@@ -27,12 +31,14 @@ window adopts the file when it changes on disk.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import secrets
 import socket
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from http import HTTPStatus
@@ -126,34 +132,89 @@ def settings_stamp(path: Path | None = None) -> tuple[int, int] | None:
     return (info.st_mtime_ns, info.st_size)
 
 
-def local_addresses() -> list[str]:
-    """This computer's IPv4 addresses a phone could reach, best first.
+def _interface_addresses() -> list[str]:
+    """The IPv4 address of every network interface (Linux: SIOCGIFADDR)."""
+    import fcntl
+    import struct
 
-    The address of the default route comes first (no packet is sent: a UDP
-    connect only picks a route). Loopback is left out.
-    """
-    found: list[str] = []
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.connect(("192.0.2.1", 9))  # TEST-NET-1: never routed anywhere
-        found.append(probe.getsockname()[0])
-    except OSError:
-        pass
-    finally:
-        probe.close()
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            address = str(info[4][0])
-            if address not in found and not address.startswith("127."):
-                found.append(address)
-    except OSError:
-        pass
+    found = []
+    for _, name in socket.if_nameindex():
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            packed = fcntl.ioctl(probe.fileno(), 0x8915,  # SIOCGIFADDR
+                                 struct.pack("256s", name[:15].encode()))
+            found.append(socket.inet_ntoa(packed[20:24]))
+        except OSError:
+            pass  # an interface with no IPv4 address
+        finally:
+            probe.close()
     return found
 
 
-def pairing_url(address: str, port: int, token: str) -> str:
-    """What the phone's pairing screen reads, typed or from a QR code."""
-    return f"audiorouter://{address}:{port}/{token}"
+def _default_route_address() -> str | None:
+    """The address the default route leaves from (a UDP connect sends nothing)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))  # TEST-NET-1: never routed anywhere
+        return str(probe.getsockname()[0])
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
+def is_home_network(address: str) -> bool:
+    """A home-network (or this computer's own) address: the only ones served.
+
+    The remote is local only (owner, 3 Oct 2026): nobody needs to move a
+    fader without being at the desk. Private ranges and loopback qualify;
+    Tailscale's 100.64.0.0/10 and anything public do not, token or no token.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback:
+        return True
+    if ip in ipaddress.ip_network("100.64.0.0/10"):
+        return False  # carrier-grade NAT space, which Tailscale uses
+    return ip.is_private and not ip.is_link_local
+
+
+def local_addresses() -> list[str]:
+    """This computer's home-network IPv4 addresses, best first.
+
+    The default route's address first, then any other home-network interface.
+    Loopback, link-local and Tailscale addresses are left out: the phone must
+    be on the same network as the desk.
+    """
+    found: list[str] = []
+    for address in [_default_route_address(), *_interface_addresses()]:
+        if (address and address not in found and is_home_network(address)
+                and not address.startswith("127.")):
+            found.append(address)
+    return found
+
+
+def pairing_url(addresses: list[str], port: int, token: str) -> str:
+    """What the phone's pairing screen reads, from a QR code or typed.
+
+    Every home-network address goes in, best first (a desk on both wired and
+    wireless has two); the phone tries each.
+    """
+    query = urllib.parse.urlencode([*(("h", a) for a in addresses), ("p", port), ("t", token)])
+    return f"audiorouter://pair?{query}"
+
+
+def parse_pairing_url(url: str) -> tuple[list[str], int, str]:
+    """The reverse of `pairing_url`, for tests and the command line."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "audiorouter" or parsed.netloc != "pair":
+        raise ValueError(f"not a pairing link: {url!r}")
+    query = urllib.parse.parse_qs(parsed.query)
+    return query.get("h", []), int(query["p"][0]), query["t"][0]
 
 
 class Remote:
@@ -432,6 +493,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _local(self) -> bool:
+        if is_home_network(self.client_address[0]):
+            return True
+        self.close_connection = True
+        self._send_json(HTTPStatus.FORBIDDEN, {"error": "only the home network may use the remote"})
+        return False
+
     def _authorised(self) -> bool:
         given = self.headers.get("Authorization", "")
         expected = f"Bearer {self.server.token}"
@@ -447,6 +515,8 @@ class _Handler(BaseHTTPRequestHandler):
     # -- routes
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib's name
+        if not self._local():
+            return
         path = self.path.split("?", 1)[0]
         if path == "/api/hello":
             self._send_json(HTTPStatus.OK, {"app": "audiorouter", "version": __version__,
@@ -461,6 +531,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "no such endpoint"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib's name
+        if not self._local():
+            return
         if self.path.split("?", 1)[0] != "/api/command":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "no such endpoint"})
             return

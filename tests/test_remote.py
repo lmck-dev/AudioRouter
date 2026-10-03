@@ -71,9 +71,26 @@ class SettingsTest(unittest.TestCase):
         self.assertNotEqual(settings.new_token(), first)
         self.assertGreaterEqual(len(first), 32)
 
-    def test_pairing_url(self):
-        self.assertEqual(remote.pairing_url("192.168.1.50", 47800, "abc"),
-                         "audiorouter://192.168.1.50:47800/abc")
+    def test_pairing_url_carries_every_address(self):
+        url = remote.pairing_url(["192.168.1.50", "100.79.138.27"], 47800, "a-b_c")
+        self.assertEqual(url, "audiorouter://pair?h=192.168.1.50&h=100.79.138.27&p=47800&t=a-b_c")
+        self.assertEqual(remote.parse_pairing_url(url),
+                         (["192.168.1.50", "100.79.138.27"], 47800, "a-b_c"))
+        with self.assertRaises(ValueError):
+            remote.parse_pairing_url("https://example.com/pair?p=1&t=x")
+
+    def test_only_the_home_network_is_served(self):
+        for address in ("192.168.1.50", "10.0.0.7", "172.16.4.4", "127.0.0.1", "::ffff:192.168.1.9"):
+            self.assertTrue(remote.is_home_network(address), address)
+        for address in ("100.79.138.27", "8.8.8.8", "169.254.3.4", "nonsense"):
+            self.assertFalse(remote.is_home_network(address), address)
+
+    def test_addresses_put_the_default_route_first_and_drop_loopback(self):
+        with mock.patch.object(remote, "_default_route_address", return_value="192.168.1.50"), \
+             mock.patch.object(remote, "_interface_addresses",
+                               return_value=["127.0.0.1", "192.168.1.50", "100.79.138.27", "169.254.3.4"]):
+            # Tailscale is left out: the remote is local only.
+            self.assertEqual(remote.local_addresses(), ["192.168.1.50"])
 
 
 class StateTest(RemoteTestCase):
@@ -180,6 +197,11 @@ class HttpTest(RemoteTestCase):
         connection.request(method, path, body=data, headers=headers)
         response = connection.getresponse()
         return response.status, json.loads(response.read() or b"{}")
+
+    def test_outside_the_home_network_is_refused_even_with_the_token(self):
+        with mock.patch.object(remote, "is_home_network", return_value=False):
+            self.assertEqual(self.request("GET", "/api/state")[0], 403)
+            self.assertEqual(self.request("POST", "/api/command", {"cmd": "pan"})[0], 403)
 
     def test_hello_needs_no_token(self):
         status, body = self.request("GET", "/api/hello", token=None)
