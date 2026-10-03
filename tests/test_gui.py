@@ -1367,7 +1367,10 @@ class PhoneRemoteWindowTest(unittest.TestCase):
         self.assertTrue(saved.token)
         self.assertEqual(remote.parse_pairing_url(window.pairing_link()),
                          (["192.168.1.50"], saved.port, saved.token))
-        self.assertIsNotNone(window.code.matrix)
+        from audiorouter.gui.phone import qr_matrix
+
+        if qr_matrix("x") is not None:  # without python3-qrcode the link is shown as text
+            self.assertIsNotNone(window.code.matrix)
         self.assertIn("Ready", window.state.text())
 
     def test_says_when_the_service_is_not_running(self):

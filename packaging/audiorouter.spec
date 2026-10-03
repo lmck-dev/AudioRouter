@@ -20,6 +20,7 @@ BuildRequires:  systemd-rpm-macros
 BuildRequires:  desktop-file-utils
 # %%check runs the whole suite, window tests included.
 BuildRequires:  python3-pyqt6
+BuildRequires:  python3-qrcode
 
 Requires:       python3-pyqt6
 # The phone remote's pairing code (without it the window shows the link as text)
