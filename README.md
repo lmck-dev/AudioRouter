@@ -88,6 +88,20 @@ python -m audiorouter status
 python -m audiorouter send 143 speakers        # move one stream by hand
 ```
 
+## Phone remote (in progress)
+
+The login service can answer a phone app over the home network: faders, pan,
+mute, solo, effects on/off, moving apps and Bypass. It is off until switched on:
+
+```sh
+audiorouter remote on          # prints the pairing address and token
+audiorouter remote new-token   # unpair every phone
+audiorouter remote off
+```
+
+The API is described at the top of `audiorouter/remote.py`. The Android app is
+not released yet.
+
 ## How routing behaves
 
 Rules are ordered and the first match wins. A pattern with `*` or `?` is a glob;

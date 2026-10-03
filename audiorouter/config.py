@@ -350,3 +350,31 @@ def default_config(devices: list[str]) -> Config:
         used.add(candidate)
         config.add_channel(Channel(slug=candidate, name="", device=device))
     return config
+
+
+# -- the desk, as every view shows it ------------------------------------------
+# Here, not in the GUI, because the phone remote (remote.py) runs in the
+# login service, which never loads Qt.
+
+
+def desk_order(config: Config) -> tuple[list[Channel], list[Channel]]:
+    """The channels as the desk shows them: (channels, groups), left to right.
+
+    Mic channels first, then app channels, then groups (right of the channels
+    feeding them, as on a console). Companions are plumbing and never shown.
+    The Channels tab lists them in this same order.
+    """
+    shown = [c for c in config.channels if not c.companion_of]
+    groups = [c for c in shown if not c.is_input and config.is_group(c)]
+    channels = ([c for c in shown if c.is_input]
+                + [c for c in shown if not c.is_input and c not in groups])
+    return channels, groups
+
+
+def kind_label(config: Config, channel: Channel) -> str:
+    """Where a channel's sound comes from, as its strip's caption says it."""
+    if channel.is_input:
+        return "From a mic"
+    if config.is_group(channel):
+        return "Group"
+    return "Cable" if channel.recordable else "From apps"

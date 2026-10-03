@@ -18,7 +18,7 @@ from typing import Any
 from .channels import INPUT, NOWHERE, OUTPUT, ChannelError
 from .config import ConfigError, config_path
 from .effects import EffectError, all_specs, plugin_spec, plugin_specs
-from . import install, native, session
+from . import install, native, remote, session
 from .engine import AutoRouter, DaemonRecord, Engine, EngineError, MoveResult, daemon_pid
 from .pwgraph import PwError
 from .routing import MATCH_FIELDS, RoutingError
@@ -389,20 +389,57 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, _signal)
     code = 0
     notifier = session.EchoCancelNotifier()
+    phone = remote.Remote(engine)
+
+    def _graph(graph) -> None:
+        notifier.check(engine.config.channels, graph)
+        phone.notify(graph)
+
+    switch = remote.RemoteSwitch(phone, log=lambda line: print(line, flush=True))
     with DaemonRecord(), AutoRouter(engine, on_move=_report, follow_config=True,
-                                    on_graph=lambda graph: notifier.check(engine.config.channels, graph)) as auto:
+                                    on_graph=_graph) as auto:
+        phone.on_sent = auto.remember
         print("watching for new streams; Ctrl-C to stop", flush=True)
+        switch.check()
         while not stop.wait(1.0):
+            switch.check()
             if auto.ended:
                 # Exit non-zero so a service manager starts us again, which
                 # re-applies the channels PipeWire just lost.
                 print("lost the PipeWire graph; exiting", file=sys.stderr, flush=True)
                 code = 1
                 break
+    switch.stop()
     if args.stop_channels:
         engine.stop_all()
     print("stopped")
     return code
+
+
+def cmd_remote(engine: Engine, args: argparse.Namespace) -> int:
+    """Switch the phone remote on or off, or show how to pair a phone."""
+    settings = remote.RemoteSettings.load()
+    if args.state in ("on", "new-token"):
+        settings.enabled = True
+        if args.state == "new-token":
+            settings.new_token()
+        settings.ensure_token()
+        if args.port is not None:
+            settings.port = args.port
+        settings.save()
+    elif args.state == "off":
+        settings.enabled = False
+        settings.save()
+    print(f"phone remote: {'on' if settings.enabled else 'off'}")
+    if not settings.enabled:
+        return 0
+    if daemon_pid() is None:
+        print("note: the background service is not running, so nothing answers the phone yet "
+              "('audiorouter login on')")
+    print(f"port: {settings.port}")
+    for address in remote.local_addresses():
+        print(f"pair with: {remote.pairing_url(address, settings.port, settings.token)}")
+    return 0
 
 
 def cmd_launcher(engine: Engine, args: argparse.Namespace) -> int:
@@ -563,6 +600,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--stop-channels", action="store_true", help="also stop channels when interrupted"
     )
     watch.set_defaults(func=cmd_watch)
+
+    phone = sub.add_parser("remote", help="let the phone app control the desk")
+    phone.add_argument("state", nargs="?", choices=("on", "off", "status", "new-token"),
+                       default="status", help="new-token: unpair every phone")
+    phone.add_argument("--port", type=int, help=f"default {remote.DEFAULT_PORT}")
+    phone.set_defaults(func=cmd_remote)
 
     launcher = sub.add_parser("launcher", help="add the window to the application menu")
     launcher.add_argument("--remove", action="store_true", help="take it out again")

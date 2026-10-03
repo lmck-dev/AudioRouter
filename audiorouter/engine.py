@@ -143,7 +143,8 @@ class Engine:
         goes; without this, an app remembered in the window would not be routed
         until the next login. A file that cannot be read is ignored and the last
         good settings kept - half-understood rules are worse than stale ones.
-        Only a process that never edits the config itself should call this.
+        Safe only where every edit is saved the moment it is made (the window,
+        the phone remote): otherwise a reload would throw an unsaved edit away.
         """
         stamp = self._config_stamp()
         if stamp is None or stamp == self._loaded_stamp:

@@ -22,6 +22,7 @@ needed, no dependencies).
 | `config.py`   | atomic JSON persistence                                    |
 | `engine.py`   | **policy**: reconcile config against reality; auto-router  |
 | `install.py`  | menu launcher (.desktop) and login service (systemd user unit) |
+| `remote.py`   | phone remote: HTTP + SSE API in the login service, pairing token |
 | `cli.py`      | argument parsing and printing only - no logic              |
 
 The GUI drives `Engine` directly. Anything that needs thinking
@@ -203,6 +204,12 @@ These rules come from those files, and they apply even when you haven't opened t
   watch`). A code change is not live until you rebuild with
   `packaging/build-rpm.sh` and reinstall. Without the package, the service
   would run whatever branch is checked out. See `docs/packaging.md`.
+- **The phone remote edits the config from the login service** (3 Oct 2026),
+  which used to be read-only. Every remote edit reloads the file first, then
+  saves and applies at once. `desk_order`/`kind_label` live in `config.py` so
+  the service never imports Qt. Its token is in `remote.json` (0600), never in
+  config.json, which the window rewrites from its own fields.
+
 ## Testing audio without hardware
 
 The analog codec on this machine sometimes fails to initialise at boot
