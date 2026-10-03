@@ -1,10 +1,10 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.2.0
+Version:        1.2.1
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
-License:        Apache-2.0
+License:        GPL-3.0-or-later
 URL:            https://github.com/lmck-dev/AudioRouter
 Source0:        %{name}-%{version}.tar.gz
 
@@ -89,6 +89,7 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %systemd_user_preun audiorouter.service
 
 %files -f %{pyproject_files}
+%license LICENSE
 %doc README.md
 %{_bindir}/audiorouter
 %{_bindir}/audiorouter-gui
@@ -98,6 +99,9 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/applications/audiorouter.desktop
 
 %changelog
+* Sat Oct 03 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.1-1
+- 1.2.1: relicensed under GPL-3.0-or-later; LICENSE file shipped
+
 * Fri Oct 02 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.0-1
 - 1.2.0: plugin folders; LADSPA plugins as effects
 

@@ -219,7 +219,7 @@ class WindowTest(GuiTestCase):
         about = self.window._about
         self.assertTrue(about.isVisible())
         text = about.body.toPlainText()
-        self.assertIn("Apache License 2.0", text)
+        self.assertIn("GNU General Public License", text)
         self.assertIn("Running on", text)
         self.assertIn("Ko-fi", text)
         with mock.patch("audiorouter.gui.about.QDesktopServices.openUrl") as open_url:

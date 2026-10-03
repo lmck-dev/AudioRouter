@@ -31,7 +31,7 @@ ICON = "multimedia-volume-control"  # the launcher's icon (packaging/audiorouter
 TAGLINE = "Send each app's sound to its own channel, with its own effects."
 AUTHOR = "LMCK.DEV"
 YEAR = "2026"
-LICENCE = "Apache License 2.0"
+LICENCE = "GNU General Public License v3.0 or later"
 PROJECT_URL = "https://github.com/lmck-dev/AudioRouter"
 #: Donations (owner's choice of Ko-fi over Buy Me a Coffee, 1 Oct 2026;
 #: ~/Documents/USEFUL_LINKS.md keeps every project's support links).
