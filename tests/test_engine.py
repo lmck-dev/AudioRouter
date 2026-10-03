@@ -611,3 +611,42 @@ class InputChannelApplyTest(EngineTestCase):
              mock.patch.object(Channel, "start") as start:
             self.engine.apply()
         self.assertEqual(start.call_count, 1)  # only "speakers", whose conf was never written
+
+
+class AdoptSavedTest(EngineTestCase):
+    def save_elsewhere(self, change):
+        self.engine.save()
+        other = Engine.load(self.path)
+        change(other.config)
+        other.save()
+        stamp = self.path.stat().st_mtime_ns + 1_000_000
+        os.utime(self.path, ns=(stamp, stamp))
+
+    def test_nothing_new(self):
+        self.engine.save()
+        self.assertIsNone(self.engine.adopt_saved())
+
+    def test_values_land_on_the_same_objects(self):
+        self.engine.add_effect("speakers", "gain")
+        channel = self.engine.config.channel("speakers")
+        effect = channel.effects[0]
+
+        def change(config):
+            config.channel("speakers").fader_db = -4.0
+            config.channel("speakers").solo = True
+            config.channel("speakers").effects[0].enabled = False
+            config.bypass = True
+
+        self.save_elsewhere(change)
+        self.assertEqual(self.engine.adopt_saved(), "values")
+        self.assertIs(self.engine.config.channel("speakers"), channel)
+        self.assertIs(channel.effects[0], effect)
+        self.assertEqual((channel.fader_db, channel.solo, effect.enabled), (-4.0, True, False))
+        self.assertTrue(self.engine.config.bypass)
+
+    def test_a_new_shape_replaces_the_config(self):
+        channel = self.engine.config.channel("speakers")
+        self.save_elsewhere(lambda c: c.channel("speakers").effects.append(Effect("gain")))
+        self.assertEqual(self.engine.adopt_saved(), "shape")
+        self.assertIsNot(self.engine.config.channel("speakers"), channel)
+        self.assertEqual(len(self.engine.config.channel("speakers").effects), 1)

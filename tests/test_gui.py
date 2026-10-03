@@ -1248,3 +1248,46 @@ class PluginFoldersTest(GuiTestCase):
                                lambda d: effects_panel.QDialog.DialogCode.Rejected):
             self.assertFalse(self.window.effects_panel.edit_plugin_folders(self.window))
         self.assertEqual(self.engine.config.plugin_folders, [])
+
+
+class AdoptSavedSettingsTest(GuiTestCase):
+    """Settings the phone remote (or the CLI) saved show up in an open window."""
+
+    def save_elsewhere(self, change):
+        self.engine.save()
+        other = Engine.load(self.engine.path)
+        change(other.config)
+        other.save()
+        stamp = self.engine.path.stat().st_mtime_ns + 1_000_000
+        os.utime(self.engine.path, ns=(stamp, stamp))  # never the same stamp as ours
+
+    def test_a_fader_moved_elsewhere_keeps_every_strip(self):
+        strip = self.window.mixer.strips["speakers"]
+        channel = self.engine.config.channel("speakers")
+        self.save_elsewhere(lambda c: setattr(c.channel("speakers"), "fader_db", -9.0))
+        self.window.adopt_saved_settings()
+        self.assertIs(self.engine.config.channel("speakers"), channel)
+        self.assertIs(self.window.mixer.strips["speakers"], strip)
+        self.assertEqual(channel.fader_db, -9.0)
+        self.assertIn("-9.0 dB", strip.volume_label.text())
+
+    def test_bypass_switched_elsewhere_shows_on_the_button(self):
+        self.save_elsewhere(lambda c: setattr(c, "bypass", True))
+        with mock.patch.object(self.window, "apply_now") as apply_now:
+            self.window.adopt_saved_settings()
+        apply_now.assert_not_called()  # whoever saved it applies it
+        self.assertTrue(self.window.bypass.isChecked())
+        self.assertFalse(self.window.bypass_banner.isHidden())
+
+    def test_a_channel_added_elsewhere_is_listed(self):
+        self.save_elsewhere(lambda c: c.channels.append(Channel("game", "Game", "alsa_output.a")))
+        self.window.adopt_saved_settings()
+        channels = self.window.channel_list
+        self.assertIn("Game", [channels.item(i).text().split("  -  ")[0] for i in range(channels.count())])
+        self.assertIn("game", self.window.mixer.strips)
+
+    def test_nothing_saved_means_nothing_redrawn(self):
+        self.engine.save()
+        with mock.patch.object(self.window, "refresh") as refresh:
+            self.window.adopt_saved_settings()
+        refresh.assert_not_called()

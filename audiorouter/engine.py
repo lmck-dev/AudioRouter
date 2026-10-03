@@ -18,6 +18,7 @@ Two rules shape the whole file:
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import threading
@@ -146,17 +147,31 @@ class Engine:
         Safe only where every edit is saved the moment it is made (the window,
         the phone remote): otherwise a reload would throw an unsaved edit away.
         """
+        return self.adopt_saved(in_place=False) is not None
+
+    def adopt_saved(self, in_place: bool = True) -> str | None:
+        """Adopt settings another process saved; say how much changed.
+
+        None: nothing new. "values": the same channel and effect objects now
+        hold the saved values (a fader, a solo, an effect switched off), so a
+        window holding them needs no rebuild - the phone remote moves a fader
+        many times a second. "shape": channels or effects were added, removed
+        or reordered, so the config was replaced and holders must look again.
+        """
         stamp = self._config_stamp()
         if stamp is None or stamp == self._loaded_stamp:
-            return False
+            return None
         try:
             config = Config.load(self.path)
         except ConfigError:
-            return False
-        self.config = config
+            return None
         self._loaded_stamp = stamp
         plugins.set_extra_folders(config.plugin_folders)
-        return True
+        if in_place and _same_shape(self.config, config):
+            _copy_values(config, self.config)
+            return "values"
+        self.config = config
+        return "shape"
 
     # -- the graph ---------------------------------------------------------
 
@@ -907,6 +922,29 @@ class Engine:
             "echo_cancel_broken": session.echo_cancel_broken(self.config.channels, graph) is not None,
             "orphans": self.orphan_slugs(),
         }
+
+
+def _shape(config: Config) -> list[tuple[str, tuple[tuple[str, str], ...]]]:
+    return [(c.slug, tuple((e.kind, e.plugin) for e in c.effects)) for c in config.channels]
+
+
+def _same_shape(old: Config, new: Config) -> bool:
+    return _shape(old) == _shape(new)
+
+
+def _copy_values(source: Config, target: Config) -> None:
+    """Every saved value onto the matching existing objects (same shape only)."""
+    for field_ in dataclasses.fields(Config):
+        if field_.name != "channels":
+            setattr(target, field_.name, getattr(source, field_.name))
+    for new, old in zip(source.channels, target.channels):
+        for field_ in dataclasses.fields(Channel):
+            if field_.name != "effects":
+                setattr(old, field_.name, getattr(new, field_.name))
+        for new_effect, old_effect in zip(new.effects, old.effects):
+            for field_ in dataclasses.fields(Effect):
+                setattr(old_effect, field_.name, getattr(new_effect, field_.name))
+    target.update_solo()
 
 
 def _wpctl(*argv: str) -> None:
