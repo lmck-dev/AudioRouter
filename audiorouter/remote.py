@@ -21,7 +21,8 @@ Pairing link (QR code in the window, or `audiorouter remote`):
 `audiorouter://pair?h=<address>&h=<address>&p=<port>&t=<token>`
     GET  /api/state    the whole desk (see `Remote.state`)
     POST /api/command  one change: {"cmd": "fader", "slug": "music", "db": -6}
-    GET  /api/events   Server-Sent Events: `state` whenever the desk changes
+    GET  /api/events   Server-Sent Events: `state` whenever the desk changes;
+                       with ?meters=1 also `meters` frames (see remote_meters.py)
 
 One writer: the window saves every edit the moment it is made, so a change
 from the phone reloads the settings file first, edits, saves and applies. The
@@ -240,6 +241,16 @@ class Remote:
         self._graph: Graph | None = None
         self._revision = 0
         self._changed = threading.Condition()
+        self._meters = None
+
+    @property
+    def meters(self):
+        """The level meters, made on first use: most phones never ask."""
+        if self._meters is None:
+            from .remote_meters import hub_for
+
+            self._meters = hub_for(self)
+        return self._meters
 
     # -- change notification ------------------------------------------------
 
@@ -263,7 +274,7 @@ class Remote:
 
     # -- the desk -------------------------------------------------------------
 
-    def _current_graph(self) -> Graph:
+    def current_graph(self) -> Graph:
         if self._graph is not None:
             return self._graph
         return self.engine.graph(refresh=True)
@@ -271,7 +282,7 @@ class Remote:
     def state(self) -> dict[str, Any]:
         """The desk as the phone draws it: left to right, as the window does."""
         with self.lock:
-            graph = self._current_graph()
+            graph = self.current_graph()
             config = self.engine.config
             channels, groups = desk_order(config)
             sinks = self.engine.sink_map(graph)
@@ -569,15 +580,26 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, result)
 
     def _events(self) -> None:
-        """Push the desk whenever it changes, until the phone goes or we stop."""
+        """Push the desk whenever it changes, until the phone goes or we stop.
+
+        With `?meters=1` the stream also carries `meters` frames, FRAME_HZ a
+        second, for as long as the phone stays connected.
+        """
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        meters = query.get("meters", ["0"])[0] == "1"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.close_connection = True
         remote = self.server.remote
+        hub = remote.meters if meters else None
+        if hub is not None:
+            hub.watch()
         last = ""
         seen = -1
+        frame_seen = -1
+        quiet_since = time.monotonic()
         try:
             while not self.server.stopping.is_set():
                 if seen != remote.revision:
@@ -585,14 +607,29 @@ class _Handler(BaseHTTPRequestHandler):
                     text = json.dumps(remote.state())
                     if text != last:
                         last = text
-                        self.wfile.write(f"event: state\ndata: {text}\n\n".encode())
-                        self.wfile.flush()
-                moved = remote.wait(seen, KEEPALIVE_S)
-                if moved == seen:
+                        self._push("state", text)
+                        quiet_since = time.monotonic()
+                if hub is not None:
+                    # Frames pace the loop; a state change waits at most one frame.
+                    frame_seen, frame = hub.wait_frame(frame_seen, KEEPALIVE_S)
+                    if frame is not None:
+                        self._push("meters", json.dumps(frame, separators=(",", ":")))
+                        quiet_since = time.monotonic()
+                else:
+                    remote.wait(seen, KEEPALIVE_S)
+                if time.monotonic() - quiet_since >= KEEPALIVE_S:
                     self.wfile.write(b": keep-alive\n\n")
                     self.wfile.flush()
+                    quiet_since = time.monotonic()
         except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
             return
+        finally:
+            if hub is not None:
+                hub.unwatch()
+
+    def _push(self, event: str, data: str) -> None:
+        self.wfile.write(f"event: {event}\ndata: {data}\n\n".encode())
+        self.wfile.flush()
 
 
 class _Server(ThreadingHTTPServer):

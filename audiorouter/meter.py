@@ -51,6 +51,25 @@ BLOCK = 1024
 DEFAULT_SOURCE = "@DEFAULT_SOURCE@"
 
 
+def _die_with_parent() -> None:
+    """In a meter's child, before exec: end it when the process that made it ends.
+
+    A window killed with SIGTERM or SIGKILL never runs its clean-up, and its
+    recorders used to live on, holding the mics open (twelve were found on
+    3 Oct 2026, from four windows). Linux only; elsewhere a no-op.
+    The signal follows the starting THREAD: start meters from a thread that
+    lives as long as they should (the window's main thread, the meter hub's).
+    """
+    try:
+        import ctypes
+        import signal as _signal
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(1, int(_signal.SIGTERM), 0, 0, 0)  # PR_SET_PDEATHSIG
+    except (OSError, AttributeError):  # pragma: no cover - not Linux
+        pass
+
+
 @dataclass(frozen=True)
 class Levels:
     """One block's peak (0..1+, linear) and mean square, per side."""
@@ -333,6 +352,7 @@ class Driver:
         require_tools("parec")
         self._proc = subprocess.Popen(
             self.command(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            preexec_fn=_die_with_parent,
         )
 
     @property
@@ -386,6 +406,7 @@ class LevelReader:
         require_tools("parec")
         self._proc = subprocess.Popen(
             self.command(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            preexec_fn=_die_with_parent,
         )
         self._thread = threading.Thread(target=self._read, name=f"meter-{self.tap.label}", daemon=True)
         self._thread.start()

@@ -23,6 +23,7 @@ needed, no dependencies).
 | `engine.py`   | **policy**: reconcile config against reality; auto-router  |
 | `install.py`  | menu launcher (.desktop) and login service (systemd user unit) |
 | `remote.py`   | phone remote: HTTP + SSE API in the login service, pairing token |
+| `remote_meters.py` | phone meters: taps run only while a phone watches; 15 fps frames |
 | `cli.py`      | argument parsing and printing only - no logic              |
 
 The GUI drives `Engine` directly. Anything that needs thinking
@@ -209,6 +210,12 @@ These rules come from those files, and they apply even when you haven't opened t
   saves and applies at once. `desk_order`/`kind_label` live in `config.py` so
   the service never imports Qt. Its token is in `remote.json` (0600), never in
   config.json, which the window rewrites from its own fields.
+
+- **Meter recorders (`parec`) die with their parent** (`meter._die_with_parent`,
+  PR_SET_PDEATHSIG, 3 Oct 2026). Before, a window ended by SIGTERM/SIGKILL left
+  its mic Drivers running forever: 12 orphans from 4 killed windows held the
+  mics open. The signal follows the STARTING THREAD, so start meters from a
+  thread that lives as long as they should.
 
 ## Testing audio without hardware
 

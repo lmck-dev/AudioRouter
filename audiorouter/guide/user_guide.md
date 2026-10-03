@@ -205,6 +205,8 @@ The phone must be on the same network as the computer: the remote answers nothin
 
 **Also allow other networks** lets a phone on another network reach the desk, such as over a VPN like Tailscale. It is off unless you tick it, and then the pairing code includes the computer's other addresses too. The connection itself is not encrypted, so only use it on networks you trust; Tailscale encrypts its own traffic.
 
+While the phone shows its meters, the desktop may show its "microphone in use" icon, as with the Mixer tab: the meters listen to your mic channels. They stop when the phone leaves the mixer.
+
 The phone talks to the background service, so **Keep routing with this window closed** must be ticked; the window says so if it is not. Changes made from the phone show in this window as they happen.
 
 **Unpair all phones** makes a new code: every phone stops working until it scans the new one. Use it if a phone is lost or given away. Untick the box to switch the remote off.
