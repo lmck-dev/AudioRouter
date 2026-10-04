@@ -159,7 +159,7 @@ class MixerTest(GuiTestCase):
         # Speakers is now a group: its own section, its members named, and
         # no way back into Headphones (that would be a loop).
         self.assertEqual(list(self.mixer.strips), ["mic", "phones", "speakers"])
-        self.assertIn("from Headphones", self.strip("speakers").apps.text())
+        self.assertIn("from Headphones", self.strip("speakers").apps.toolTip())  # the label may be shortened
         self.assertEqual(self.strip("speakers").kind.text(), "GROUP")
         self.assertLess(self.strip("speakers").route.findData("ar_phones"), 0)
 

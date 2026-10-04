@@ -1,4 +1,4 @@
-# Launcher, login service and the RPM
+# Launcher, login service, the RPM and the Arch package
 
 Moved out of `CLAUDE.md` on 25 Sep 2026 so it loads only when the work touches it.
 Read this file before changing the code it describes.
@@ -65,3 +65,29 @@ and `audiorouter-meter.lv2`, so users need no gcc. Bump the version in BOTH `pyp
 - Test the package with a fresh `fedora:44` container (`dnf install` the rpm,
   `useradd`, `runuser` - the base image has no `su`), not by installing it on
   the dev box: that swaps the owner's login service over to the packaged copy.
+
+
+## The Arch package (4 Oct 2026)
+
+`packaging/arch/PKGBUILD` (+ `.SRCINFO` for the AUR) mirrors the spec: same
+wheel, same two LV2 bundles, but in `/usr/lib/lv2` (Arch has no lib64), unit in
+`/usr/lib/systemd/user`. `packaging/build-arch.sh` tars the working tree under
+GitHub's tag-archive name, so makepkg uses it instead of downloading
+(`--skipchecksums`), and builds + `check()`s in `archlinux:latest`.
+
+- **The PKGBUILD downloads the release TAG**, with a pinned sha256. Bump
+  `pkgver` with `pyproject.toml` (the script refuses a mismatch), then re-pin the
+  sum and regenerate `.SRCINFO` (`makepkg --printsrcinfo`) after tagging.
+- **Arch package names**: the LV2 loader is in `pipewire-audio` (it brings
+  lilv), `pactl`/`parec` in `libpulse`. The app's "install ..." hints still name
+  the Fedora packages (`effects.LV2_PACKAGE`); the PKGBUILD depends on all of
+  them, so an Arch user only sees a hint after removing one.
+- **makepkg cannot build in a rootless podman mount**: files its user writes
+  are owned by a sub-uid the host cannot delete. The script copies the source
+  into the container and copies only the package out.
+- **A bare container has almost no fonts**, so strip labels elide differently
+  from the dev box. Assert a shortened label's tooltip (the full text), never
+  its visible text. v1.2.1's tag still has one such test, so building 1.2.1 from
+  the tag fails `check()` in a font-poor container: the AUR needs 1.2.2+.
+- `namcap` on the package lists every PyQt6 import as an "uninstalled
+  dependency" when run before installing the deps; it is noise.
