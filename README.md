@@ -45,6 +45,24 @@ packaging/build-rpm.sh          # -> dist/audiorouter-<version>-1.fc44.x86_64.rp
 
 It builds in a clean Fedora container and runs the test suite there.
 
+## Installing (Arch, Manjaro, EndeavourOS)
+
+`packaging/arch/PKGBUILD` builds the tagged release and pulls in the same
+dependencies from the official repositories (the effects toolbox is optional
+dependencies):
+
+```sh
+cd packaging/arch && makepkg -si
+```
+
+To build the working tree instead (needs only podman):
+
+```sh
+packaging/build-arch.sh         # -> dist/audiorouter-<version>-1-x86_64.pkg.tar.zst
+```
+
+It builds in a clean Arch container and runs the test suite there.
+
 ## Requirements (running from a checkout)
 
 - PipeWire (with `pw-dump`, `pw-metadata`, `pipewire` on `PATH`)

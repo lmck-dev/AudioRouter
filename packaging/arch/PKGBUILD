@@ -1,0 +1,75 @@
+# Maintainer: lmck-dev <lmck.dev@gmail.com>
+# Build locally with packaging/build-arch.sh, which runs makepkg in a clean
+# Arch container against the working tree.
+
+pkgname=audiorouter
+pkgver=1.2.1
+pkgrel=1
+pkgdesc="Send each app's sound to its own channel, with its own effects"
+arch=('x86_64' 'aarch64')
+url="https://github.com/lmck-dev/AudioRouter"
+license=('GPL-3.0-or-later')
+depends=(
+  'python'
+  'python-pyqt6'
+  # The phone remote's pairing code (without it the window shows the link as text)
+  'python-qrcode'
+  # pw-dump, pw-cli, pw-metadata
+  'pipewire'
+  'wireplumber'
+  'pipewire-pulse'
+  # The filter-chain LV2 loader (it brings lilv): without it no plugin effect can run.
+  'pipewire-audio'
+  # pactl and parec (moving streams, level meters)
+  'libpulse'
+  # Our noise suppression plugin links against it.
+  'rnnoise'
+  # The built-in compressor and limiter
+  'lsp-plugins-lv2'
+)
+makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel' 'gcc')
+optdepends=(
+  "libnotify: the echo-cancel notice's Fix button"
+  'calf: more effects'
+  'zam-plugins-lv2: more effects'
+  'x42-plugins-lv2: more effects'
+  'mda.lv2: more effects'
+  'rubberband-lv2: pitch shifting'
+  'guitarix: guitar amp effects'
+  'eq10q: more equalisers'
+  'swh-plugins: more effects (LADSPA)'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('bb08d9c4bb0503ec19027cf37ffeae6d3826d6bd936ece6b3ea05b800de42b2a')
+
+_srcdir="AudioRouter-$pkgver"
+
+build() {
+  cd "$_srcdir"
+  python -m build --wheel --no-isolation
+  gcc $CFLAGS -shared -fPIC -fvisibility=hidden $LDFLAGS \
+    -o audiorouter_rnnoise.so audiorouter/native/rnnoise/audiorouter_rnnoise.c \
+    -l:librnnoise.so.0 -lm
+  gcc $CFLAGS -shared -fPIC -fvisibility=hidden $LDFLAGS \
+    -o audiorouter_meter.so audiorouter/native/meter/audiorouter_meter.c -lm
+}
+
+check() {
+  cd "$_srcdir"
+  QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" python -m unittest discover -s tests -t .
+}
+
+package() {
+  cd "$_srcdir"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  local bundle="$pkgdir/usr/lib/lv2/audiorouter-rnnoise.lv2"
+  install -Dm755 audiorouter_rnnoise.so "$bundle/audiorouter_rnnoise.so"
+  install -m644 audiorouter/native/rnnoise/*.ttl "$bundle/"
+  bundle="$pkgdir/usr/lib/lv2/audiorouter-meter.lv2"
+  install -Dm755 audiorouter_meter.so "$bundle/audiorouter_meter.so"
+  install -m644 audiorouter/native/meter/*.ttl "$bundle/"
+  install -Dm644 packaging/audiorouter.service "$pkgdir/usr/lib/systemd/user/audiorouter.service"
+  install -Dm644 packaging/audiorouter.desktop "$pkgdir/usr/share/applications/audiorouter.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
