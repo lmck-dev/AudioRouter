@@ -40,7 +40,7 @@ optdepends=(
   'swh-plugins: more effects (LADSPA)'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('1a6f4343c88b75c3dbdb5df40f8e944d6916481845508c23a627927ae947217e')
 
 _srcdir="AudioRouter-$pkgver"
 

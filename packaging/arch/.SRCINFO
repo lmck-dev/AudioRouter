@@ -1,6 +1,6 @@
 pkgbase = audiorouter
 	pkgdesc = Send each app's sound to its own channel, with its own effects
-	pkgver = 1.2.1
+	pkgver = 1.2.2
 	pkgrel = 1
 	url = https://github.com/lmck-dev/AudioRouter
 	arch = x86_64
@@ -30,7 +30,7 @@ pkgbase = audiorouter
 	optdepends = guitarix: guitar amp effects
 	optdepends = eq10q: more equalisers
 	optdepends = swh-plugins: more effects (LADSPA)
-	source = audiorouter-1.2.1.tar.gz::https://github.com/lmck-dev/AudioRouter/archive/refs/tags/v1.2.1.tar.gz
-	sha256sums = bb08d9c4bb0503ec19027cf37ffeae6d3826d6bd936ece6b3ea05b800de42b2a
+	source = audiorouter-1.2.2.tar.gz::https://github.com/lmck-dev/AudioRouter/archive/refs/tags/v1.2.2.tar.gz
+	sha256sums = 1a6f4343c88b75c3dbdb5df40f8e944d6916481845508c23a627927ae947217e
 
 pkgname = audiorouter
