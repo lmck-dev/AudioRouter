@@ -28,7 +28,7 @@ source before this design was chosen.
 Install `audiorouter-<version>.fc44.x86_64.rpm` - double-click it, or
 
 ```sh
-sudo dnf install ./audiorouter-1.2.1-1.fc44.x86_64.rpm
+sudo dnf install ./audiorouter-1.2.2-1.fc44.x86_64.rpm
 ```
 
 That brings everything it needs: PyQt6, PipeWire's LV2 loader, the LSP plugins

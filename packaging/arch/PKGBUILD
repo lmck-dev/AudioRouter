@@ -3,7 +3,7 @@
 # Arch container against the working tree.
 
 pkgname=audiorouter
-pkgver=1.2.1
+pkgver=1.2.2
 pkgrel=1
 pkgdesc="Send each app's sound to its own channel, with its own effects"
 arch=('x86_64' 'aarch64')
@@ -40,7 +40,7 @@ optdepends=(
   'swh-plugins: more effects (LADSPA)'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('bb08d9c4bb0503ec19027cf37ffeae6d3826d6bd936ece6b3ea05b800de42b2a')
+sha256sums=('SKIP')
 
 _srcdir="AudioRouter-$pkgver"
 

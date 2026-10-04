@@ -88,6 +88,6 @@ GitHub's tag-archive name, so makepkg uses it instead of downloading
 - **A bare container has almost no fonts**, so strip labels elide differently
   from the dev box. Assert a shortened label's tooltip (the full text), never
   its visible text. v1.2.1's tag still has one such test, so building 1.2.1 from
-  the tag fails `check()` in a font-poor container: the AUR needs 1.2.2+.
+  the tag fails `check()` in a font-poor container: the AUR needs 1.2.2+ (released 4 Oct 2026).
 - `namcap` on the package lists every PyQt6 import as an "uninstalled
   dependency" when run before installing the deps; it is noise.

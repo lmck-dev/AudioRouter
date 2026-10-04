@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.2.1
+Version:        1.2.2
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -99,6 +99,9 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/applications/audiorouter.desktop
 
 %changelog
+* Sun Oct 04 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.2-1
+- 1.2.2: Arch package (PKGBUILD); a mixer test no longer depends on fonts
+
 * Sat Oct 03 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.1-1
 - 1.2.1: relicensed under GPL-3.0-or-later; LICENSE file shipped
 
