@@ -47,7 +47,14 @@ It builds in a clean Fedora container and runs the test suite there.
 
 ## Installing (Arch, Manjaro, EndeavourOS)
 
-`packaging/arch/PKGBUILD` builds the tagged release and pulls in the same
+Download `audiorouter-<version>-1-x86_64.pkg.tar.zst` from the
+[latest release](https://github.com/lmck-dev/AudioRouter/releases/latest), then
+
+```sh
+sudo pacman -U ./audiorouter-1.2.2-1-x86_64.pkg.tar.zst
+```
+
+Or build it yourself: `packaging/arch/PKGBUILD` builds the tagged release and pulls in the same
 dependencies from the official repositories (the effects toolbox is optional
 dependencies):
 
