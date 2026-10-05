@@ -483,6 +483,21 @@ class ChannelStrip(QFrame):
         self.insert_buttons.append(button)
         return button
 
+    def show_inserts(self) -> None:
+        """Light each insert as its effect is now, without rebuilding the strip."""
+        for button, effect in zip(self.insert_buttons, self.channel.effects):
+            if button.isChecked() != effect.enabled:
+                button.blockSignals(True)
+                button.setChecked(effect.enabled)
+                button.blockSignals(False)
+            try:
+                unavailable = bool(effect.spec.unsatisfied())
+            except EffectError:
+                unavailable = True
+            if unavailable:
+                button.setEnabled(effect.enabled)  # an unavailable one can still be switched off
+        self.set_inserts_open(not self.insert_area.isHidden())
+
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.MouseButtonDblClick and watched is self.pan:
             self.pan.setValue(0)
@@ -503,6 +518,7 @@ class ChannelStrip(QFrame):
         channels playing into this one, which makes it a group.
         """
         self._fill_routes(entry, devices, outputs, groups)
+        self.show_inserts()
         if members:
             self.apps.setText("from " + ", ".join(members) + (f"; {', '.join(apps)}" if apps else ""))
         elif apps:
@@ -867,7 +883,9 @@ class MixerView(QWidget):
         outs = [(d["name"], d["label"]) for d in status.get("devices", [])]
         signature = (tuple(
             (c.slug, c.name, c.kind, c.recordable, c.enabled, config.is_group(c),
-             tuple((e.kind, e.plugin, e.enabled) for e in c.effects))
+             # Not e.enabled: switching an effect is shown in place (show_inserts).
+             # Rebuilding for it reset the desk's scroll position on every click.
+             tuple((e.kind, e.plugin) for e in c.effects))
             for c in channels
         ), tuple(mics), tuple(outs))
         if signature != self._signature or any(

@@ -61,6 +61,23 @@ class MixerTest(GuiTestCase):
         self.assertTrue(self.window._pending_apply.isActive())
         self.assertFalse(self.window._structural_pending)  # a tune, not a restart
 
+    def test_switching_an_insert_keeps_the_desk_and_its_scroll_position(self):
+        # Every switch used to rebuild the whole desk, which threw the view back
+        # to the start (owner, 5 Oct 2026).
+        before = self.strip("speakers")
+        with mock.patch.object(Engine, "apply"):
+            before.insert_buttons[0].click()
+            self.window.refresh()
+        self.assertIs(self.strip("speakers"), before)
+
+    def test_an_effect_switched_elsewhere_is_shown_in_place(self):
+        # The phone, or the Channels view, switched it: the same button follows.
+        button = self.strip("speakers").insert_buttons[0]
+        self.engine.config.channel("speakers").effects[0].enabled = False
+        self.window.refresh()
+        self.assertIs(self.strip("speakers").insert_buttons[0], button)
+        self.assertFalse(button.isChecked())
+
     def test_trim_sets_that_channels_desktop_volume(self):
         with mock.patch.object(Engine, "set_channel_volume") as set_volume:
             self.strip("phones").trim.setValue(50)
