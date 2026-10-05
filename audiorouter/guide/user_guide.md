@@ -143,6 +143,7 @@ Each channel has its own chain of effects, applied top to bottom. Changes are he
 - **Add:** click **+ Insert** on a strip, or **Add effect...** in the Channels tab. The list groups effects by kind, and includes any compatible audio plugins installed on the computer.
 - **On and off:** click the insert on the strip, or tick its box in the Channels tab. Switching fades smoothly rather than clicking.
 - **Settings:** double-click an insert, or select it in the Channels tab, and move its sliders. **Reset settings** returns them to the defaults.
+- **Mix:** every effect's first setting. At 100% you hear the effect alone; at 50%, half the effect and half the untouched sound; at 0%, none of it. Use it to blend in a reverb, or to soften a compressor or a noise filter that is a bit too strong. It changes as you move it, with no gap in the sound. The insert's name in the list shows the mix when it is below 100%.
 - **Order:** **Up** and **Down** in the Channels tab move an effect earlier or later in the chain. **Remove** deletes it.
 
 The built-in effects:
@@ -195,7 +196,7 @@ Below the settings, **Levels** shows what goes into and comes out of the channel
 
 ## Phone remote
 
-The **Phone remote** button at the top lets the Audio Router Remote app on an Android phone work the mixer: faders, pan, mute, solo, switching effects on and off, sending apps to channels, and Bypass.
+The **Phone remote** button at the top lets the Audio Router Remote app on an Android phone work the mixer: faders, pan, mute, solo, switching effects on and off and setting their mix, sending apps to channels, and Bypass.
 
 1. Click **Phone remote** and tick **Let the phone app control this desk**.
 2. In the app, tap **Pair** and scan the code shown.
@@ -233,6 +234,7 @@ The phone talks to the background service, so **Keep routing with this window cl
 | Group | A channel that other channels play into. |
 | Virtual cable | A channel whose sound other apps can record, like a microphone. |
 | Insert | One effect in a channel's chain. |
+| Mix | How much of an effect you hear: 100% is the effect alone, 0% the untouched sound. |
 | Trim | A channel's volume before its effects. |
 | Fader | A channel's volume after its effects. |
 | Pan | The balance between left and right. |

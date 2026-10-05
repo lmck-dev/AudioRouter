@@ -47,6 +47,7 @@ from ..effects import (
     EffectSpec,
     ParamSpec,
     all_specs,
+    clamp_mix,
     db_to_linear,
     linear_to_db,
     make_effect,
@@ -227,8 +228,17 @@ class ParamControl(QWidget):
         self.edited.emit()
 
 
+#: Every effect's first row: how much of it you hear. Kept as a percentage here;
+#: `Effect.mix` holds it as 0..1.
+MIX_PARAM = ParamSpec(
+    "mix", "Mix", 100.0, 0.0, 100.0, "%", 1.0,
+    comment="How much of the effect you hear while it is on: 100% is the effect alone, "
+            "50% half the effect and half the untouched sound. Changes without a restart.",
+)
+
+
 class ParameterForm(QWidget):
-    """One row per knob, in the effect's own units."""
+    """A Mix row, then one row per knob, in the effect's own units."""
 
     edited = pyqtSignal()
 
@@ -242,6 +252,7 @@ class ParameterForm(QWidget):
         # stack of overlapping few-pixel rows instead of scrolling.
         self._layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         self._boxes: dict[str, ParamControl] = {}
+        self._mix: ParamControl | None = None
         self._effect: Effect | None = None
 
     def show_effect(self, effect: Effect | None) -> None:
@@ -252,6 +263,7 @@ class ParameterForm(QWidget):
         while self._layout.rowCount():
             self._layout.removeRow(0)
         self._boxes.clear()
+        self._mix = None
         if effect is None:
             return
         try:
@@ -260,6 +272,12 @@ class ParameterForm(QWidget):
         except EffectError as exc:
             self._layout.addRow(QLabel(str(exc), self))
             return
+        self._mix = ParamControl(MIX_PARAM, round(effect.mix * 100.0), self)
+        self._mix.edited.connect(self._changed)
+        mix_label = QLabel(MIX_PARAM.label, self)
+        mix_label.setToolTip(MIX_PARAM.comment)
+        self._mix.setToolTip(MIX_PARAM.comment)
+        self._layout.addRow(mix_label, self._mix)
         for param in spec.visible_params():
             control = ParamControl(param, values[param.key], self)
             control.edited.connect(self._changed)
@@ -269,7 +287,7 @@ class ParameterForm(QWidget):
                 label.setToolTip(param.comment)
             self._layout.addRow(label, control)
         if not self._boxes:
-            self._layout.addRow(QLabel("This effect has no settings.", self))
+            self._layout.addRow(QLabel("This effect has no other settings.", self))
         self._effect = effect
 
     def _changed(self) -> None:
@@ -278,6 +296,8 @@ class ParameterForm(QWidget):
         self._effect.params = self._effect.spec.normalise(
             {key: box.value() for key, box in self._boxes.items()}
         )
+        if self._mix is not None:
+            self._effect.mix = clamp_mix(self._mix.value() / 100.0)
         self.edited.emit()
 
 
@@ -632,12 +652,13 @@ class EffectsPanel(QGroupBox):
         problems = spec.unsatisfied()
         if problems:
             return f"{spec.label} (unavailable)"
+        mix = f" · mix {round(effect.mix * 100)}%" if effect.mix < 1.0 else ""
         if spec.plugin:
-            return spec.label
+            return spec.label + mix
         headline = spec.params[0] if spec.params else None
         if headline is None:
-            return spec.label
-        return f"{spec.label} - {headline.label.lower()} {format_value(headline, values[headline.key])}"
+            return spec.label + mix
+        return f"{spec.label} - {headline.label.lower()} {format_value(headline, values[headline.key])}{mix}"
 
     # -- editing -----------------------------------------------------------
 
@@ -675,7 +696,7 @@ class EffectsPanel(QGroupBox):
         row = self.list.currentRow()
         count = self.list.count()
         self.remove_button.setEnabled(row >= 0)
-        self.reset_button.setEnabled(row >= 0 and bool(self.form._boxes))
+        self.reset_button.setEnabled(row >= 0)
         self.up_button.setEnabled(row > 0)
         self.down_button.setEnabled(0 <= row < count - 1)
 
@@ -730,6 +751,7 @@ class EffectsPanel(QGroupBox):
         if effect is None:
             return
         effect.params = effect.spec.defaults()
+        effect.mix = 1.0
         self.form.show_effect(effect)
         self._parameter_edited()
 

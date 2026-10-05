@@ -50,7 +50,7 @@ from typing import Any
 from . import __version__
 from .channels import MAX_VOLUME, ChannelError
 from .config import ConfigError, config_dir, desk_order, kind_label
-from .effects import FADER_MAX_DB, FADER_OFF_DB, EffectError
+from .effects import FADER_MAX_DB, FADER_OFF_DB, EffectError, clamp_mix
 from .engine import Engine, EngineError, MoveResult
 from .pwgraph import Graph, PwError
 
@@ -304,7 +304,7 @@ class Remote:
                     "pan": channel.pan,
                     "solo": channel.solo,
                     "cut": channel.solo_cut,
-                    "effects": [{"index": i, "label": e.label, "on": e.enabled}
+                    "effects": [{"index": i, "label": e.label, "on": e.enabled, "mix": e.mix}
                                 for i, e in enumerate(channel.effects)],
                 })
             streams = []
@@ -429,6 +429,18 @@ def _cmd_effect(remote: Remote, body: dict[str, Any]) -> None:
     remote._edit(lambda: setattr(effect, "enabled", on))
 
 
+def _cmd_effect_mix(remote: Remote, body: dict[str, Any]) -> None:
+    channel = remote._channel(body)
+    index = body.get("index")
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(channel.effects):
+        raise RemoteError(f"{channel.name} has no effect {index!r}")
+    mix = body.get("mix")
+    if isinstance(mix, bool) or not isinstance(mix, (int, float)):
+        raise RemoteError("mix must be a number from 0 to 1")
+    effect = channel.effects[index]
+    remote._edit(lambda: setattr(effect, "mix", clamp_mix(mix)))
+
+
 def _cmd_trim(remote: Remote, body: dict[str, Any]) -> dict[str, Any]:
     channel = remote._channel(body)
     volume = _number(body, "volume", 0.0, MAX_VOLUME)
@@ -482,6 +494,7 @@ _COMMANDS: dict[str, Callable[[Remote, dict[str, Any]], dict[str, Any] | None]] 
     "solo": _cmd_solo,
     "enabled": _cmd_enabled,
     "effect": _cmd_effect,
+    "effect_mix": _cmd_effect_mix,
     "trim": _cmd_trim,
     "mute": _cmd_mute,
     "device_volume": _cmd_device_volume,

@@ -113,7 +113,7 @@ class StateTest(RemoteTestCase):
 
     def test_effects_are_listed_with_their_state(self):
         strip = next(s for s in self.remote.state()["strips"] if s["slug"] == "speakers")
-        self.assertEqual([(e["index"], e["on"]) for e in strip["effects"]], [(0, True), (1, False)])
+        self.assertEqual([(e["index"], e["on"], e["mix"]) for e in strip["effects"]], [(0, True, 1.0), (1, False, 1.0)])
 
     def test_state_is_json(self):
         json.dumps(self.remote.state())
@@ -136,6 +136,13 @@ class CommandTest(RemoteTestCase):
         self.assertEqual(saved.channel("music").pan, -0.5)
         self.assertTrue(saved.channel("music").solo)
         self.assertTrue(saved.channel("speakers").effects[1].enabled)
+
+    def test_effect_mix_is_saved_clamped_and_reported(self):
+        self.remote.command({"cmd": "effect_mix", "slug": "speakers", "index": 1, "mix": 0.4})
+        self.assertEqual(self.saved().channel("speakers").effects[1].mix, 0.4)
+        self.remote.command({"cmd": "effect_mix", "slug": "speakers", "index": 1, "mix": 3})
+        self.assertEqual(self.saved().channel("speakers").effects[1].mix, 1.0)
+        self.apply.assert_called()
 
     def test_a_change_the_window_saved_is_not_lost(self):
         # The window saved a new fader while this process held an older copy.
@@ -165,6 +172,9 @@ class CommandTest(RemoteTestCase):
             ({"cmd": "fader", "slug": "music", "db": True}, "must be a number"),
             ({"cmd": "solo", "slug": "music", "on": 1}, "true or false"),
             ({"cmd": "effect", "slug": "speakers", "index": 5, "on": True}, "has no effect"),
+            ({"cmd": "effect_mix", "slug": "speakers", "index": 5, "mix": 0.5}, "has no effect"),
+            ({"cmd": "effect_mix", "slug": "speakers", "index": 1, "mix": "half"}, "must be a number"),
+            ({"cmd": "effect_mix", "slug": "speakers", "index": 1, "mix": True}, "must be a number"),
             ({"cmd": "send", "stream": "60", "slug": "music"}, "stream id"),
         ]
         for body, words in cases:

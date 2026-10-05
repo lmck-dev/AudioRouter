@@ -43,7 +43,7 @@ from .channels import (
 )
 from . import plugins, session
 from .config import Config, ConfigError, config_path, default_config
-from .effects import Effect, EffectError, make_effect
+from .effects import Effect, EffectError, clamp_mix, make_effect
 from .meter import sweep_stale
 from .pwgraph import Graph, GraphMonitor, Node, PwError, require_tools
 from .routing import Placement, Router, Rule, RuleSet, plan
@@ -443,6 +443,13 @@ class Engine:
     def set_effect_enabled(self, slug: str, index: int, enabled: bool) -> Effect:
         _, effect = self._effect_at(slug, index)
         effect.enabled = bool(enabled)
+        self.save()
+        return effect
+
+    def set_effect_mix(self, slug: str, index: int, mix: float) -> Effect:
+        """The wet share while the effect is on, held to 0..1. Live: no restart."""
+        _, effect = self._effect_at(slug, index)
+        effect.mix = clamp_mix(mix)
         self.save()
         return effect
 

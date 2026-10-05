@@ -477,6 +477,9 @@ class Effect:
     enabled: bool = True
     #: The LV2 URI, for plugin effects only.
     plugin: str = ""
+    #: The wet share while on, 0..1: 1 is the effect alone, 0.5 half effect and
+    #: half the dry sound. Changing it is a live control change, never a restart.
+    mix: float = 1.0
 
     @property
     def spec(self) -> EffectSpec:
@@ -493,6 +496,8 @@ class Effect:
         data: dict[str, Any] = {"kind": self.kind, "params": dict(self.params), "enabled": self.enabled}
         if self.plugin:
             data["plugin"] = self.plugin
+        if self.mix < 1.0:
+            data["mix"] = self.mix
         return data
 
     @classmethod
@@ -509,6 +514,7 @@ class Effect:
             params={str(k): float(v) for k, v in (data.get("params") or {}).items()},
             enabled=bool(data.get("enabled", True)),
             plugin=plugin,
+            mix=clamp_mix(data.get("mix", 1.0)),
         )
 
     def render(self, index: int) -> Fragment:
@@ -603,13 +609,24 @@ def make_effect(kind: str, params: Mapping[str, Any] | None = None, plugin: str 
     return Effect(kind=kind, params=spec.normalise(params), plugin=plugin if kind == PLUGIN_KIND else "")
 
 
+def clamp_mix(value: Any) -> float:
+    """A wet mix from config or a client: a number, held to 0..1 (1 when it is not a number)."""
+    try:
+        mix = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if mix != mix:  # NaN
+        return 1.0
+    return max(0.0, min(1.0, mix))
+
+
 #: How long switching an effect on or off crossfades between it and the dry
 #: sound. Long enough not to click on anything sustained, short enough to feel
 #: instant.
 SWITCH_FADE_S = 0.05
 
 
-def _with_bypass(fragment: Fragment, name: str, enabled: bool, clock: str) -> Fragment:
+def _with_bypass(fragment: Fragment, name: str, enabled: bool, clock: str, mix: float = 1.0) -> Fragment:
     """Wrap an effect in a switch that crossfades on the running channel.
 
     Each side's input is fanned out to the effect and to a dry path; the two
@@ -637,6 +654,16 @@ def _with_bypass(fragment: Fragment, name: str, enabled: bool, clock: str) -> Fr
     Switching is then ONE live control change, `<name>_target:Add`. One ramp
     serves both sides, so left and right can never drift apart.
 
+    **The wet mix scales the fade, not the ramp**: `<name>_mix` is a `linear`
+    on the fade's audio (`Out * mix`), and both gains come from it:
+
+        wet = effect * fade * mix    dry = input * (1 - fade * mix)
+
+    so they still add to 1, switching still crossfades 0 <-> 1 exactly as
+    before, and a mix change is one live control change, `<name>_mix:Mult`.
+    (Moving the ramp's own target to the mix does not work: its slope comes
+    from Stop - Start, which is 0 at a mix of 0.5, so it would never move.)
+
     A ramp starts at 0, which for an effect that is on means a fade from dry
     to wet whenever a host starts. Measured: a restart's handover moves the
     stream in under 50 ms and 4 ms of +6 dB got through. So the duration comes
@@ -649,12 +676,15 @@ def _with_bypass(fragment: Fragment, name: str, enabled: bool, clock: str) -> Fr
     dry_gain = f"{name}_drygain"
     target = f"{name}_target"
     origin = f"{name}_from"
+    mixer = f"{name}_mix"
     nodes.extend([
         {"type": "builtin", "name": target, "label": "linear",
          "control": {"Mult": 0.0, "Add": 1.0 if enabled else 0.0}},
         {"type": "builtin", "name": origin, "label": "linear",
          "control": {"Mult": -1.0, "Add": 1.0}},
         {"type": "builtin", "name": fade, "label": "ramp"},
+        {"type": "builtin", "name": mixer, "label": "linear",
+         "control": {"Mult": clamp_mix(mix), "Add": 0.0}},
         {"type": "builtin", "name": dry_gain, "label": "linear",
          "control": {"Mult": -1.0, "Add": 1.0}},
     ])
@@ -663,7 +693,8 @@ def _with_bypass(fragment: Fragment, name: str, enabled: bool, clock: str) -> Fr
         {"output": f"{target}:Notify", "input": f"{origin}:Control"},
         {"output": f"{origin}:Notify", "input": f"{fade}:Start"},
         {"output": clock, "input": f"{fade}:Duration (s)"},
-        {"output": f"{fade}:Out", "input": f"{dry_gain}:In"},
+        {"output": f"{fade}:Out", "input": f"{mixer}:In"},
+        {"output": f"{mixer}:Out", "input": f"{dry_gain}:In"},
     ])
     inputs: list[str] = []
     outputs: list[str] = []
@@ -678,7 +709,7 @@ def _with_bypass(fragment: Fragment, name: str, enabled: bool, clock: str) -> Fr
         nodes.append({"type": "builtin", "name": switch, "label": "mixer"})
         links.append({"output": f"{entry}:Out", "input": effect_in})
         links.append({"output": effect_out, "input": f"{wet}:In 1"})
-        links.append({"output": f"{fade}:Out", "input": f"{wet}:In 2"})
+        links.append({"output": f"{mixer}:Out", "input": f"{wet}:In 2"})
         links.append({"output": f"{entry}:Out", "input": f"{dry}:In 1"})
         links.append({"output": f"{dry_gain}:Out", "input": f"{dry}:In 2"})
         links.append({"output": f"{wet}:Out", "input": f"{switch}:In 1"})
@@ -827,7 +858,7 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
     first_in: tuple[str, str] | None = None
     previous_out: tuple[str, str] | None = None
     for index, effect in enumerate(active):
-        fragment = _with_bypass(effect.render(index), f"sw{index}", effect.enabled, clock)
+        fragment = _with_bypass(effect.render(index), f"sw{index}", effect.enabled, clock, effect.mix)
         nodes.extend(fragment.nodes)
         links.extend(fragment.links)
         if previous_out is None:

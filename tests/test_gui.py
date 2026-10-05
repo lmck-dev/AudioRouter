@@ -301,7 +301,19 @@ class WindowTest(GuiTestCase):
         panel = self.window.effects_panel
         panel.add_effect("gain")
         self.assertEqual(set(panel.form._boxes), {"gain_db"})
-        self.assertEqual(panel.form._layout.rowCount(), 1)
+        self.assertEqual(panel.form._layout.rowCount(), 2)  # Mix, then Gain
+
+    def test_the_mix_row_sets_the_effects_wet_share_as_a_live_change(self):
+        self.window.select_channel(self.engine.config.channels[0].slug)
+        panel = self.window.effects_panel
+        panel.add_effect("gain")
+        tuned = []
+        panel.tuned.connect(lambda: tuned.append(True))
+        panel.form._mix.setValue(40.0)
+        panel.form._mix.edited.emit()
+        self.assertAlmostEqual(panel.channel.effects[-1].mix, 0.4)
+        self.assertTrue(tuned)
+        self.assertIn("mix 40%", panel.list.item(panel.list.count() - 1).text())
 
     def test_an_edit_that_reshapes_the_chain_waits_longer_than_a_knob(self):
         from audiorouter.gui.main import APPLY_DELAY_MS, TUNE_DELAY_MS
