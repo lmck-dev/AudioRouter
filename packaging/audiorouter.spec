@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.2.2
+Version:        1.3.0
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -105,6 +105,17 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
+* Tue Oct 06 2026 lmck-dev <lmck.dev@gmail.com> - 1.3.0-1
+- 1.3.0: phone remote (Audio Router Remote for Android): HTTP + live events API in
+  the login service, QR pairing in a Phone remote window, home network only unless
+  allowed, live meters for the phone
+- Wet mix per effect (a Mix row on the desk; the phone's hold-and-slide)
+- The window adopts changes saved elsewhere; one window at a time
+- An (i) beside LISTEN when a mic plays on the speakers its echo canceller hears
+- New launcher icon (the phone app's faders)
+- Switching an effect no longer rebuilds the whole mixer
+- Meter recorders die with their window
+
 * Sun Oct 04 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.2-1
 - 1.2.2: Arch package (PKGBUILD); a mixer test no longer depends on fonts
 

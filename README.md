@@ -28,7 +28,7 @@ source before this design was chosen.
 Install `audiorouter-<version>.fc44.x86_64.rpm` - double-click it, or
 
 ```sh
-sudo dnf install ./audiorouter-1.2.2-1.fc44.x86_64.rpm
+sudo dnf install ./audiorouter-1.3.0-1.fc44.x86_64.rpm
 ```
 
 That brings everything it needs: PyQt6, PipeWire's LV2 loader, the LSP plugins
@@ -51,7 +51,7 @@ Download `audiorouter-<version>-1-x86_64.pkg.tar.zst` from the
 [latest release](https://github.com/lmck-dev/AudioRouter/releases/latest), then
 
 ```sh
-sudo pacman -U ./audiorouter-1.2.2-1-x86_64.pkg.tar.zst
+sudo pacman -U ./audiorouter-1.3.0-1-x86_64.pkg.tar.zst
 ```
 
 Or build it yourself: `packaging/arch/PKGBUILD` builds the tagged release and pulls in the same
@@ -113,10 +113,10 @@ python -m audiorouter status
 python -m audiorouter send 143 speakers        # move one stream by hand
 ```
 
-## Phone remote (in progress)
+## Phone remote
 
 The login service can answer a phone app on the home network (other networks,
-such as a VPN, only with `--outside on`): faders, pan, mute, solo, effects on/off, moving apps and Bypass.
+such as a VPN, only with `--outside on`): faders, pan, mute, solo, effects on/off and their mix, moving apps and Bypass, with live meters.
 It is off until switched on, from the window's **Phone remote** button (which
 shows a QR code to pair with) or here:
 
@@ -126,8 +126,8 @@ audiorouter remote new-token   # unpair every phone
 audiorouter remote off
 ```
 
-The API is described at the top of `audiorouter/remote.py`. The Android app is
-not released yet.
+The API is described at the top of `audiorouter/remote.py`. The Android app,
+**Audio Router Remote**, is in closed testing on Google Play (October 2026).
 
 ## How routing behaves
 

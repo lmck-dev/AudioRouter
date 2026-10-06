@@ -198,8 +198,11 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(self.remote.meters.watchers, 1)
         response.close()
         connection.close()
+        # The count drops first, then the tap thread stops its readers: wait for both
+        # (a busy build container caught the readers mid-stop).
         deadline = time.monotonic() + 3
-        while self.remote.meters.watchers and time.monotonic() < deadline:
+        while ((self.remote.meters.watchers or any(r.running for r in FakeReader.made))
+               and time.monotonic() < deadline):
             time.sleep(0.02)
         self.assertEqual(self.remote.meters.watchers, 0)
         self.assertFalse(any(r.running for r in FakeReader.made))

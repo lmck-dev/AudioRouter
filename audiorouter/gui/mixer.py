@@ -326,6 +326,10 @@ class ChannelStrip(QFrame):
         self.listen_info = QToolButton(self)
         self.listen_info.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
         self.listen_info.setAutoRaise(True)
+        # Exactly the LISTEN box's height: a taller button made the row taller and
+        # centred the box 1 px lower than on other strips (Arch's style).
+        side = self.route.sizeHint().height()
+        self.listen_info.setFixedSize(side, side)
         self.listen_info.setToolTip(LISTEN_ECHO_TITLE + ": the echo canceller will cut your voice. Click to see why.")
         self.listen_info.clicked.connect(
             lambda: QMessageBox.information(self, LISTEN_ECHO_TITLE, LISTEN_ECHO_HELP))
