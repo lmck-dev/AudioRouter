@@ -114,7 +114,9 @@ def desktop_entry(python: str | None = None, root: Path | None = None) -> str:
             "GenericName=Audio Channels",
             "Comment=Send each app's sound to its own channel, with its own effects",
             f"Exec={exec_line}",
-            "Icon=multimedia-volume-control",
+            # The RPM puts this file in the icon theme as `audiorouter`; from the
+            # source tree there is no theme entry, so name the file itself.
+            f"Icon={root / 'audiorouter' / 'gui' / 'audiorouter.svg'}",
             "Terminal=false",
             "Categories=AudioVideo;Audio;Mixer;",
             "Keywords=audio;sound;routing;pipewire;effects;equaliser;equalizer;",

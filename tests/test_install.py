@@ -121,8 +121,12 @@ class PackageFilesTest(unittest.TestCase):
     def test_the_package_menu_entry_matches_the_generated_one(self):
         packaged = (self.PACKAGING / "audiorouter.desktop").read_text()
         generated = install.desktop_entry("/usr/bin/python3", Path("/src"))
-        self.assertEqual(self._settings(packaged, "Exec="), self._settings(generated, "Exec="))
+        skip = ("Exec=", "Icon=")
+        self.assertEqual(self._settings(packaged, skip), self._settings(generated, skip))
         self.assertIn("Exec=audiorouter-gui", packaged)
+        self.assertIn("Icon=audiorouter\n", packaged)
+        self.assertIn("Icon=/src/audiorouter/gui/audiorouter.svg\n", generated)
+        self.assertTrue((install.source_root() / "audiorouter/gui/audiorouter.svg").is_file())
 
 
 class PackagedTest(InstallTestCase):

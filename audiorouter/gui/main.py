@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import sys
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import QSettings, Qt, QTimer
-from PyQt6.QtGui import QAction, QFontMetrics, QGuiApplication
+from PyQt6.QtGui import QAction, QFontMetrics, QGuiApplication, QIcon
 from PyQt6.QtWidgets import (
     QWIDGETSIZE_MAX,
     QApplication,
@@ -1147,6 +1148,8 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Audio Router")
     app.setDesktopFileName(install.APP_ID)
+    # The window and taskbar on X11; Wayland takes the icon from the menu entry.
+    app.setWindowIcon(QIcon(str(Path(__file__).with_name("audiorouter.svg"))))
     if single.show_running_window():
         return 0  # one window at a time: the open one comes forward instead
     try:

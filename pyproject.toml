@@ -25,6 +25,7 @@ include = ["audiorouter*"]
 
 [tool.setuptools.package-data]
 "audiorouter" = ["guide/*.md", "guide/*.png"]
+"audiorouter.gui" = ["audiorouter.svg"]
 "audiorouter.native" = ["rnnoise/*.c", "rnnoise/*.ttl", "meter/*.c", "meter/*.ttl"]
 
 [tool.ruff]

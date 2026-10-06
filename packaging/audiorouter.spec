@@ -78,6 +78,8 @@ bundle=%{buildroot}%{_libdir}/lv2/audiorouter-meter.lv2
 install -Dpm755 audiorouter_meter.so "$bundle/audiorouter_meter.so"
 install -pm644 audiorouter/native/meter/*.ttl "$bundle/"
 install -Dpm644 packaging/audiorouter.service %{buildroot}%{_userunitdir}/audiorouter.service
+install -Dpm644 audiorouter/gui/audiorouter.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 desktop-file-install --dir=%{buildroot}%{_datadir}/applications packaging/audiorouter.desktop
 
 %check
@@ -100,6 +102,7 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_libdir}/lv2/audiorouter-meter.lv2/
 %{_userunitdir}/audiorouter.service
 %{_datadir}/applications/audiorouter.desktop
+%{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
 * Sat Oct 03 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.1-1

@@ -8,6 +8,7 @@ the system facts on the clipboard, which is what a bug report needs first.
 from __future__ import annotations
 
 import platform
+from pathlib import Path
 from collections.abc import Callable
 
 from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR, Qt, QUrl
@@ -27,7 +28,7 @@ from .. import __version__
 from ..config import config_path
 from .theme import Theme
 
-ICON = "multimedia-volume-control"  # the launcher's icon (packaging/audiorouter.desktop)
+ICON = str(Path(__file__).with_name("audiorouter.svg"))  # the launcher's icon, as the phone app's
 TAGLINE = "Send each app's sound to its own channel, with its own effects."
 AUTHOR = "LMCK.DEV"
 YEAR = "2026"
@@ -89,9 +90,8 @@ class AboutWindow(QDialog):
         dim = theme.dim.name()
 
         icon = QLabel(self)
-        icon.setPixmap(QIcon.fromTheme(ICON).pixmap(64, 64))
+        icon.setPixmap(QIcon(ICON).pixmap(64, 64))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop)
-        icon.setHidden(QIcon.fromTheme(ICON).isNull())  # no icon theme: no empty gap
         title = QLabel(f"<div style='font-size:20pt; font-weight:700'>Audio Router</div>"
                        f"<div style='color:{dim}; margin-top:2px'>Version {__version__}</div>"
                        f"<div style='margin-top:10px'>{TAGLINE}</div>", self)
