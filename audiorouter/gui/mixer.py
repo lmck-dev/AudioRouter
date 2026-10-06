@@ -329,6 +329,11 @@ class ChannelStrip(QFrame):
         self.listen_info.setToolTip(LISTEN_ECHO_TITLE + ": the echo canceller will cut your voice. Click to see why.")
         self.listen_info.clicked.connect(
             lambda: QMessageBox.information(self, LISTEN_ECHO_TITLE, LISTEN_ECHO_HELP))
+        # Its room is kept while hidden, so the LISTEN box never resizes and
+        # the strip does not lay itself out again when it comes and goes.
+        policy = self.listen_info.sizePolicy()
+        policy.setRetainSizeWhenHidden(channel.is_input)
+        self.listen_info.setSizePolicy(policy)
         self.listen_info.hide()
 
         # TRIM: the desktop's volume for this channel, before the effects.
@@ -442,7 +447,8 @@ class ChannelStrip(QFrame):
         route_row = QHBoxLayout()
         route_row.setSpacing(2)
         route_row.addWidget(self.route, 1)
-        route_row.addWidget(self.listen_info)
+        if channel.is_input:  # outputs never show it, so they keep the full width
+            route_row.addWidget(self.listen_info)
         layout.addLayout(route_row)
         layout.addLayout(pan_row)
         layout.addLayout(buttons)
@@ -542,7 +548,9 @@ class ChannelStrip(QFrame):
         channels playing into this one, which makes it a group.
         """
         self._fill_routes(entry, devices, outputs, groups)
-        self.listen_info.setVisible(bool(entry and entry.get("listen_cancelled")))
+        cancelled = bool(entry and entry.get("listen_cancelled"))
+        if cancelled != self.listen_info.isVisible():
+            self.listen_info.setVisible(cancelled)
         self.show_inserts()
         if members:
             self.apps.setText("from " + ", ".join(members) + (f"; {', '.join(apps)}" if apps else ""))
