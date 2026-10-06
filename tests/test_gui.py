@@ -301,7 +301,19 @@ class WindowTest(GuiTestCase):
         panel = self.window.effects_panel
         panel.add_effect("gain")
         self.assertEqual(set(panel.form._boxes), {"gain_db"})
-        self.assertEqual(panel.form._layout.rowCount(), 1)
+        self.assertEqual(panel.form._layout.rowCount(), 2)  # Mix, then Gain
+
+    def test_the_mix_row_sets_the_effects_wet_share_as_a_live_change(self):
+        self.window.select_channel(self.engine.config.channels[0].slug)
+        panel = self.window.effects_panel
+        panel.add_effect("gain")
+        tuned = []
+        panel.tuned.connect(lambda: tuned.append(True))
+        panel.form._mix.setValue(40.0)
+        panel.form._mix.edited.emit()
+        self.assertAlmostEqual(panel.channel.effects[-1].mix, 0.4)
+        self.assertTrue(tuned)
+        self.assertIn("mix 40%", panel.list.item(panel.list.count() - 1).text())
 
     def test_an_edit_that_reshapes_the_chain_waits_longer_than_a_knob(self):
         from audiorouter.gui.main import APPLY_DELAY_MS, TUNE_DELAY_MS
@@ -1248,3 +1260,167 @@ class PluginFoldersTest(GuiTestCase):
                                lambda d: effects_panel.QDialog.DialogCode.Rejected):
             self.assertFalse(self.window.effects_panel.edit_plugin_folders(self.window))
         self.assertEqual(self.engine.config.plugin_folders, [])
+
+
+class AdoptSavedSettingsTest(GuiTestCase):
+    """Settings the phone remote (or the CLI) saved show up in an open window."""
+
+    def save_elsewhere(self, change):
+        self.engine.save()
+        other = Engine.load(self.engine.path)
+        change(other.config)
+        other.save()
+        stamp = self.engine.path.stat().st_mtime_ns + 1_000_000
+        os.utime(self.engine.path, ns=(stamp, stamp))  # never the same stamp as ours
+
+    def test_a_fader_moved_elsewhere_keeps_every_strip(self):
+        strip = self.window.mixer.strips["speakers"]
+        channel = self.engine.config.channel("speakers")
+        self.save_elsewhere(lambda c: setattr(c.channel("speakers"), "fader_db", -9.0))
+        self.window.adopt_saved_settings()
+        self.assertIs(self.engine.config.channel("speakers"), channel)
+        self.assertIs(self.window.mixer.strips["speakers"], strip)
+        self.assertEqual(channel.fader_db, -9.0)
+        self.assertIn("-9.0 dB", strip.volume_label.text())
+
+    def test_bypass_switched_elsewhere_shows_on_the_button(self):
+        self.save_elsewhere(lambda c: setattr(c, "bypass", True))
+        with mock.patch.object(self.window, "apply_now") as apply_now:
+            self.window.adopt_saved_settings()
+        apply_now.assert_not_called()  # whoever saved it applies it
+        self.assertTrue(self.window.bypass.isChecked())
+        self.assertFalse(self.window.bypass_banner.isHidden())
+
+    def test_a_channel_added_elsewhere_is_listed(self):
+        self.save_elsewhere(lambda c: c.channels.append(Channel("game", "Game", "alsa_output.a")))
+        self.window.adopt_saved_settings()
+        channels = self.window.channel_list
+        self.assertIn("Game", [channels.item(i).text().split("  -  ")[0] for i in range(channels.count())])
+        self.assertIn("game", self.window.mixer.strips)
+
+    def test_nothing_saved_means_nothing_redrawn(self):
+        self.engine.save()
+        with mock.patch.object(self.window, "refresh") as refresh:
+            self.window.adopt_saved_settings()
+        refresh.assert_not_called()
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class SingleWindowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_a_second_start_brings_the_first_window_forward(self):
+        from audiorouter.gui import single
+
+        name = f"audiorouter-test-{os.getpid()}"
+        self.assertFalse(single.show_running_window(name))  # nobody open yet
+        lock = single.WindowLock(name)
+        self.addCleanup(lock.close)
+        shown = []
+        lock.show_requested.connect(lambda: shown.append(True))
+        self.assertTrue(single.show_running_window(name))
+        for _ in range(50):
+            self.app.processEvents()
+            if shown:
+                break
+        self.assertEqual(shown, [True])
+
+    def test_a_crashed_windows_socket_does_not_block_the_next(self):
+        from PyQt6.QtNetwork import QLocalServer
+        from audiorouter.gui import single
+
+        name = f"audiorouter-test-stale-{os.getpid()}"
+        stale = QLocalServer()
+        stale.listen(name)
+        stale.close()  # what a crash leaves behind, as near as a test can
+        lock = single.WindowLock(name)
+        self.addCleanup(lock.close)
+        self.assertTrue(lock.server.isListening())
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class PhoneRemoteWindowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        addresses = mock.patch("audiorouter.remote.local_addresses", return_value=["192.168.1.50"])
+        addresses.start()
+        self.addCleanup(addresses.stop)
+
+    def window(self, running=True, answers=True):
+        from audiorouter.gui.phone import PhoneRemoteWindow
+
+        window = PhoneRemoteWindow(service_running=lambda: running, answers=lambda port: answers)
+        self.addCleanup(window.close)
+        return window
+
+    def test_off_by_default_with_no_code(self):
+        window = self.window()
+        self.assertFalse(window.enabled.isChecked())
+        self.assertIsNone(window.pairing_link())
+        self.assertFalse(window.unpair_button.isEnabled())
+
+    def test_switching_on_saves_a_token_and_shows_the_code(self):
+        from audiorouter import remote
+
+        window = self.window()
+        window.enabled.setChecked(True)
+        saved = remote.RemoteSettings.load()
+        self.assertTrue(saved.enabled)
+        self.assertTrue(saved.token)
+        self.assertEqual(remote.parse_pairing_url(window.pairing_link()),
+                         (["192.168.1.50"], saved.port, saved.token))
+        from audiorouter.gui.phone import qr_matrix
+
+        if qr_matrix("x") is not None:  # without python3-qrcode the link is shown as text
+            self.assertIsNotNone(window.code.matrix)
+        self.assertIn("Ready", window.state.text())
+
+    def test_other_networks_add_their_addresses_and_a_warning(self):
+        from audiorouter import remote
+
+        window = self.window()
+        self.assertFalse(window.outside.isEnabled())  # only once the remote is on
+        window.enabled.setChecked(True)
+        self.assertTrue(window.outside_note.isHidden())
+        with mock.patch("audiorouter.remote.local_addresses",
+                        side_effect=lambda outside=False: ["192.168.1.50"] + (["100.79.138.27"] if outside else [])):
+            window.outside.setChecked(True)
+            self.assertTrue(remote.RemoteSettings.load().allow_outside)
+            self.assertFalse(window.outside_note.isHidden())
+            self.assertEqual(remote.parse_pairing_url(window.pairing_link())[0],
+                             ["192.168.1.50", "100.79.138.27"])
+
+    def test_says_when_the_service_is_not_running(self):
+        window = self.window(running=False)
+        window.enabled.setChecked(True)
+        self.assertIn("not running", window.state.text())
+
+    def test_unpair_makes_a_new_token(self):
+        from PyQt6.QtWidgets import QMessageBox
+        from audiorouter import remote
+
+        window = self.window()
+        window.enabled.setChecked(True)
+        first = remote.RemoteSettings.load().token
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            window.unpair_button.click()
+        self.assertNotEqual(remote.RemoteSettings.load().token, first)
+
+    def test_the_code_reads_back(self):
+        from audiorouter.gui.phone import qr_matrix
+
+        matrix = qr_matrix("audiorouter://pair?h=192.168.1.50&p=47800&t=abc")
+        if matrix is None:
+            self.skipTest("python3-qrcode is not installed")
+        self.assertEqual(len(matrix), len(matrix[0]))
+        self.assertGreaterEqual(len(matrix), 21)

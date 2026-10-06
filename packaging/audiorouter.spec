@@ -20,8 +20,11 @@ BuildRequires:  systemd-rpm-macros
 BuildRequires:  desktop-file-utils
 # %%check runs the whole suite, window tests included.
 BuildRequires:  python3-pyqt6
+BuildRequires:  python3-qrcode
 
 Requires:       python3-pyqt6
+# The phone remote's pairing code (without it the window shows the link as text)
+Requires:       python3-qrcode
 Requires:       pipewire
 Requires:       wireplumber
 # pw-dump, pw-cli, pw-metadata
@@ -75,6 +78,8 @@ bundle=%{buildroot}%{_libdir}/lv2/audiorouter-meter.lv2
 install -Dpm755 audiorouter_meter.so "$bundle/audiorouter_meter.so"
 install -pm644 audiorouter/native/meter/*.ttl "$bundle/"
 install -Dpm644 packaging/audiorouter.service %{buildroot}%{_userunitdir}/audiorouter.service
+install -Dpm644 audiorouter/gui/audiorouter.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 desktop-file-install --dir=%{buildroot}%{_datadir}/applications packaging/audiorouter.desktop
 
 %check
@@ -97,6 +102,7 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_libdir}/lv2/audiorouter-meter.lv2/
 %{_userunitdir}/audiorouter.service
 %{_datadir}/applications/audiorouter.desktop
+%{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
 * Sun Oct 04 2026 lmck-dev <lmck.dev@gmail.com> - 1.2.2-1

@@ -39,7 +39,10 @@ re-running `launcher` and toggling login off/on.
 and `build-rpm.sh`, which tars the working tree (committed or not) and runs
 `rpmbuild` in a `fedora:44` podman container, `%check` included. Our noise
 plugin and level tap are compiled at build time into `/usr/lib64/lv2/audiorouter-rnnoise.lv2`
-and `audiorouter-meter.lv2`, so users need no gcc. Bump the version in BOTH `pyproject.toml` and the spec
+and `audiorouter-meter.lv2`, so users need no gcc.
+The launcher icon is `audiorouter/gui/audiorouter.svg` (the phone app's icon on a
+rounded tile, made by AudioRouterRemote's `tools/icon.py` - regenerate it there);
+the RPM installs it as hicolor `audiorouter`, a source install names the file. Bump the version in BOTH `pyproject.toml` and the spec
 (the script refuses a mismatch).
 
 - **`install.packaged()` is decided by location, not `sysconfig`.** Fedora's

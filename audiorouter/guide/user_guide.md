@@ -120,6 +120,7 @@ A mic channel takes a real microphone, runs it through its effects, and offers t
 - **Source:** the real microphone, or **Default input** to follow the desktop's choice. A chosen mic that is unplugged is never swapped for another one.
 - **Echo cancellation:** removes whatever your speakers are playing from the microphone, so a call hears you and not your music or game. On for every new mic channel; turn it off in the Channels tab if you use headphones.
 - **LISTEN:** plays the processed microphone through an output channel so you can hear yourself. Choose **Don't listen** to stop. Listening on speakers can cause feedback.
+- **The (i) beside LISTEN:** shown when an echo-cancelled mic plays on the speakers its echo cancellation listens to. Your voice then comes out of those speakers, so echo cancellation takes it for echo and cuts it: you sound choppy, and so does anything recorded from that mic meanwhile. Listen on headphones instead, or keep the speakers and the mic apart. Click the (i) for the explanation; the Channels tab shows it under **Plays through**.
 - **Mixing apps in:** send an app to "Name (into the mic)" in Playing now, or set another channel's OUT to **Into Name (mic)**. Whatever you send there is heard by everyone using that microphone, on top of your voice.
 
 A mic channel only opens the real microphone while something is using it, unless echo cancellation is on, which keeps it open.
@@ -143,6 +144,7 @@ Each channel has its own chain of effects, applied top to bottom. Changes are he
 - **Add:** click **+ Insert** on a strip, or **Add effect...** in the Channels tab. The list groups effects by kind, and includes any compatible audio plugins installed on the computer.
 - **On and off:** click the insert on the strip, or tick its box in the Channels tab. Switching fades smoothly rather than clicking.
 - **Settings:** double-click an insert, or select it in the Channels tab, and move its sliders. **Reset settings** returns them to the defaults.
+- **Mix:** every effect's first setting. At 100% you hear the effect alone; at 50%, half the effect and half the untouched sound; at 0%, none of it. Use it to blend in a reverb, or to soften a compressor or a noise filter that is a bit too strong. It changes as you move it, with no gap in the sound. The insert's name in the list shows the mix when it is below 100%.
 - **Order:** **Up** and **Down** in the Channels tab move an effect earlier or later in the chain. **Remove** deletes it.
 
 The built-in effects:
@@ -193,15 +195,35 @@ Every channel's settings read the same way as its strip, top to bottom in the or
 
 Below the settings, **Levels** shows what goes into and comes out of the channel. With **Show the highlighted effect** ticked, it shows what the effect selected in the Effects list receives and puts out instead. Under that, the **Effects** list and the selected effect's settings.
 
+## Phone remote
+
+The **Phone remote** button at the top lets the Audio Router Remote app on an Android phone work the mixer: faders, pan, mute, solo, switching effects on and off and setting their mix, sending apps to channels, and Bypass.
+
+1. Click **Phone remote** and tick **Let the phone app control this desk**.
+2. In the app, tap **Pair** and scan the code shown.
+3. When the window says **Ready**, the phone can reach the desk.
+
+The phone must be on the same network as the computer: the remote answers nothing outside your home network, even with the code.
+
+**Also allow other networks** lets a phone on another network reach the desk, such as over a VPN like Tailscale. It is off unless you tick it, and then the pairing code includes the computer's other addresses too. The connection itself is not encrypted, so only use it on networks you trust; Tailscale encrypts its own traffic.
+
+While the phone shows its meters, the desktop may show its "microphone in use" icon, as with the Mixer tab: the meters listen to your mic channels. They stop when the phone leaves the mixer.
+
+The phone talks to the background service, so **Keep routing with this window closed** must be ticked; the window says so if it is not. Changes made from the phone show in this window as they happen.
+
+**Unpair all phones** makes a new code: every phone stops working until it scans the new one. Use it if a phone is lost or given away. Untick the box to switch the remote off.
+
 ## Warnings and how to fix them
 
 | You see | What it means | What to do |
 | --- | --- | --- |
+| **My mic sounds choppy when I listen to it on the speakers** (an (i) beside LISTEN) | Echo cancellation removes whatever the speakers play from the mic, and now that includes your own voice. | Listen on headphones, or choose **Don't listen**. Nothing is broken. |
 | **Echo cancellation stopped working** (a banner, or a desktop notification) | Part of the sound system was restarted on its own, which breaks echo cancellation until the whole sound system restarts. | Click **Restart the sound system**. Every sound stops for a few seconds, then your channels come back. |
 | A banner naming **EasyEffects** | EasyEffects is running. It moves every app onto its own output, so apps cannot stay on your channels. | Quit EasyEffects, including its background service. |
 | **No output devices - is anything plugged in?** | No speakers or headphones are connected. | Plug a device in or check the desktop's sound settings. |
 | **(not connected)** after a device name | The channel's chosen device is unplugged. The channel keeps that choice rather than switching silently. | Plug it back in, or choose another device. |
 | **not running** on a strip | The channel should be on but is not. | Usually clears within a second or two. If it stays, switch the channel off and on in the Channels tab. |
+| **The phone talks to the background service, which is not running** (Phone remote) | The phone remote is on, but nothing is there to answer the phone. | Tick **Keep routing with this window closed**. |
 | **Bypassed** banner across the window | Bypass is on: every channel is stopped and nothing is routed. | Click **Bypassed** to bring everything back. |
 | **cut by a solo** on a strip | Another channel of the same kind is soloed. | Turn off the lit **S**. |
 
@@ -214,10 +236,12 @@ Below the settings, **Levels** shows what goes into and comes out of the channel
 | Group | A channel that other channels play into. |
 | Virtual cable | A channel whose sound other apps can record, like a microphone. |
 | Insert | One effect in a channel's chain. |
+| Mix | How much of an effect you hear: 100% is the effect alone, 0% the untouched sound. |
 | Trim | A channel's volume before its effects. |
 | Fader | A channel's volume after its effects. |
 | Pan | The balance between left and right. |
 | Solo | Hear only one channel by cutting the others. |
 | dB (decibel) | The unit for level. 0 dB leaves the level unchanged; -6 dB halves the signal, which sounds noticeably quieter; positive values are louder. |
 | Echo cancellation | Removing the speakers' sound from a microphone. |
+| Pairing | Letting a phone control the desk, by scanning the code in the Phone remote window. |
 | Default output / input | Whichever speakers or microphone the desktop is set to use. |

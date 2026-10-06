@@ -18,6 +18,7 @@ Two rules shape the whole file:
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import threading
@@ -42,7 +43,7 @@ from .channels import (
 )
 from . import plugins, session
 from .config import Config, ConfigError, config_path, default_config
-from .effects import Effect, EffectError, make_effect
+from .effects import Effect, EffectError, clamp_mix, make_effect
 from .meter import sweep_stale
 from .pwgraph import Graph, GraphMonitor, Node, PwError, require_tools
 from .routing import Placement, Router, Rule, RuleSet, plan
@@ -143,19 +144,34 @@ class Engine:
         goes; without this, an app remembered in the window would not be routed
         until the next login. A file that cannot be read is ignored and the last
         good settings kept - half-understood rules are worse than stale ones.
-        Only a process that never edits the config itself should call this.
+        Safe only where every edit is saved the moment it is made (the window,
+        the phone remote): otherwise a reload would throw an unsaved edit away.
+        """
+        return self.adopt_saved(in_place=False) is not None
+
+    def adopt_saved(self, in_place: bool = True) -> str | None:
+        """Adopt settings another process saved; say how much changed.
+
+        None: nothing new. "values": the same channel and effect objects now
+        hold the saved values (a fader, a solo, an effect switched off), so a
+        window holding them needs no rebuild - the phone remote moves a fader
+        many times a second. "shape": channels or effects were added, removed
+        or reordered, so the config was replaced and holders must look again.
         """
         stamp = self._config_stamp()
         if stamp is None or stamp == self._loaded_stamp:
-            return False
+            return None
         try:
             config = Config.load(self.path)
         except ConfigError:
-            return False
-        self.config = config
+            return None
         self._loaded_stamp = stamp
         plugins.set_extra_folders(config.plugin_folders)
-        return True
+        if in_place and _same_shape(self.config, config):
+            _copy_values(config, self.config)
+            return "values"
+        self.config = config
+        return "shape"
 
     # -- the graph ---------------------------------------------------------
 
@@ -427,6 +443,13 @@ class Engine:
     def set_effect_enabled(self, slug: str, index: int, enabled: bool) -> Effect:
         _, effect = self._effect_at(slug, index)
         effect.enabled = bool(enabled)
+        self.save()
+        return effect
+
+    def set_effect_mix(self, slug: str, index: int, mix: float) -> Effect:
+        """The wet share while the effect is on, held to 0..1. Live: no restart."""
+        _, effect = self._effect_at(slug, index)
+        effect.mix = clamp_mix(mix)
         self.save()
         return effect
 
@@ -855,14 +878,28 @@ class Engine:
 
     # -- status ------------------------------------------------------------
 
+    def listen_cancelled(self, channel: Channel, default_sink: str | None) -> bool:
+        """Does this mic's echo canceller hear the mic's own listen-through?
+
+        The canceller's reference is the default output (`monitor.mode`, see
+        docs/echo-cancel.md), so a mic listened to on it is "echo": the
+        canceller cuts the voice and it comes out choppy (owner, 6 Oct 2026).
+        """
+        if not channel.is_input or not channel.echo_cancel:
+            return False
+        device = self.config.listen_ends_on(channel)
+        return device is not None and device != NOWHERE and (device == "" or device == default_sink)
+
     def status(self, refresh: bool = True) -> dict[str, Any]:
         """Everything a UI needs for one refresh, from a single graph snapshot."""
         graph = self.graph(refresh=refresh)
         sinks = self.sink_map(graph)
         sources = self.source_map(graph)
         channels = []
+        default_sink = graph.default_sink_name()
         for channel in self.config.channels:
             entry = channel.status(graph)
+            entry["listen_cancelled"] = self.listen_cancelled(channel, default_sink)
             entry["needs_restart"] = self.needs_restart(channel)
             entry["problems"] = channel.missing_plugins()
             channels.append(entry)
@@ -906,6 +943,29 @@ class Engine:
             "echo_cancel_broken": session.echo_cancel_broken(self.config.channels, graph) is not None,
             "orphans": self.orphan_slugs(),
         }
+
+
+def _shape(config: Config) -> list[tuple[str, tuple[tuple[str, str], ...]]]:
+    return [(c.slug, tuple((e.kind, e.plugin) for e in c.effects)) for c in config.channels]
+
+
+def _same_shape(old: Config, new: Config) -> bool:
+    return _shape(old) == _shape(new)
+
+
+def _copy_values(source: Config, target: Config) -> None:
+    """Every saved value onto the matching existing objects (same shape only)."""
+    for field_ in dataclasses.fields(Config):
+        if field_.name != "channels":
+            setattr(target, field_.name, getattr(source, field_.name))
+    for new, old in zip(source.channels, target.channels):
+        for field_ in dataclasses.fields(Channel):
+            if field_.name != "effects":
+                setattr(old, field_.name, getattr(new, field_.name))
+        for new_effect, old_effect in zip(new.effects, old.effects):
+            for field_ in dataclasses.fields(Effect):
+                setattr(old_effect, field_.name, getattr(new_effect, field_.name))
+    target.update_solo()
 
 
 def _wpctl(*argv: str) -> None:

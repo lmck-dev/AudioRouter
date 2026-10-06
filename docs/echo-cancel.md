@@ -60,3 +60,16 @@ notification -> its button ran `audiorouter-sound-restart-*` at 12:11:51 ->
 all three cancellers flat again (ERR 3). A notification left alone expires
 without pressing its button ("Wait timeout expired" on stdout, which is not
 "fix"), so nothing restarts unless someone clicks. No false alarm while healthy.
+
+## A mic listened to on its own reference cuts itself (6 Oct 2026)
+
+The owner sent Listener (echo cancel on) to the Speakers channel to tune it by
+ear and heard it choppy; off the speakers it was clean. Not a fault: the
+reference is the default output, so the listen-through puts the voice in the
+reference and the WebRTC canceller (subtraction + suppressor) cuts it. Without
+the canceller it would be acoustic feedback instead. `Engine.listen_cancelled`
+(listen chain through groups ends on "" or the graph's `default.audio.sink`
+metadata, `Graph.default_sink_name`) puts `listen_cancelled` in each status
+entry; the strip shows an (i) beside LISTEN, the Channels tab the full text
+(`mixer.LISTEN_ECHO_HELP`). To tune a mic by ear: headphones, or record and
+play back.

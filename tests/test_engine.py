@@ -1,10 +1,11 @@
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from audiorouter.channels import Channel
+from audiorouter.channels import INPUT, OUTPUT, Channel
 from audiorouter.config import Config, ConfigError
 from audiorouter.effects import Effect, EffectError
 from audiorouter.engine import AutoRouter, DaemonRecord, Engine, EngineError, daemon_pid
@@ -611,3 +612,100 @@ class InputChannelApplyTest(EngineTestCase):
              mock.patch.object(Channel, "start") as start:
             self.engine.apply()
         self.assertEqual(start.call_count, 1)  # only "speakers", whose conf was never written
+
+
+class AdoptSavedTest(EngineTestCase):
+    def save_elsewhere(self, change):
+        self.engine.save()
+        other = Engine.load(self.path)
+        change(other.config)
+        other.save()
+        stamp = self.path.stat().st_mtime_ns + 1_000_000
+        os.utime(self.path, ns=(stamp, stamp))
+
+    def test_nothing_new(self):
+        self.engine.save()
+        self.assertIsNone(self.engine.adopt_saved())
+
+    def test_values_land_on_the_same_objects(self):
+        self.engine.add_effect("speakers", "gain")
+        channel = self.engine.config.channel("speakers")
+        effect = channel.effects[0]
+
+        def change(config):
+            config.channel("speakers").fader_db = -4.0
+            config.channel("speakers").solo = True
+            config.channel("speakers").effects[0].enabled = False
+            config.bypass = True
+
+        self.save_elsewhere(change)
+        self.assertEqual(self.engine.adopt_saved(), "values")
+        self.assertIs(self.engine.config.channel("speakers"), channel)
+        self.assertIs(channel.effects[0], effect)
+        self.assertEqual((channel.fader_db, channel.solo, effect.enabled), (-4.0, True, False))
+        self.assertTrue(self.engine.config.bypass)
+
+    def test_a_new_shape_replaces_the_config(self):
+        channel = self.engine.config.channel("speakers")
+        self.save_elsewhere(lambda c: c.channel("speakers").effects.append(Effect("gain")))
+        self.assertEqual(self.engine.adopt_saved(), "shape")
+        self.assertIsNot(self.engine.config.channel("speakers"), channel)
+        self.assertEqual(len(self.engine.config.channel("speakers").effects), 1)
+
+
+def default_metadata(sink, *, as_text=False):
+    value = {"name": sink}
+    return {"id": 7, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
+            "metadata": [{"subject": 0, "key": "default.audio.sink", "type": "Spa:String:JSON",
+                          "value": json.dumps(value) if as_text else value}]}
+
+
+class ListenCancelledTest(EngineTestCase):
+    """The "i" beside LISTEN: a mic heard on the speakers its own canceller listens to (6 Oct 2026)."""
+
+    def setUp(self):
+        super().setUp()
+        self.engine.config.channels += [
+            Channel("bt", "Headphones", "bluez_output.x", kind=OUTPUT),
+            Channel("bus", "Bus", "ar_speakers", kind=OUTPUT),
+            Channel("mic", "Mic", "alsa_input.a", kind=INPUT, echo_cancel=True),
+        ]
+        self.mic = self.engine.config.channel("mic")
+
+    def cancelled(self, listen, default="alsa_output.a"):
+        self.mic.listen = listen
+        return self.engine.listen_cancelled(self.mic, default)
+
+    def test_the_default_sink_comes_from_the_default_metadata(self):
+        self.assertEqual(Graph([default_metadata("alsa_output.a")]).default_sink_name(), "alsa_output.a")
+        self.assertEqual(Graph([default_metadata("x", as_text=True)]).default_sink_name(), "x")
+        self.assertIsNone(Graph([]).default_sink_name())
+
+    def test_on_the_speakers_it_cancels_itself(self):
+        self.assertTrue(self.cancelled("speakers"))
+
+    def test_through_a_group_onto_the_speakers_too(self):
+        self.assertTrue(self.cancelled("bus"))
+
+    def test_headphones_and_not_listening_are_fine(self):
+        self.assertFalse(self.cancelled("bt"))
+        self.assertFalse(self.cancelled(""))
+
+    def test_the_default_output_entry_is_the_speakers(self):
+        self.engine.config.channel("bt").device = ""
+        self.assertTrue(self.cancelled("bt"))
+
+    def test_without_echo_cancel_there_is_nothing_to_say(self):
+        self.mic.echo_cancel = False
+        self.assertFalse(self.cancelled("speakers"))
+
+    def test_another_default_output_moves_the_reference(self):
+        self.assertFalse(self.cancelled("speakers", default="bluez_output.x"))
+        self.assertTrue(self.cancelled("bt", default="bluez_output.x"))
+
+    def test_status_carries_it_per_channel(self):
+        self.mic.listen = "speakers"
+        self.engine.use_graph(Graph([*live_graph()._objects.values(), default_metadata("alsa_output.a")]))
+        entries = {c["slug"]: c for c in self.engine.status(refresh=False)["channels"]}
+        self.assertTrue(entries["mic"]["listen_cancelled"])
+        self.assertFalse(entries["speakers"]["listen_cancelled"])

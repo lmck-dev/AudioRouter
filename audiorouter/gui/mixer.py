@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -61,7 +62,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..channels import NOWHERE, Channel
-from ..config import Config
+from ..config import Config, desk_order, kind_label  # noqa: F401 - re-exported for the window
 from ..effects import FADER_MAX_DB, FADER_OFF_DB, EffectError
 from ..meter import Driver, FileLevelReader, LevelReader, Levels, Tap, output_tap
 from .meters import FLOOR_DB, FRAME_MS, SCALE_MARKS, LevelBar, bar_span, fraction
@@ -75,6 +76,17 @@ VOLUME_SETTLE_S = 0.8
 #: How often a strip whose tap ended looks for its channel's new host.
 RETRY_MS = 1000
 FOLLOW_DEFAULT = ""
+
+#: Shown when a mic is listened to on the speakers its own echo canceller
+#: listens to (Engine.listen_cancelled; owner, 6 Oct 2026).
+LISTEN_ECHO_TITLE = "Listening through the speakers"
+LISTEN_ECHO_HELP = (
+    "This mic has echo cancellation, which removes from the mic whatever comes out of your "
+    "speakers. When you listen to the mic on those same speakers, your own voice comes out of "
+    "them - so the canceller takes your voice for echo and cuts it, and it sounds choppy.\n\n"
+    "To hear the mic properly, listen on headphones, or keep the speakers and the mic apart "
+    "so they cannot hear each other. A recording made this way will be choppy too."
+)
 NOT_LISTENING = ""
 
 
@@ -128,27 +140,6 @@ def group_label(name: str, mic: bool = False) -> str:
     return f"Into {name} (mic)" if mic else f"Into {name}"
 
 
-def desk_order(config: Config) -> tuple[list[Channel], list[Channel]]:
-    """The channels as the desk shows them: (channels, groups), left to right.
-
-    Mic channels first, then app channels, then groups (right of the channels
-    feeding them, as on a console). Companions are plumbing and never shown.
-    The Channels tab lists them in this same order.
-    """
-    shown = [c for c in config.channels if not c.companion_of]
-    groups = [c for c in shown if not c.is_input and config.is_group(c)]
-    channels = ([c for c in shown if c.is_input]
-                + [c for c in shown if not c.is_input and c not in groups])
-    return channels, groups
-
-
-def kind_label(config: Config, channel: Channel) -> str:
-    """Where a channel's sound comes from, as its strip's caption says it."""
-    if channel.is_input:
-        return "From a mic"
-    if config.is_group(channel):
-        return "Group"
-    return "Cable" if channel.recordable else "From apps"
 
 
 #: The pan slider's travel each side of centre.
@@ -331,6 +322,19 @@ class ChannelStrip(QFrame):
         else:
             self.route.setToolTip("Plays through")
             self.route.activated.connect(self._device_chosen)
+        # "i" beside LISTEN when the mic plays on the speakers its canceller listens to.
+        self.listen_info = QToolButton(self)
+        self.listen_info.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        self.listen_info.setAutoRaise(True)
+        self.listen_info.setToolTip(LISTEN_ECHO_TITLE + ": the echo canceller will cut your voice. Click to see why.")
+        self.listen_info.clicked.connect(
+            lambda: QMessageBox.information(self, LISTEN_ECHO_TITLE, LISTEN_ECHO_HELP))
+        # Its room is kept while hidden, so the LISTEN box never resizes and
+        # the strip does not lay itself out again when it comes and goes.
+        policy = self.listen_info.sizePolicy()
+        policy.setRetainSizeWhenHidden(channel.is_input)
+        self.listen_info.setSizePolicy(policy)
+        self.listen_info.hide()
 
         # TRIM: the desktop's volume for this channel, before the effects.
         self.trim = QSlider(Qt.Orientation.Horizontal, self)
@@ -440,7 +444,12 @@ class ChannelStrip(QFrame):
         layout.addWidget(self.inserts_toggle)
         layout.addWidget(self.insert_area, 2)
         layout.addWidget(caption("LISTEN" if channel.is_input else "OUT"))
-        layout.addWidget(self.route)
+        route_row = QHBoxLayout()
+        route_row.setSpacing(2)
+        route_row.addWidget(self.route, 1)
+        if channel.is_input:  # outputs never show it, so they keep the full width
+            route_row.addWidget(self.listen_info)
+        layout.addLayout(route_row)
         layout.addLayout(pan_row)
         layout.addLayout(buttons)
         layout.addWidget(self.cut_label)
@@ -504,6 +513,21 @@ class ChannelStrip(QFrame):
         self.insert_buttons.append(button)
         return button
 
+    def show_inserts(self) -> None:
+        """Light each insert as its effect is now, without rebuilding the strip."""
+        for button, effect in zip(self.insert_buttons, self.channel.effects):
+            if button.isChecked() != effect.enabled:
+                button.blockSignals(True)
+                button.setChecked(effect.enabled)
+                button.blockSignals(False)
+            try:
+                unavailable = bool(effect.spec.unsatisfied())
+            except EffectError:
+                unavailable = True
+            if unavailable:
+                button.setEnabled(effect.enabled)  # an unavailable one can still be switched off
+        self.set_inserts_open(not self.insert_area.isHidden())
+
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.MouseButtonDblClick and watched is self.pan:
             self.pan.setValue(0)
@@ -524,6 +548,10 @@ class ChannelStrip(QFrame):
         channels playing into this one, which makes it a group.
         """
         self._fill_routes(entry, devices, outputs, groups)
+        cancelled = bool(entry and entry.get("listen_cancelled"))
+        if cancelled != self.listen_info.isVisible():
+            self.listen_info.setVisible(cancelled)
+        self.show_inserts()
         if members:
             self.apps.setText("from " + ", ".join(members) + (f"; {', '.join(apps)}" if apps else ""))
         elif apps:
@@ -888,7 +916,9 @@ class MixerView(QWidget):
         outs = [(d["name"], d["label"]) for d in status.get("devices", [])]
         signature = (tuple(
             (c.slug, c.name, c.kind, c.recordable, c.enabled, config.is_group(c),
-             tuple((e.kind, e.plugin, e.enabled) for e in c.effects))
+             # Not e.enabled: switching an effect is shown in place (show_inserts).
+             # Rebuilding for it reset the desk's scroll position on every click.
+             tuple((e.kind, e.plugin) for e in c.effects))
             for c in channels
         ), tuple(mics), tuple(outs))
         if signature != self._signature or any(

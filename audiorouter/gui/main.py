@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import sys
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import QSettings, Qt, QTimer
-from PyQt6.QtGui import QAction, QFontMetrics, QGuiApplication
+from PyQt6.QtGui import QAction, QFontMetrics, QGuiApplication, QIcon
 from PyQt6.QtWidgets import (
     QWIDGETSIZE_MAX,
     QApplication,
@@ -53,6 +54,7 @@ from .applier import Applier
 from .channel_panel import ChannelPanel
 from .effects_panel import EffectsPanel
 from .meters import MeterPanel
+from . import single
 from .mixer import MixerView, desk_order, group_label, kind_label
 from .monitor import GraphBridge
 from .streams_panel import StreamsPanel
@@ -63,6 +65,8 @@ APPLY_DELAY_MS = 700
 #: A knob change is applied to the running channel, so it can be heard almost
 #: at once; this only batches the flood of values a slider drag produces.
 TUNE_DELAY_MS = 60
+#: How often to look for settings another process saved (a stat, nothing more).
+ADOPT_INTERVAL_MS = 500
 
 #: After "Restart the sound system", the button stays disabled this long.
 EC_FIX_SETTLE_S = 20.0
@@ -125,6 +129,13 @@ class MainWindow(QMainWindow):
         self._device_volume_timer.setInterval(TUNE_DELAY_MS)
         self._device_volume_timer.timeout.connect(self._write_device_volume)
 
+        # Settings saved by another process - the phone remote in the login
+        # service, or the command line - are adopted here. Every edit made in
+        # this window is saved at once, so nothing of ours is ever unsaved.
+        self._adopt_timer = QTimer(self)
+        self._adopt_timer.setInterval(ADOPT_INTERVAL_MS)
+        self._adopt_timer.timeout.connect(self.adopt_saved_settings)
+
         self._build()
         self._connect()
 
@@ -133,6 +144,7 @@ class MainWindow(QMainWindow):
         self.refresh()
         self._offer_first_run()
         self._start_auto_router()
+        self._adopt_timer.start()
 
     # -- construction ------------------------------------------------------
 
@@ -194,6 +206,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.background)
         top.addStretch(1)
         top.addWidget(self.status_label)
+        self.phone_button = QPushButton("Phone remote", self)
+        self.phone_button.setToolTip("Control the mixer from your phone, and pair it")
+        self.phone_button.clicked.connect(self._show_phone)
+        top.addWidget(self.phone_button)
         self.guide_button = QPushButton("User Guide", self)
         self.guide_button.setToolTip("What every part of Audio Router does")
         self.guide_button.clicked.connect(self._show_guide)
@@ -434,6 +450,44 @@ class MainWindow(QMainWindow):
             self._set_status("Updating...")
         else:
             self._set_status("")
+
+    def bring_forward(self) -> None:
+        """Audio Router was opened again: show this window rather than a second."""
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def adopt_saved_settings(self) -> None:
+        """Show settings another process saved, without applying them.
+
+        Whoever saved them applies them (the remote does, at once); applying
+        here as well would restart the same channels twice. Values only (a
+        fader, a solo) keep every object and widget; a change of shape - a
+        channel or effect added or removed - rebuilds the lists.
+        """
+        try:
+            changed = self.engine.adopt_saved()
+        except OSError:
+            return
+        if changed is None:
+            return
+        config = self.engine.config
+        self.bypass.blockSignals(True)
+        self.bypass.setChecked(config.bypass)
+        self.bypass.blockSignals(False)
+        self.auto_route.blockSignals(True)
+        self.auto_route.setChecked(config.auto_route)
+        self.auto_route.blockSignals(False)
+        if changed == "shape":
+            self._refresh_channel_list()
+        else:
+            self.channel_panel.show_fader()
+            # An effect switched on or off elsewhere; never under a held slider.
+            if QGuiApplication.mouseButtons() == Qt.MouseButton.NoButton:
+                self.effects_panel.refresh()
+        self.refresh()
 
     def _refresh_channel_list(self, status: dict | None = None) -> None:
         status = status if status is not None else getattr(self, "_status", None)
@@ -1028,6 +1082,16 @@ class MainWindow(QMainWindow):
         self._about.raise_()
         self._about.activateWindow()
 
+    def _show_phone(self) -> None:
+        from .phone import PhoneRemoteWindow
+
+        # Made afresh each time: the settings file may have changed meanwhile
+        # (`audiorouter remote on` from a terminal).
+        if getattr(self, "_phone", None) is not None:
+            self._phone.close()
+        self._phone = PhoneRemoteWindow(self)
+        self._phone.show()
+
     def _monitor_failed(self, message: str) -> None:
         self._set_status(f"Not watching for new apps: {message}", warn=True)
 
@@ -1084,6 +1148,15 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Audio Router")
     app.setDesktopFileName(install.APP_ID)
+    # The window and taskbar on X11; Wayland takes the icon from the menu entry.
+    app.setWindowIcon(QIcon(str(Path(__file__).with_name("audiorouter.svg"))))
+    if single.show_running_window():
+        return 0  # one window at a time: the open one comes forward instead
+    try:
+        lock = single.WindowLock()
+    except OSError as exc:  # pragma: no cover - the socket directory is unwritable
+        print(f"audiorouter: could not claim the window lock: {exc}", file=sys.stderr)
+        lock = None
     try:
         engine = Engine.load()
     except ConfigError as exc:
@@ -1092,6 +1165,8 @@ def main(argv: list[str] | None = None) -> int:
     native.ensure_all()  # well under a second each, and only when missing or stale
     _set_up_package()
     window = MainWindow(engine)
+    if lock is not None:
+        lock.show_requested.connect(window.bring_forward)
     window.show()
     return app.exec()
 

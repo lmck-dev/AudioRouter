@@ -131,17 +131,40 @@ class RenderTest(unittest.TestCase):
             self.assertIn({"output": f"sw0_dry_{side}:Out", "input": f"sw0_switch_{side}:In 2"}, chain.links)
 
     def test_one_audio_rate_fade_drives_both_sides_and_the_dry_gain_is_its_complement(self):
-        # The dry gain is 1 - fade, so the two always add to exactly 1, and one
-        # ramp for both sides means left and right cannot drift apart.
+        # wet = fade * mix, dry = 1 - fade * mix: the two always add to exactly
+        # 1, and one ramp for both sides means left and right cannot drift apart.
         chain = render_chain([Effect("gain")])
         nodes = {n["name"]: n for n in chain.nodes}
         self.assertEqual(nodes["sw0_fade"]["label"], "ramp")
+        self.assertEqual(nodes["sw0_mix"]["label"], "linear")
+        self.assertEqual(nodes["sw0_mix"]["control"], {"Mult": 1.0, "Add": 0.0})
         self.assertEqual(nodes["sw0_drygain"]["label"], "linear")
         self.assertEqual(nodes["sw0_drygain"]["control"], {"Mult": -1.0, "Add": 1.0})
-        self.assertIn({"output": "sw0_fade:Out", "input": "sw0_drygain:In"}, chain.links)
+        self.assertIn({"output": "sw0_fade:Out", "input": "sw0_mix:In"}, chain.links)
+        self.assertIn({"output": "sw0_mix:Out", "input": "sw0_drygain:In"}, chain.links)
         for side in "lr":
-            self.assertIn({"output": "sw0_fade:Out", "input": f"sw0_wet_{side}:In 2"}, chain.links)
+            self.assertIn({"output": "sw0_mix:Out", "input": f"sw0_wet_{side}:In 2"}, chain.links)
             self.assertIn({"output": "sw0_drygain:Out", "input": f"sw0_dry_{side}:In 2"}, chain.links)
+
+    def test_the_wet_mix_is_the_mix_nodes_control_and_nothing_else(self):
+        # A mix change must be a live control change: only sw<i>_mix:Mult may
+        # differ, so the chain's shape (and the running host) stays the same.
+        full = render_chain([Effect("gain")])
+        half = render_chain([Effect("gain", mix=0.5)])
+        self.assertEqual(full.links, half.links)
+        nodes = {n["name"]: n for n in half.nodes}
+        self.assertEqual(nodes["sw0_mix"]["control"], {"Mult": 0.5, "Add": 0.0})
+        strip = lambda chain: [{k: v for k, v in n.items() if k != "control"} for n in chain.nodes]
+        self.assertEqual(strip(full), strip(half))
+
+    def test_the_mix_is_held_to_0_1_and_saved_only_when_below_1(self):
+        self.assertEqual(Effect.from_dict({"kind": "gain", "mix": 1.7}).mix, 1.0)
+        self.assertEqual(Effect.from_dict({"kind": "gain", "mix": -2}).mix, 0.0)
+        self.assertEqual(Effect.from_dict({"kind": "gain", "mix": "lots"}).mix, 1.0)
+        self.assertEqual(Effect.from_dict({"kind": "gain"}).mix, 1.0)
+        self.assertNotIn("mix", Effect("gain").to_dict())
+        self.assertEqual(Effect("gain", mix=0.25).to_dict()["mix"], 0.25)
+        self.assertEqual(Effect.from_dict(Effect("gain", mix=0.25).to_dict()).mix, 0.25)
 
     def test_no_ramp_has_controls_of_its_own_because_they_would_be_clamped_to_zero(self):
         # A ramp's ports declare no range and filter-graph clamps set values to

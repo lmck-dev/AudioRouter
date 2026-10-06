@@ -132,3 +132,16 @@ absolute `plugin` path as given.
 
 Plugins with 1 in / 2 out (wideners), several ins/outs, or instruments are
 listed as unusable with the reason. Plugin windows (LV2 UIs) are not shown.
+
+## Wet mix (5 Oct 2026)
+
+`Effect.mix` (0..1, saved only when below 1) scales the bypass fade, not the
+ramp: `sw<i>_mix` is a `linear` on the fade's audio, so wet = effect * fade * mix
+and dry = input * (1 - fade * mix). A mix change is one live control change
+(`sw<i>_mix:Mult`); the shape is the same at every mix. **Do not move the ramp's
+own target to the mix instead**: its slope is Stop - Start, which is 0 at a mix
+of 0.5, so the fade would never move, and on the way down the ramp would clamp
+straight to its stop. Lab, 5 Oct: a -12 dB gain at mix 1 / 0.5 / 0.25 / 0 read
+-12.00 / -4.07 / -1.80 / 0.00 dB (exact), the host never restarted, and an effect
+switched off at mix 0.5 passed the dry sound exactly. Not measured: zipper noise
+while a mix is dragged (each step is an instant gain change, as with a knob).

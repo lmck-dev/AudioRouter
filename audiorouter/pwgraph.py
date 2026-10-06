@@ -44,6 +44,7 @@ _PORT = "PipeWire:Interface:Port"
 _LINK = "PipeWire:Interface:Link"
 _CLIENT = "PipeWire:Interface:Client"
 _CORE = "PipeWire:Interface:Core"
+_METADATA = "PipeWire:Interface:Metadata"
 
 
 #: How PipeWire's ALSA plugin names the apps that use it.
@@ -281,6 +282,23 @@ class Graph:
         if obj is None or obj.get("type") != _NODE:
             return None
         return _node_from_object(obj)
+
+    def default_sink_name(self) -> str | None:
+        """The default output's node name, from the session's `default` metadata."""
+        for obj in self._of_type(_METADATA):
+            if (obj.get("props") or {}).get("metadata.name") != "default":
+                continue
+            for item in obj.get("metadata") or []:
+                if item.get("key") != "default.audio.sink":
+                    continue
+                value = item.get("value")
+                if isinstance(value, str):  # some versions send the JSON as text
+                    try:
+                        value = json.loads(value)
+                    except ValueError:
+                        return None
+                return value.get("name") if isinstance(value, dict) else None
+        return None
 
     def sinks(self) -> list[Node]:
         return [n for n in self.nodes if n.is_sink]
