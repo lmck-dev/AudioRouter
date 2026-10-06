@@ -151,6 +151,20 @@ class Config:
             group = self.group_of(group)
         return chain
 
+    def listen_ends_on(self, channel: Channel) -> str | None:
+        """The device a mic's listen-through finally plays on, through any groups.
+
+        "" is the default output, NOWHERE is nowhere; None when it does not listen.
+        """
+        if not channel.is_input or not channel.listen:
+            return None
+        try:
+            target = self.channel(channel.listen)
+        except ConfigError:
+            return None
+        chain = self.groups_below(target)
+        return (chain[-1] if chain else target).device
+
     def in_loop(self, channel: Channel) -> bool:
         """Does following this channel's groups lead back to it?"""
         group = self.group_of(channel)

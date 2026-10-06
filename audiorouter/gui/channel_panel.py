@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..channels import NOWHERE, Channel
-from .mixer import FADER_TRAVEL, db_to_fader, fader_text, fader_to_db
+from .mixer import FADER_TRAVEL, LISTEN_ECHO_HELP, db_to_fader, fader_text, fader_to_db
 from .theme import Theme
 
 FOLLOW_DEFAULT = ""
@@ -118,6 +118,7 @@ class ChannelPanel(QGroupBox):
             "Not needed with headphones."
         )
         self.echo_cancel.toggled.connect(self._echo_cancel_toggled)
+        self._listen_cancelled = False  # from the engine: the mic plays on its canceller's speakers
         self.hint = QLabel(self)
         self.hint.setWordWrap(True)
         self.enabled = QCheckBox("Switched on", self)
@@ -320,7 +321,6 @@ class ChannelPanel(QGroupBox):
     def _sync_options(self) -> None:
         """The cable box and the hint follow the channel's current settings."""
         channel = self.channel
-        theme = Theme(self)
         self.recordable.blockSignals(True)
         if channel is None:
             self.recordable.setChecked(False)
@@ -341,12 +341,17 @@ class ChannelPanel(QGroupBox):
         self.echo_cancel.setChecked(channel is not None and channel.is_input and channel.echo_cancel)
         self.echo_cancel.blockSignals(False)
 
-        text, colour = "", theme.dim
+        self._show_hint()
+
+    def _show_hint(self) -> None:
+        theme = Theme(self)
+        channel = self.channel
+        text = ""
         if channel is not None and channel.is_input and channel.listen:
-            text = "You hear this mic: use headphones - through speakers a mic can feed back into itself."
-            colour = theme.warn
+            text = ("\u24d8 " + LISTEN_ECHO_HELP if self._listen_cancelled else
+                    "You hear this mic: use headphones - through speakers a mic can feed back into itself.")
         self.hint.setText(text)
-        self.hint.setStyleSheet(f"color: {colour.name()};")
+        self.hint.setStyleSheet(f"color: {theme.warn.name()};")
         self.form.setRowVisible(self.hint, bool(text))
 
     def show_volume(self, volume: float | None, muted: bool | None) -> None:
@@ -378,6 +383,10 @@ class ChannelPanel(QGroupBox):
 
     def show_status(self, entry: dict | None) -> None:
         self.show_volume(entry.get("volume") if entry else None, entry.get("muted") if entry else None)
+        cancelled = bool(entry and entry.get("listen_cancelled"))
+        if cancelled != self._listen_cancelled:
+            self._listen_cancelled = cancelled
+            self._show_hint()
         if entry is None:
             self.status.setText("")
             return

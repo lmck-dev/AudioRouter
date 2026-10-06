@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -75,6 +76,17 @@ VOLUME_SETTLE_S = 0.8
 #: How often a strip whose tap ended looks for its channel's new host.
 RETRY_MS = 1000
 FOLLOW_DEFAULT = ""
+
+#: Shown when a mic is listened to on the speakers its own echo canceller
+#: listens to (Engine.listen_cancelled; owner, 6 Oct 2026).
+LISTEN_ECHO_TITLE = "Listening through the speakers"
+LISTEN_ECHO_HELP = (
+    "This mic has echo cancellation, which removes from the mic whatever comes out of your "
+    "speakers. When you listen to the mic on those same speakers, your own voice comes out of "
+    "them - so the canceller takes your voice for echo and cuts it, and it sounds choppy.\n\n"
+    "To hear the mic properly, listen on headphones, or keep the speakers and the mic apart "
+    "so they cannot hear each other. A recording made this way will be choppy too."
+)
 NOT_LISTENING = ""
 
 
@@ -310,6 +322,14 @@ class ChannelStrip(QFrame):
         else:
             self.route.setToolTip("Plays through")
             self.route.activated.connect(self._device_chosen)
+        # "i" beside LISTEN when the mic plays on the speakers its canceller listens to.
+        self.listen_info = QToolButton(self)
+        self.listen_info.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        self.listen_info.setAutoRaise(True)
+        self.listen_info.setToolTip(LISTEN_ECHO_TITLE + ": the echo canceller will cut your voice. Click to see why.")
+        self.listen_info.clicked.connect(
+            lambda: QMessageBox.information(self, LISTEN_ECHO_TITLE, LISTEN_ECHO_HELP))
+        self.listen_info.hide()
 
         # TRIM: the desktop's volume for this channel, before the effects.
         self.trim = QSlider(Qt.Orientation.Horizontal, self)
@@ -419,7 +439,11 @@ class ChannelStrip(QFrame):
         layout.addWidget(self.inserts_toggle)
         layout.addWidget(self.insert_area, 2)
         layout.addWidget(caption("LISTEN" if channel.is_input else "OUT"))
-        layout.addWidget(self.route)
+        route_row = QHBoxLayout()
+        route_row.setSpacing(2)
+        route_row.addWidget(self.route, 1)
+        route_row.addWidget(self.listen_info)
+        layout.addLayout(route_row)
         layout.addLayout(pan_row)
         layout.addLayout(buttons)
         layout.addWidget(self.cut_label)
@@ -518,6 +542,7 @@ class ChannelStrip(QFrame):
         channels playing into this one, which makes it a group.
         """
         self._fill_routes(entry, devices, outputs, groups)
+        self.listen_info.setVisible(bool(entry and entry.get("listen_cancelled")))
         self.show_inserts()
         if members:
             self.apps.setText("from " + ", ".join(members) + (f"; {', '.join(apps)}" if apps else ""))

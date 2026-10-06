@@ -878,14 +878,28 @@ class Engine:
 
     # -- status ------------------------------------------------------------
 
+    def listen_cancelled(self, channel: Channel, default_sink: str | None) -> bool:
+        """Does this mic's echo canceller hear the mic's own listen-through?
+
+        The canceller's reference is the default output (`monitor.mode`, see
+        docs/echo-cancel.md), so a mic listened to on it is "echo": the
+        canceller cuts the voice and it comes out choppy (owner, 6 Oct 2026).
+        """
+        if not channel.is_input or not channel.echo_cancel:
+            return False
+        device = self.config.listen_ends_on(channel)
+        return device is not None and device != NOWHERE and (device == "" or device == default_sink)
+
     def status(self, refresh: bool = True) -> dict[str, Any]:
         """Everything a UI needs for one refresh, from a single graph snapshot."""
         graph = self.graph(refresh=refresh)
         sinks = self.sink_map(graph)
         sources = self.source_map(graph)
         channels = []
+        default_sink = graph.default_sink_name()
         for channel in self.config.channels:
             entry = channel.status(graph)
+            entry["listen_cancelled"] = self.listen_cancelled(channel, default_sink)
             entry["needs_restart"] = self.needs_restart(channel)
             entry["problems"] = channel.missing_plugins()
             channels.append(entry)

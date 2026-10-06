@@ -120,6 +120,7 @@ A mic channel takes a real microphone, runs it through its effects, and offers t
 - **Source:** the real microphone, or **Default input** to follow the desktop's choice. A chosen mic that is unplugged is never swapped for another one.
 - **Echo cancellation:** removes whatever your speakers are playing from the microphone, so a call hears you and not your music or game. On for every new mic channel; turn it off in the Channels tab if you use headphones.
 - **LISTEN:** plays the processed microphone through an output channel so you can hear yourself. Choose **Don't listen** to stop. Listening on speakers can cause feedback.
+- **The (i) beside LISTEN:** shown when an echo-cancelled mic plays on the speakers its echo cancellation listens to. Your voice then comes out of those speakers, so echo cancellation takes it for echo and cuts it: you sound choppy, and so does anything recorded from that mic meanwhile. Listen on headphones instead, or keep the speakers and the mic apart. Click the (i) for the explanation; the Channels tab shows it under **Plays through**.
 - **Mixing apps in:** send an app to "Name (into the mic)" in Playing now, or set another channel's OUT to **Into Name (mic)**. Whatever you send there is heard by everyone using that microphone, on top of your voice.
 
 A mic channel only opens the real microphone while something is using it, unless echo cancellation is on, which keeps it open.
@@ -216,6 +217,7 @@ The phone talks to the background service, so **Keep routing with this window cl
 
 | You see | What it means | What to do |
 | --- | --- | --- |
+| **My mic sounds choppy when I listen to it on the speakers** (an (i) beside LISTEN) | Echo cancellation removes whatever the speakers play from the mic, and now that includes your own voice. | Listen on headphones, or choose **Don't listen**. Nothing is broken. |
 | **Echo cancellation stopped working** (a banner, or a desktop notification) | Part of the sound system was restarted on its own, which breaks echo cancellation until the whole sound system restarts. | Click **Restart the sound system**. Every sound stops for a few seconds, then your channels come back. |
 | A banner naming **EasyEffects** | EasyEffects is running. It moves every app onto its own output, so apps cannot stay on your channels. | Quit EasyEffects, including its background service. |
 | **No output devices - is anything plugged in?** | No speakers or headphones are connected. | Plug a device in or check the desktop's sound settings. |
