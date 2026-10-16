@@ -20,12 +20,15 @@ from PyQt6.QtWidgets import (
     QMenu,
     QToolButton,
     QComboBox,
+    QFrame,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
     QLineEdit,
+    QScrollArea,
+    QSizePolicy,
     QSlider,
     QWidget,
 )
@@ -49,7 +52,10 @@ class TargetPicker(QWidget):
 
     changed = pyqtSignal(list)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, title: str = "") -> None:
+        """With a `title`, the list stands open in a column of its own under that
+        title and scrolls when long (the Channels view, owner 16 Oct 2026: folded
+        in the form it had no room). Without one it folds behind a summary."""
         super().__init__(parent)
         self.nothing = "Nowhere"
         self._options: list[tuple[str, str]] = []
@@ -68,12 +74,36 @@ class TargetPicker(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        layout.addWidget(self.header, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.body)
-        self.body.hide()
         self._boxes: dict[str, QCheckBox] = {}
+        self.title = None
+        if not title:
+            layout.addWidget(self.header, 0, Qt.AlignmentFlag.AlignLeft)
+            layout.addWidget(self.body)
+            self.body.hide()
+            return
+        # A column of its own: always open, and as tall as the panel beside it,
+        # never taller - the list scrolls instead of stretching the panel.
+        self.header.hide()
+        self.title = QLabel(title, self)
+        theme = Theme(self)
+        self.title.setStyleSheet(f"{theme.css(theme.dim)} font-weight: bold; padding-top: 6px;")
+        self.empty = QLabel(self)
+        self.empty.setStyleSheet(theme.css(theme.dim))
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.addStretch(1)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.body)
+        scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Ignored)
+        self.scroll = scroll
+        layout.addWidget(self.title)
+        layout.addWidget(self.empty)
+        layout.addWidget(scroll, 1)
 
     def set_open(self, open_: bool) -> None:
+        if self.title is not None:
+            return   # a column of its own is always open
         self.header.blockSignals(True)
         self.header.setChecked(open_)
         self.header.blockSignals(False)
@@ -81,7 +111,7 @@ class TargetPicker(QWidget):
         self.body.setVisible(open_)
 
     def is_open(self) -> bool:
-        return self.body.isVisibleTo(self)
+        return self.title is not None or self.body.isVisibleTo(self)
 
     def set_options(self, options: list[tuple[str, str]], ticked: list[str]) -> None:
         """(value, label) per place, and which are ticked, first one first. A
@@ -89,16 +119,15 @@ class TargetPicker(QWidget):
         known = {value for value, _ in options}
         self._options = list(options) + [(v, f"{v} (not connected)") for v in ticked if v not in known]
         self._ticked = [v for v in ticked if any(v == o for o, _ in self._options)]
-        while self.body_layout.count():
-            item = self.body_layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+        for box in self._boxes.values():
+            self.body_layout.removeWidget(box)
+            box.deleteLater()
         self._boxes = {}
-        for value, label in self._options:
+        for n, (value, label) in enumerate(self._options):
             box = QCheckBox(label, self.body)
             box.setChecked(value in self._ticked)
             box.toggled.connect(lambda on, v=value: self._toggled(v, on))
-            self.body_layout.addWidget(box)
+            self.body_layout.insertWidget(n, box)   # above the stretch, when there is one
             self._boxes[value] = box
         self._show_summary()
 
@@ -125,6 +154,9 @@ class TargetPicker(QWidget):
     def _show_summary(self) -> None:
         names = dict(self._options)
         self.header.setText(", ".join(names[v] for v in self._ticked) if self._ticked else self.nothing)
+        if self.title is not None:
+            self.empty.setText(self.nothing)
+            self.empty.setVisible(not self._ticked)
 
 #: After the user moves the volume, readings from the graph are ignored for
 #: this long: a refresh can carry the value from just *before* the change, and
@@ -193,7 +225,7 @@ class ChannelPanel(QGroupBox):
         self.remembered_box = remembered_box
 
         # -- OUT: where it goes.
-        self.device = TargetPicker(self)  # plays through: devices, groups, or listen-throughs
+        self.device = TargetPicker(self, title="Plays through")  # devices, groups, or listen-throughs
         self.device.changed.connect(self._targets_ticked)
         self.recordable = QCheckBox(self)
         self.recordable.setToolTip(
@@ -254,7 +286,13 @@ class ChannelPanel(QGroupBox):
         name_row = QHBoxLayout()
         name_row.addWidget(self.name, 1)
         name_row.addWidget(self.kind)
-        self.form = QFormLayout(self)
+        # The form, and beside it OUT's list of places in a column of its own
+        # (owner, 16 Oct 2026: it needs the room, and the right side was empty).
+        self.form = QFormLayout()
+        columns = QHBoxLayout(self)
+        columns.addLayout(self.form, 3)
+        columns.addSpacing(12)
+        columns.addWidget(self.device, 1)
         self.form.addRow("Name", name_row)
         self.form.addRow(self._section("IN"))
         self.form.addRow("Source", self.source)
@@ -267,7 +305,6 @@ class ChannelPanel(QGroupBox):
         self.form.addRow("Trim", volume_row)
         self.form.addRow("Fader", fader_row)
         self.form.addRow(self._section("OUT"))
-        self.form.addRow("Plays through", self.device)
         self.form.addRow("", self.recordable)
         self.form.addRow("", self.hint)
         self.form.addRow("", self.enabled)

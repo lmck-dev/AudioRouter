@@ -189,7 +189,7 @@ Every channel's settings read the same way as its strip, top to bottom in the or
 | IN | Remembered | The apps that always start on this channel. **Add app** picks one that is playing now or remembered on another channel, or **Another app...** to type a name. **Forget** stops sending one here. The same list as Remembered apps under Playing now. |
 | LEVEL | Trim and Mute | The same as TRIM and M on the mixer strip: the volume before the effects. |
 | LEVEL | Fader | The same as the mixer's fader; the two stay in step. |
-| OUT | Plays through | Where the channel's sound goes. Click the line to open the list, and tick every place it should play: the default output, devices, or **Into** other channels. Tick several to hear the channel on, say, the speakers and the headphones at once. Nothing ticked means **Nowhere**. The first one you ticked is the one the mixer strip shows. On a mic channel these are where you hear yourself (the strip's LISTEN); nothing ticked means only recording apps get it. |
+| OUT | Plays through | Where the channel's sound goes: the list on the right of the settings. Tick every place it should play: the default output, devices, or **Into** other channels. Tick several to hear the channel on, say, the speakers and the headphones at once. Nothing ticked means **Nowhere**. The first one you ticked is the one the mixer strip shows. On a mic channel these are where you hear yourself (the strip's LISTEN); nothing ticked means only recording apps get it. |
 | OUT | Recording apps see it as | Offers the channel's processed sound as a microphone in other apps, so OBS, Teams or a recorder can use it. Always on for a mic channel, since that is what it is for. |
 | | Switched on | Untick to stop the channel without deleting it. |
 

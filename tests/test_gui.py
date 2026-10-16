@@ -1029,7 +1029,7 @@ class InputAndCableGuiTest(GuiTestCase):
         self.assertFalse(self.panel.form.isRowVisible(self.panel.source_text))
         self.assertEqual(self.panel.source.itemText(0), "Default input")
         # OUT: plays through (its listen-through), and recording apps always see it.
-        self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Plays through")
+        self.assertEqual(self.panel.device.title.text(), "Plays through")
         self.assertEqual(self.panel.device.summary(), "Nowhere (only apps record it)")
         self.assertTrue(self.panel.form.isRowVisible(self.panel.recordable))
         self.assertTrue(self.panel.recordable.isChecked())
@@ -1087,7 +1087,7 @@ class InputAndCableGuiTest(GuiTestCase):
         from audiorouter.channels import NOWHERE
 
         self.select("phones")
-        self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Plays through")
+        self.assertEqual(self.panel.device.title.text(), "Plays through")
         self.assertFalse(self.panel.form.isRowVisible(self.panel.source))
         self.panel.recordable.setChecked(True)
         self.assertTrue(Config.load(self.engine.path).channel("phones").recordable)
@@ -1103,9 +1103,9 @@ class InputAndCableGuiTest(GuiTestCase):
         self.panel.device.box("").setChecked(True)   # Default output, as well
         saved = Config.load(self.engine.path).channel("phones")
         self.assertEqual((saved.device, saved.also), ("alsa_output.b", [""]))
-        self.assertFalse(self.panel.device.is_open())
-        self.panel.device.header.click()
+        # A column of its own beside the form, always open (owner, 16 Oct 2026).
         self.assertTrue(self.panel.device.is_open())
+        self.assertTrue(self.panel.device.box("").isVisibleTo(self.panel))
 
     def test_apps_cannot_be_sent_into_an_input(self):
         streams = self.window.streams_panel

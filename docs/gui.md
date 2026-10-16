@@ -118,7 +118,10 @@ kinds, through the real window. Two taps cost ~1.5% of one core.
   are rules on its COMPANION (`MainWindow._feed_slug`), since apps sent into a
   mic play into the companion.
 - **OUT ("Plays through") is a `TargetPicker`** (16 Oct 2026, owner): ticks
-  for every place, folded behind a one-line summary, because a channel may
+  for every place, in a COLUMN OF ITS OWN to the right of the form (`title=`;
+  the owner asked, and folded inside the Fixed form it overlapped the rows
+  below it in the real window). Its scroll area is vertical `Ignored`, so the
+  form sets the panel height and a long list scrolls. A channel may
   play to several (`Channel.also`, see `channels.py`). Tick ORDER is kept: the
   first is `device`/`listen`, which the mixer strip's combo shows as
   "Speakers +1" and changes alone. Nothing ticked = NOWHERE (outputs) or no
