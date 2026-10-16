@@ -181,6 +181,15 @@ class BuildTest(unittest.TestCase):
         tail = out[-4800:]
         self.assertEqual(max(abs(v) for v in tail), 0.0)
 
+    def test_a_burst_of_nan_upstream_does_not_poison_it_for_good(self):
+        # Regression (16 Oct 2026): every rnnoise channel was found putting out
+        # NaN from clean input, for an hour, until restarted.
+        tone = [math.sin(i * 0.03) * 0.3 + math.sin(i * 0.31) * 0.1 for i in range(24000)]
+        signal = tone[:9600] + [math.nan] * 300 + [math.inf, -math.inf] * 50 + tone[:14000]
+        out, _ = self._process(signal, [1024])
+        self.assertTrue(all(math.isfinite(v) for v in out), "non-finite output")
+        self.assertGreater(max(abs(v) for v in out[-4800:]), 0.01, "no sound after the burst")
+
 
 if __name__ == "__main__":
     unittest.main()

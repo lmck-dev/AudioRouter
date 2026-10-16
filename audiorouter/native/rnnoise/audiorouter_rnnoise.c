@@ -120,6 +120,25 @@ static void process_frame(Plugin *p)
 {
     float vad = rnnoise_process_frame(p->st, p->processed, p->frame_in);
 
+    /* A non-finite value inside RNNoise's recurrent state never decays: every
+     * later frame comes out NaN, even from clean input. That silenced the
+     * wake-word mic for an hour and flooded a pitch shifter's log until the
+     * session's runtime tmpfs was full (16 Oct 2026). If it happens, start
+     * the network afresh and play this frame as silence. The allocation is
+     * not real-time safe, but it only runs on that fault. */
+    int bad = !isfinite(vad);
+    for (int i = 0; i < FRAME && !bad; i++)
+        bad = !isfinite(p->processed[i]);
+    if (bad) {
+        DenoiseState *fresh = rnnoise_create(NULL);
+        if (fresh) {
+            rnnoise_destroy(p->st);
+            p->st = fresh;
+        }
+        memset(p->processed, 0, sizeof p->processed);
+        vad = 0.0f;
+    }
+
     float threshold = ctl(p->threshold, 0.0f) / 100.0f;
     float hold_ms = ctl(p->hold, 200.0f);
     float target = 1.0f;
@@ -160,6 +179,8 @@ static void run(LV2_Handle h, uint32_t n)
 
     for (uint32_t i = 0; i < n; i++) {
         float x = p->in[i]; /* read before writing: in and out may be one buffer */
+        if (!isfinite(x))
+            x = 0.0f;       /* one bad sample upstream must not poison the network */
         float y = p->wet[p->pos] * mix + p->dry[p->dry_pos] * (1.0f - mix);
         p->dry[p->dry_pos] = x;
         if (++p->dry_pos == LATENCY)
