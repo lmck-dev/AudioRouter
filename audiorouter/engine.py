@@ -270,10 +270,15 @@ class Engine:
     def delete_channel(self, slug: str) -> Channel:
         """Remove a channel, stopping its process first so nothing is orphaned."""
         channel = self.config.channel(slug)
+        # A mic channel's companion (its `_mix` output) leaves the config with
+        # it, so it must be stopped here too: nothing else knows to, and it
+        # kept running until the next full apply swept orphans.
+        companion = self.config.companion(channel)
         if not self.dry_run:
-            channel.stop()
-            channel.config_path.unlink(missing_ok=True)
-            channel.log_path.unlink(missing_ok=True)
+            for each in (channel, *([companion] if companion else [])):
+                each.stop()
+                each.config_path.unlink(missing_ok=True)
+                each.log_path.unlink(missing_ok=True)
         removed = self.config.remove_channel(slug)
         for other in self.config.channels:
             if other.listen == slug:

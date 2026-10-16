@@ -104,6 +104,17 @@ class EditingTest(EngineTestCase):
         stop.assert_called_once()
         self.assertEqual(self.engine.config.channels, [])
 
+    def test_deleting_a_mic_channel_stops_its_mix_too(self):
+        # Regression (16 Oct 2026): the mic stopped, its `_mix` kept running.
+        self.engine.create_channel("mic", "Mic", "", kind="input")
+        self.engine.config.ensure_companions()
+        stopped = []
+        with mock.patch.object(Channel, "stop", autospec=True,
+                               side_effect=lambda ch, *a, **k: stopped.append(ch.slug)):
+            self.engine.delete_channel("mic")
+        self.assertEqual(sorted(stopped), ["mic", "mic_mix"])
+        self.assertEqual([c.slug for c in self.engine.config.channels], ["speakers"])
+
     def test_seeding_refuses_to_overwrite_an_existing_setup(self):
         with self.assertRaises(EngineError):
             self.engine.adopt_devices()

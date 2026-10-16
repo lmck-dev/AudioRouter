@@ -170,6 +170,33 @@ def _loopback(description: str, capture: dict[str, Any], playback: dict[str, Any
     }
 
 
+#: How much of a host's output its log keeps. The log is there for a host
+#: that fails to start; the runtime dir is a small tmpfs shared with the whole
+#: session, and one plugin printing a warning per audio block filled all 3.1 GB
+#: of it in an hour (16 Oct 2026), after which apps could no longer start.
+LOG_CAP_BYTES = 1024 * 1024
+
+
+def _capped_log(proc: subprocess.Popen[Any], path: Path) -> None:
+    """Copy the first LOG_CAP_BYTES of `proc`'s output to `path`, drop the rest.
+
+    A relay rather than a size limit on the host: RLIMIT_FSIZE would also cap
+    the memfds PipeWire sizes its buffers with. The relay keeps reading after
+    the cap, so the host never blocks on a full pipe or dies of SIGPIPE, and
+    it exits by itself when the host does.
+    """
+    if proc.stdout is None:
+        return
+    subprocess.Popen(
+        ["sh", "-c", 'head -c "$1" > "$2"; exec cat > /dev/null', "sh", str(LOG_CAP_BYTES), str(path)],
+        stdin=proc.stdout,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    proc.stdout.close()  # the relay holds the only read end now
+
+
 def _terminate(pid: int, timeout: float = 4.0) -> bool:
     """SIGTERM, then SIGKILL if it will not go. True if it was running."""
     try:
@@ -683,17 +710,18 @@ class Channel:
         old_pid = self.pid()
         previous_conf = self.config_path.read_text() if old_pid and self.config_path.exists() else None
         self.config_path.write_text(self.render_config_text())
-        with self.log_path.open("w") as log:
-            # The user's plugin folders reach the host's LV2 loader this way;
-            # LADSPA effects carry their file's full path instead.
-            lv2_path = lv2.host_lv2_path()
-            proc = subprocess.Popen(
-                ["pipewire", "-c", str(self.config_path)],
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env={**os.environ, "LV2_PATH": lv2_path} if lv2_path else None,
-            )
+        # The user's plugin folders reach the host's LV2 loader this way;
+        # LADSPA effects carry their file's full path instead.
+        lv2_path = lv2.host_lv2_path()
+        proc = subprocess.Popen(
+            ["pipewire", "-c", str(self.config_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "LV2_PATH": lv2_path} if lv2_path else None,
+        )
+        _capped_log(proc, self.log_path)
         self.pid_path.write_text(str(proc.pid))
         try:
             self._await_sink(proc, graph_timeout)

@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -237,6 +238,29 @@ class ProcessLifetimeTest(unittest.TestCase):
         self.assertTrue(_terminate(proc.pid))
         self.assertLess(_time.monotonic() - started, 1.0)
         self.assertFalse(_pid_alive(proc.pid))
+
+
+class CappedLogTest(unittest.TestCase):
+    def test_the_log_keeps_the_start_and_the_host_runs_on_past_the_cap(self):
+        # Regression (16 Oct 2026): a plugin warning every block filled the tmpfs.
+        import subprocess
+
+        from audiorouter import channels
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(channels, "LOG_CAP_BYTES", 1000):
+            log = Path(tmp) / "x.log"
+            # Prints far past the cap, then proves it was never blocked or killed.
+            script = 'i=0; while [ $i -lt 2000 ]; do echo "WARNING: NaN encountered"; i=$((i+1)); done; echo done > "$1"'
+            proc = subprocess.Popen(["sh", "-c", script, "sh", str(Path(tmp) / "finished")],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            channels._capped_log(proc, log)
+            self.assertEqual(proc.wait(timeout=10), 0)
+            self.assertTrue((Path(tmp) / "finished").exists())
+            deadline = time.monotonic() + 5
+            while log.stat().st_size < 1000 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(log.stat().st_size, 1000)
+            self.assertTrue(log.read_text().startswith("WARNING: NaN encountered"))
 
 
 class SeamlessRestartTest(unittest.TestCase):
