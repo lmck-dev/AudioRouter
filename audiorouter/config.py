@@ -95,7 +95,9 @@ class Config:
                 self.channels.insert(self.channels.index(mic) + 1, companion)
                 changed = True
             device = f"{NODE_PREFIX}{mic.listen}" if mic.listen else NOWHERE
-            wanted = {"name": mic.name, "enabled": mic.enabled, "device": device, "recordable": True}
+            also = [f"{NODE_PREFIX}{slug}" for slug in mic.also]
+            wanted = {"name": mic.name, "enabled": mic.enabled, "device": device, "also": also,
+                      "recordable": True}
             for key, value in wanted.items():
                 if getattr(companion, key) != value:
                     setattr(companion, key, value)
@@ -136,49 +138,81 @@ class Config:
     # the members' sum, and the group plays to a real device.
 
     def group_of(self, channel: Channel) -> Channel | None:
-        """The output channel this one plays into, if it plays into one."""
+        """The output channel this one plays into first, if it plays into one."""
         if channel.is_input or not channel.device.startswith(NODE_PREFIX):
             return None
         return next((c for c in self.channels
                      if not c.is_input and c is not channel and c.node_name == channel.device), None)
 
+    def groups_of(self, channel: Channel) -> list[Channel]:
+        """Every output channel this one plays into directly (it may play to several)."""
+        if channel.is_input:
+            return []
+        by_node = {c.node_name: c for c in self.channels if not c.is_input and c is not channel}
+        return [by_node[t] for t in channel.targets if t in by_node]
+
     def groups_below(self, channel: Channel) -> list[Channel]:
-        """The groups this channel plays through, nearest first (loops stop)."""
-        chain: list[Channel] = []
-        group = self.group_of(channel)
-        while group is not None and group is not channel and group not in chain:
-            chain.append(group)
-            group = self.group_of(group)
-        return chain
+        """The groups this channel plays through, nearest first (loops stop).
+
+        With several outputs this is every group reachable, not one chain; the
+        last entry is the far end of the FIRST output's chain when there is one.
+        """
+        found: list[Channel] = []
+        pending = self.groups_of(channel)
+        while pending:
+            group = pending.pop(0)
+            if group is channel or group in found:
+                continue
+            found.append(group)
+            pending.extend(self.groups_of(group))
+        return found
 
     def listen_ends_on(self, channel: Channel) -> str | None:
-        """The device a mic's listen-through finally plays on, through any groups.
+        """The device a mic's first listen-through finally plays on, through any groups.
 
         "" is the default output, NOWHERE is nowhere; None when it does not listen.
         """
-        if not channel.is_input or not channel.listen:
-            return None
-        try:
-            target = self.channel(channel.listen)
-        except ConfigError:
-            return None
-        chain = self.groups_below(target)
-        return (chain[-1] if chain else target).device
+        ends = self.listen_ends(channel)
+        return ends[0] if ends else None
+
+    def listen_ends(self, channel: Channel) -> list[str]:
+        """Every real device a mic's listen-throughs end on, through any groups.
+
+        "" is the default output. A group plays its own devices too, so every
+        channel reached counts, not only the far end of each chain.
+        """
+        if not channel.is_input:
+            return []
+        ends: list[str] = []
+        for slug in channel.targets:
+            try:
+                target = self.channel(slug)
+            except ConfigError:
+                continue
+            for each in [target, *self.groups_below(target)]:
+                for device in each.targets:
+                    if device.startswith(NODE_PREFIX) and any(c.node_name == device for c in self.channels):
+                        continue   # a group: followed above
+                    if device not in ends:
+                        ends.append(device)
+        return ends
 
     def in_loop(self, channel: Channel) -> bool:
         """Does following this channel's groups lead back to it?"""
-        group = self.group_of(channel)
-        for _ in self.channels:
-            if group is None:
-                return False
+        seen: list[Channel] = []
+        pending = self.groups_of(channel)
+        while pending:
+            group = pending.pop(0)
             if group is channel:
                 return True
-            group = self.group_of(group)
+            if group not in seen:
+                seen.append(group)
+                pending.extend(self.groups_of(group))
         return False
 
     def members_of(self, group: Channel, nested: bool = False) -> list[Channel]:
         """The channels playing into a group (and into its member groups)."""
-        direct = [c for c in self.channels if self.group_of(c) is group]
+        direct = [c for c in self.channels if group in self.groups_of(c)]
         if not nested:
             return direct
         found: list[Channel] = []
@@ -188,7 +222,7 @@ class Config:
             if member in found or member is group:
                 continue
             found.append(member)
-            pending.extend(c for c in self.channels if self.group_of(c) is member)
+            pending.extend(c for c in self.channels if member in self.groups_of(c))
         return found
 
     def is_group(self, channel: Channel) -> bool:
@@ -256,6 +290,7 @@ class Config:
         for member in self.channels:
             if not member.is_input and member.device in gone_nodes:
                 member.device = ""
+            member.also = [t for t in member.also if t not in gone_nodes and t not in gone_slugs]
         self.update_solo()
         return channel
 
@@ -276,11 +311,12 @@ class Config:
                 issues.append(f"channel {channel.slug!r}: {reason}")
         kinds = {c.slug: c.kind for c in self.channels}
         for channel in self.channels:
-            if channel.listen and kinds.get(channel.listen) != "output":
-                issues.append(
-                    f"input channel {channel.slug!r} listens through {channel.listen!r}, "
-                    "which is not an output channel"
-                )
+            for through in (channel.targets if channel.is_input else []):
+                if kinds.get(through) != "output":
+                    issues.append(
+                        f"input channel {channel.slug!r} listens through {through!r}, "
+                        "which is not an output channel"
+                    )
         for channel in self.channels:
             if self.in_loop(channel):
                 issues.append(f"channel {channel.slug!r} plays into a loop of groups")

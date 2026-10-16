@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QVBoxLayout,
     QLineEdit,
     QSlider,
     QWidget,
@@ -35,6 +36,95 @@ from .theme import Theme
 
 FOLLOW_DEFAULT = ""
 NOT_LISTENING = ""
+
+
+class TargetPicker(QWidget):
+    """OUT: every place a channel can play, as ticks, folded behind a summary.
+
+    Several may be ticked (owner, 16 Oct 2026). The order things were ticked
+    in is kept, because the first one is the channel's `device` (or a mic's
+    `listen`), which the mixer strip and the phone remote show. Nothing ticked
+    is "nowhere"; `nothing` is how that reads.
+    """
+
+    changed = pyqtSignal(list)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.nothing = "Nowhere"
+        self._options: list[tuple[str, str]] = []
+        self._ticked: list[str] = []
+        self.header = QToolButton(self)
+        self.header.setCheckable(True)
+        self.header.setAutoRaise(True)
+        self.header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.header.setArrowType(Qt.ArrowType.RightArrow)
+        self.header.setToolTip("Tick every output this channel should play through")
+        self.header.toggled.connect(self.set_open)
+        self.body = QWidget(self)
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(18, 0, 0, 0)
+        self.body_layout.setSpacing(2)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(self.header, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.body)
+        self.body.hide()
+        self._boxes: dict[str, QCheckBox] = {}
+
+    def set_open(self, open_: bool) -> None:
+        self.header.blockSignals(True)
+        self.header.setChecked(open_)
+        self.header.blockSignals(False)
+        self.header.setArrowType(Qt.ArrowType.DownArrow if open_ else Qt.ArrowType.RightArrow)
+        self.body.setVisible(open_)
+
+    def is_open(self) -> bool:
+        return self.body.isVisibleTo(self)
+
+    def set_options(self, options: list[tuple[str, str]], ticked: list[str]) -> None:
+        """(value, label) per place, and which are ticked, first one first. A
+        ticked value missing from `options` is added as itself (unplugged)."""
+        known = {value for value, _ in options}
+        self._options = list(options) + [(v, f"{v} (not connected)") for v in ticked if v not in known]
+        self._ticked = [v for v in ticked if any(v == o for o, _ in self._options)]
+        while self.body_layout.count():
+            item = self.body_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._boxes = {}
+        for value, label in self._options:
+            box = QCheckBox(label, self.body)
+            box.setChecked(value in self._ticked)
+            box.toggled.connect(lambda on, v=value: self._toggled(v, on))
+            self.body_layout.addWidget(box)
+            self._boxes[value] = box
+        self._show_summary()
+
+    def ticked(self) -> list[str]:
+        return list(self._ticked)
+
+    def labels(self) -> list[str]:
+        return [label for _, label in self._options]
+
+    def box(self, value: str) -> QCheckBox:
+        return self._boxes[value]
+
+    def summary(self) -> str:
+        return self.header.text()
+
+    def _toggled(self, value: str, on: bool) -> None:
+        if on and value not in self._ticked:
+            self._ticked.append(value)
+        elif not on and value in self._ticked:
+            self._ticked.remove(value)
+        self._show_summary()
+        self.changed.emit(self.ticked())
+
+    def _show_summary(self) -> None:
+        names = dict(self._options)
+        self.header.setText(", ".join(names[v] for v in self._ticked) if self._ticked else self.nothing)
 
 #: After the user moves the volume, readings from the graph are ignored for
 #: this long: a refresh can carry the value from just *before* the change, and
@@ -103,8 +193,8 @@ class ChannelPanel(QGroupBox):
         self.remembered_box = remembered_box
 
         # -- OUT: where it goes.
-        self.device = QComboBox(self)  # plays through: a device, a group, or a listen-through
-        self.device.activated.connect(self._device_chosen)
+        self.device = TargetPicker(self)  # plays through: devices, groups, or listen-throughs
+        self.device.changed.connect(self._targets_ticked)
         self.recordable = QCheckBox(self)
         self.recordable.setToolTip(
             "Offers this channel's sound, after its effects, in every app's list of "
@@ -212,17 +302,10 @@ class ChannelPanel(QGroupBox):
             self._fill_listen()
 
     def _fill_listen(self) -> None:
-        """A mic channel's OUT: nowhere (apps only record it) or an output channel."""
-        self.device.blockSignals(True)
-        self.device.clear()
-        self.device.addItem("Nowhere (only apps record it)", NOT_LISTENING)
-        for slug, name in self._outputs:
-            self.device.addItem(name, slug)
-        target = self.channel.listen if self.channel is not None else NOT_LISTENING
-        if target and self.device.findData(target) < 0:
-            self.device.addItem(f"{target} (missing)", target)
-        self.device.setCurrentIndex(max(0, self.device.findData(target)))
-        self.device.blockSignals(False)
+        """A mic channel's OUT: the output channels it plays through; none = only apps record it."""
+        self.device.nothing = "Nowhere (only apps record it)"
+        targets = self.channel.targets if self.channel is not None else []
+        self.device.set_options(list(self._outputs), targets)
 
     def show_sources(self, playing: list[str], members: list[str], rules: list[tuple[int, str]],
                      candidates: list[str]) -> None:
@@ -276,16 +359,27 @@ class ChannelPanel(QGroupBox):
         is perfectly connected.
         """
         is_input = self.channel is not None and self.channel.is_input
-        # A mic channel's device is its microphone (IN); any other's is where it plays (OUT).
-        combo = self.source if is_input else self.device
+        if not is_input:
+            # Any channel but a mic's: OUT is where it plays, as ticks.
+            self.device.nothing = "Nowhere (recording only)"
+            options = [(FOLLOW_DEFAULT, "Default output"), *devices]
+            targets = self.channel.targets if self.channel is not None else []
+            # A target in the graph but not a hardware device (a virtual one) is
+            # connected, so only an absent one reads "not connected".
+            labels = dict(options)
+            for target in targets:
+                if target not in labels:
+                    options.append((target, target if present else f"{target} (not connected)"))
+            self.device.set_options(options, targets)
+            return
+        # A mic channel's device is its microphone (IN).
+        combo = self.source
         chosen = combo.currentData()
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("Default input" if is_input else "Default output", FOLLOW_DEFAULT)
+        combo.addItem("Default input", FOLLOW_DEFAULT)
         for name, label in devices:
             combo.addItem(label, name)
-        if not is_input:
-            combo.addItem("Nowhere (recording only)", NOWHERE)
         if self.channel is not None and self.channel.device:
             if combo.findData(self.channel.device) < 0:
                 suffix = "" if present else " (not connected)"
@@ -294,8 +388,7 @@ class ChannelPanel(QGroupBox):
         index = combo.findData(target)
         combo.setCurrentIndex(max(0, index))
         combo.blockSignals(False)
-        if is_input:
-            self._fill_listen()
+        self._fill_listen()
 
     def set_channel(
         self,
@@ -427,17 +520,11 @@ class ChannelPanel(QGroupBox):
             self._sync_options()
             self.changed.emit()
 
-    def _device_chosen(self, index: int) -> None:
+    def _targets_ticked(self, targets: list[str]) -> None:
         if self._loading or self.channel is None:
             return
-        if self.channel.is_input:
-            self._listen_chosen(index)
-            return
-        device = self.device.itemData(index) or FOLLOW_DEFAULT
-        if device != self.channel.device:
-            self.channel.device = device
-            if device == NOWHERE:
-                self.channel.recordable = True
+        if targets != self.channel.targets:
+            self.channel.set_targets(targets)
             self._sync_options()
             self.changed.emit()
 
@@ -454,15 +541,6 @@ class ChannelPanel(QGroupBox):
             return
         if on != self.channel.echo_cancel:
             self.channel.echo_cancel = on
-            self._sync_options()
-            self.changed.emit()
-
-    def _listen_chosen(self, index: int) -> None:
-        if self._loading or self.channel is None or not self.channel.is_input:
-            return
-        through = self.device.itemData(index) or NOT_LISTENING
-        if through != self.channel.listen:
-            self.channel.listen = through
             self._sync_options()
             self.changed.emit()
 

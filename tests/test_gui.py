@@ -147,7 +147,7 @@ class WindowTest(GuiTestCase):
 
     def test_an_unplugged_output_is_still_offered_so_it_is_not_silently_changed(self):
         self.window.select_channel("phones")  # targets alsa_output.b, not in the graph
-        self.assertIn("not connected", self.window.channel_panel.device.currentText())
+        self.assertIn("not connected", self.window.channel_panel.device.summary())
 
     def test_a_virtual_target_that_exists_is_not_called_disconnected(self):
         # Only hardware appears in the device list, but a channel may point at
@@ -156,7 +156,7 @@ class WindowTest(GuiTestCase):
         self.window.refresh()
         self.window.select_channel(self.engine.config.channels[1].slug)
         # Another channel's sink is a group, offered by name.
-        self.assertEqual(self.window.channel_panel.device.currentText(), "Into Speakers")
+        self.assertEqual(self.window.channel_panel.device.summary(), "Into Speakers")
 
     def test_a_broken_echo_canceller_shows_a_banner_whose_button_restarts_the_sound(self):
         from audiorouter import session
@@ -1030,7 +1030,7 @@ class InputAndCableGuiTest(GuiTestCase):
         self.assertEqual(self.panel.source.itemText(0), "Default input")
         # OUT: plays through (its listen-through), and recording apps always see it.
         self.assertEqual(self.panel.form.labelForField(self.panel.device).text(), "Plays through")
-        self.assertEqual(self.panel.device.itemText(0), "Nowhere (only apps record it)")
+        self.assertEqual(self.panel.device.summary(), "Nowhere (only apps record it)")
         self.assertTrue(self.panel.form.isRowVisible(self.panel.recordable))
         self.assertTrue(self.panel.recordable.isChecked())
         self.assertFalse(self.panel.recordable.isEnabled())
@@ -1068,12 +1068,20 @@ class InputAndCableGuiTest(GuiTestCase):
 
     def test_listen_offers_output_channels_only_and_warns_about_feedback(self):
         self.select("mic")
-        names = [self.panel.device.itemText(i) for i in range(self.panel.device.count())]
-        self.assertEqual(names, ["Nowhere (only apps record it)", "Speakers", "Headphones"])
-        self.panel.device.setCurrentIndex(1)
-        self.panel.device.activated.emit(1)
+        self.assertEqual(self.panel.device.labels(), ["Speakers", "Headphones"])
+        self.panel.device.box("speakers").setChecked(True)
         self.assertEqual(Config.load(self.engine.path).channel("mic").listen, "speakers")
         self.assertIn("headphones", self.panel.hint.text())
+
+    def test_a_mic_can_be_heard_through_several_outputs(self):
+        self.select("mic")
+        self.panel.device.box("speakers").setChecked(True)
+        self.panel.device.box("phones").setChecked(True)
+        saved = Config.load(self.engine.path).channel("mic")
+        self.assertEqual(saved.targets, ["speakers", "phones"])
+        self.assertEqual(self.panel.device.summary(), "Speakers, Headphones")
+        self.panel.device.box("speakers").setChecked(False)
+        self.assertEqual(Config.load(self.engine.path).channel("mic").targets, ["phones"])
 
     def test_an_output_can_become_a_cable_and_nowhere_keeps_it_one(self):
         from audiorouter.channels import NOWHERE
@@ -1083,11 +1091,21 @@ class InputAndCableGuiTest(GuiTestCase):
         self.assertFalse(self.panel.form.isRowVisible(self.panel.source))
         self.panel.recordable.setChecked(True)
         self.assertTrue(Config.load(self.engine.path).channel("phones").recordable)
-        index = self.panel.device.findData(NOWHERE)
-        self.panel.device.setCurrentIndex(index)
-        self.panel.device.activated.emit(index)
+        for target in self.panel.device.ticked():   # untick everything: nowhere
+            self.panel.device.box(target).setChecked(False)
+        self.assertEqual(Config.load(self.engine.path).channel("phones").device, NOWHERE)
+        self.assertEqual(self.panel.device.summary(), "Nowhere (recording only)")
         self.assertFalse(self.panel.recordable.isEnabled())
         self.assertIn('"Headphones (recording)"', self.panel.recordable.text())
+
+    def test_an_output_can_play_through_several_and_the_first_stays_first(self):
+        self.select("phones")
+        self.panel.device.box("").setChecked(True)   # Default output, as well
+        saved = Config.load(self.engine.path).channel("phones")
+        self.assertEqual((saved.device, saved.also), ("alsa_output.b", [""]))
+        self.assertFalse(self.panel.device.is_open())
+        self.panel.device.header.click()
+        self.assertTrue(self.panel.device.is_open())
 
     def test_apps_cannot_be_sent_into_an_input(self):
         streams = self.window.streams_panel

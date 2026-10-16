@@ -167,6 +167,15 @@ These rules come from those files, and they apply even when you haven't opened t
   for inputs. Recording apps are pointed at a channel's recording source by
   `Engine.send` (2 Oct 2026; `source_map`, rules with `record: true`, listed in
   Playing now as "Recording"); `sink_map` holds outputs only.
+- **A channel may play to several places** (`Channel.also`, 16 Oct 2026).
+  `device`/`listen` stay the FIRST target, so groups, the strip, the remote
+  and old configs read one; `targets` is all of them. With extra targets an
+  output renders like a recordable one: its chain plays into a source
+  (`ar_<slug>_rec`, or the internal `ar_<slug>_split` at priority 1) and one
+  loopback per target plays that on (`ar_<slug>_out`, `_out2`, ...). A single
+  target renders exactly as before. Groups are a DAG now: `groups_of`,
+  `groups_below` (BFS) and `in_loop` follow every target. Lab, 16 Oct: a
+  -15.05 dBFS tone measured -15.05 on both of two null sinks.
 - **Every input channel has a hidden COMPANION output** (`<slug>_mix`,
   `Channel.companion_of`, made and kept in step by `Config.ensure_companions`;
   1 Oct 2026). The mic channel's filter-chain no longer publishes the virtual

@@ -270,6 +270,11 @@ class Channel:
     recordable: bool = False
     #: Input channels: the slug of an output channel to play the sound through.
     listen: str = ""
+    #: More places to play, besides the first (owner, 16 Oct 2026): outputs
+    #: list more devices or group node names like `device`; inputs list more
+    #: output channel slugs like `listen`. `device`/`listen` stay the first
+    #: choice, so everything that reads one target still sees it.
+    also: list[str] = field(default_factory=list)
     #: Input channels: subtract whatever the speakers are playing from the mic
     #: before the effects, so a call does not hear your video, music or game.
     echo_cancel: bool = False
@@ -295,11 +300,20 @@ class Channel:
             self.name = self.slug.replace("_", " ").replace("-", " ").title()
         if self.kind not in KINDS:
             raise ChannelError(f"channel {self.slug!r}: kind must be one of {', '.join(KINDS)}")
+        first = self.listen if self.kind == INPUT else self.device
+        cleaned: list[str] = []
+        for target in self.also:   # no repeats, never the first again, never "nowhere"
+            target = str(target)
+            if target != first and target != NOWHERE and target not in cleaned:
+                cleaned.append(target)
+        self.also = cleaned
         if self.kind == INPUT:
             self.recordable = False
             self.companion_of = ""
             if self.device == NOWHERE:
                 raise ChannelError(f"input channel {self.slug!r} needs something to record from")
+            if not self.listen:
+                self.also = []   # the first place is `listen`; with none there are no others
         else:
             self.listen = ""
             self.echo_cancel = False
@@ -310,6 +324,28 @@ class Channel:
     @property
     def is_input(self) -> bool:
         return self.kind == INPUT
+
+    @property
+    def targets(self) -> list[str]:
+        """Every place this channel plays: an output's devices or groups ("" is
+        the default output), or an input's listen-through slugs. Empty: nowhere."""
+        if self.is_input:
+            return [self.listen, *self.also] if self.listen else []
+        return [*([self.device] if self.device != NOWHERE else []), *self.also]
+
+    def set_targets(self, targets: list[str]) -> None:
+        """Play through exactly these, the first being `device`/`listen`. None
+        at all is nowhere: an output then stays a recording source only."""
+        targets = [t for t in dict.fromkeys(targets) if t != NOWHERE]
+        if self.is_input:
+            targets = [t for t in targets if t]
+            self.listen = targets[0] if targets else ""
+        elif targets:
+            self.device = targets[0]
+        else:
+            self.device = NOWHERE
+            self.recordable = True   # playing nowhere only makes sense as a cable
+        self.also = targets[1:]
 
     # -- identity in the graph -------------------------------------------
 
@@ -355,6 +391,12 @@ class Channel:
         return f"{NODE_PREFIX}{self.slug}_out"
 
     @property
+    def split_name(self) -> str:
+        """An output's processed sound as an internal source, when it plays to
+        several places and is not a recording source of its own."""
+        return f"{NODE_PREFIX}{self.slug}_split"
+
+    @property
     def echo_cancel_name(self) -> str:
         """An input channel's echo-cancelled microphone, which its effects read."""
         return f"{NODE_PREFIX}{self.slug}_ec"
@@ -378,6 +420,8 @@ class Channel:
             "pan": self.pan,
             "solo": self.solo,
         }
+        if self.also:
+            data["also"] = list(self.also)
         if self.is_input:
             data["listen"] = self.listen
             data["echo_cancel"] = self.echo_cancel
@@ -398,6 +442,7 @@ class Channel:
             kind=str(data.get("kind", OUTPUT)),
             recordable=bool(data.get("recordable", False)),
             listen=str(data.get("listen", "")),
+            also=[str(t) for t in (data.get("also") or [])],
             echo_cancel=bool(data.get("echo_cancel", False)),
             fader_db=float(data.get("fader_db", 0.0)),
             pan=max(-1.0, min(1.0, float(data.get("pan", 0.0)))),
@@ -477,26 +522,44 @@ class Channel:
                 **stamp,
             }
             plays = self.device != NOWHERE
-            if self.recordable:
-                args["playback.props"] = {
-                    "node.name": self.recording_name,
-                    # A companion's is the mic apps already know by name.
-                    "node.description": self.name if self.companion_of else f"{self.name} (recording)",
-                    "media.class": "Audio/Source",
-                    **stamp,
-                }
-                if plays:
-                    playback = {"node.name": self.playback_name, **stamp}
-                    if self.device:
-                        playback["target.object"] = self.device
+            if self.recordable or self.also:
+                # Several places, or a recording source: the processed sound
+                # becomes a source, and one loopback per place plays it on.
+                # The places all sit one loopback behind the chain, so they
+                # stay in step with each other.
+                if self.recordable:
+                    args["playback.props"] = {
+                        "node.name": self.recording_name,
+                        # A companion's is the mic apps already know by name.
+                        "node.description": self.name if self.companion_of else f"{self.name} (recording)",
+                        "media.class": "Audio/Source",
+                        **stamp,
+                    }
+                else:
+                    args["playback.props"] = {
+                        "node.name": self.split_name,
+                        "node.description": f"{self.name} (internal, to its outputs)",
+                        "media.class": "Audio/Source",
+                        # Never the default microphone.
+                        "priority.session": 1,
+                        "priority.driver": 1,
+                        **stamp,
+                    }
+                source = args["playback.props"]["node.name"]
+                places = ([(self.device, self.playback_name, f"{self.node_name}_play_in")] if plays else [])
+                places += [(target, f"{self.playback_name}{n}", f"{self.node_name}_play{n}_in")
+                           for n, target in enumerate(self.also, start=2)]
+                for target, play_name, in_name in places:
+                    playback = {"node.name": play_name, **stamp}
+                    if target:
+                        playback["target.object"] = target
                         if self.companion_of:
                             # A mic's listen-through: never onto the real
                             # speakers if the output it plays into vanishes.
                             playback[NO_FALLBACK] = True
                     modules.append(_loopback(
                         f"{self.name} output",
-                        capture={"node.name": f"{self.node_name}_play_in",
-                                 "target.object": self.recording_name, NO_FALLBACK: True, **stamp},
+                        capture={"node.name": in_name, "target.object": source, NO_FALLBACK: True, **stamp},
                         playback=playback,
                     ))
             else:
@@ -858,6 +921,7 @@ class Channel:
             "kind": self.kind,
             "device": self.device,
             "listen": self.listen,
+            "also": list(self.also),
             "echo_cancel": self.echo_cancel,
             "recordable": self.recordable,
             "recording_name": self.recording_name,

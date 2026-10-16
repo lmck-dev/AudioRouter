@@ -117,6 +117,13 @@ kinds, through the real window. Two taps cost ~1.5% of one core.
   through") holds the listen-through instead. Remembered apps for a mic channel
   are rules on its COMPANION (`MainWindow._feed_slug`), since apps sent into a
   mic play into the companion.
+- **OUT ("Plays through") is a `TargetPicker`** (16 Oct 2026, owner): ticks
+  for every place, folded behind a one-line summary, because a channel may
+  play to several (`Channel.also`, see `channels.py`). Tick ORDER is kept: the
+  first is `device`/`listen`, which the mixer strip's combo shows as
+  "Speakers +1" and changes alone. Nothing ticked = NOWHERE (outputs) or no
+  listen (mics). Offscreen renders squeeze the panel (the offscreen screen is
+  800x600, old combo too): grab it at `panel.resize(w, panel.sizeHint().height())`.
 - **The panel has no spare height** (Fixed in the window, never scrolls): a
   QListWidget for remembered apps was squeezed until its buttons overlapped,
   whatever height it asked for. Remembered apps are a text line with Add/Forget

@@ -796,9 +796,11 @@ class MainWindow(QMainWindow):
         channel = self.engine.config.channel(slug)
         if device == channel.device:
             return
-        channel.device = device
         if device == NOWHERE:
-            channel.recordable = True  # as the Channels view does: it must go somewhere
+            channel.set_targets([])  # nowhere at all; it stays a recording source
+        else:
+            # The strip changes the first place; any others ticked stay.
+            channel.set_targets([device, *(t for t in channel.also if t != device)])
         if channel is self.selected_channel:
             self._channel_selected()
         self._config_edited()
@@ -806,7 +808,7 @@ class MainWindow(QMainWindow):
     def _set_listen(self, slug: str, through: str) -> None:
         channel = self.engine.config.channel(slug)
         if through != channel.listen:
-            channel.listen = through
+            channel.set_targets([through, *(t for t in channel.also if t != through)] if through else [])
             if channel is self.selected_channel:
                 self._channel_selected()
             self._config_edited()

@@ -281,8 +281,9 @@ class Engine:
                 each.log_path.unlink(missing_ok=True)
         removed = self.config.remove_channel(slug)
         for other in self.config.channels:
-            if other.listen == slug:
-                other.listen = ""  # nothing left to listen through
+            if slug in other.targets and other.is_input:
+                # Nothing left to listen through there; the next one moves up.
+                other.set_targets([t for t in other.targets if t != slug])
         self.save()
         return removed
 
@@ -296,6 +297,7 @@ class Engine:
             if target.is_input:
                 raise EngineError(f"channel {through!r} is an input; listen through an output channel")
         channel.listen = through
+        channel.also = [t for t in channel.also if t != through] if through else []
         self.save()
         return channel
 
@@ -329,17 +331,40 @@ class Engine:
     def set_device(self, slug: str, device: str) -> Channel:
         """Point a channel at a different output. Takes effect on the next apply."""
         channel = self.config.channel(slug)
-        if device.startswith(NODE_PREFIX):
-            group = next((c for c in self.config.channels if c.node_name == device), None)
-            if group is not None:
-                if channel.is_input or group.is_input:
-                    raise EngineError("only an output channel can play into another output channel")
-                if group not in self.config.group_choices(channel):
-                    raise EngineError(f"{channel.name} cannot play into {group.name}: "
-                                      f"{group.name} already plays into {channel.name}")
+        self._check_group_target(channel, device)
         channel.device = device
+        channel.also = [t for t in channel.also if t != device]
         self.save()
         return channel
+
+    def set_outputs(self, slug: str, targets: list[str]) -> Channel:
+        """Play an output channel through every one of `targets` (devices, ""
+        for the default output, or group node names), the first being its
+        `device`; none at all plays nowhere. For a mic channel, `targets` are
+        the output channels it is listened through."""
+        channel = self.config.channel(slug)
+        if channel.is_input:
+            for through in targets:
+                if self.config.channel(through).is_input:
+                    raise EngineError(f"channel {through!r} is an input; listen through an output channel")
+        else:
+            for target in targets:
+                self._check_group_target(channel, target)
+        channel.set_targets(list(targets))
+        self.save()
+        return channel
+
+    def _check_group_target(self, channel: Channel, device: str) -> None:
+        if not device.startswith(NODE_PREFIX):
+            return
+        group = next((c for c in self.config.channels if c.node_name == device), None)
+        if group is None:
+            return
+        if channel.is_input or group.is_input:
+            raise EngineError("only an output channel can play into another output channel")
+        if group not in self.config.group_choices(channel):
+            raise EngineError(f"{channel.name} cannot play into {group.name}: "
+                              f"{group.name} already plays into {channel.name}")
 
     def set_enabled(self, slug: str, enabled: bool) -> Channel:
         channel = self.config.channel(slug)
@@ -892,8 +917,7 @@ class Engine:
         """
         if not channel.is_input or not channel.echo_cancel:
             return False
-        device = self.config.listen_ends_on(channel)
-        return device is not None and device != NOWHERE and (device == "" or device == default_sink)
+        return any(device == "" or device == default_sink for device in self.config.listen_ends(channel))
 
     def status(self, refresh: bool = True) -> dict[str, Any]:
         """Everything a UI needs for one refresh, from a single graph snapshot."""

@@ -623,11 +623,25 @@ class ChannelStrip(QFrame):
         if self.source is not None:
             self._fill(self.source, [(FOLLOW_DEFAULT, "Default input"), *[(n, l) for n, l in devices]],
                        self.channel.device, present)
-            self._fill(self.route, [(NOT_LISTENING, "Don't listen"), *outputs], self.channel.listen, True)
+            choices = [(NOT_LISTENING, "Don't listen"), *outputs]
+            self._fill(self.route, choices, self.channel.listen, True)
         else:
             choices = [(FOLLOW_DEFAULT, "Default output"), *devices, *groups,
                        (NOWHERE, "Nowhere (recording only)")]
             self._fill(self.route, choices, self.channel.device, present)
+        self._show_more(choices)
+
+    def _show_more(self, choices) -> None:
+        """A strip shows one place; when the channel plays to several (ticked in
+        the Channels view), it reads "Speakers +1" and the tooltip names them all.
+        Choosing here changes the first and keeps the others."""
+        if not self.channel.also or self.route.view().isVisible():
+            return
+        names = dict(choices)
+        index = self.route.currentIndex()
+        self.route.setItemText(index, f"{self.route.itemText(index)} +{len(self.channel.also)}")
+        every = ", ".join(names.get(t, t) for t in self.channel.targets)
+        self.route.setToolTip(f"{self.route.toolTip().split(chr(10))[0]}\n{every}")
 
     @staticmethod
     def _fill(combo: QComboBox, choices: list[tuple[str, str]], current: str, present: bool) -> None:

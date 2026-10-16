@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.3.2
+Version:        1.3.3
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -105,6 +105,10 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
+* Fri Oct 16 2026 lmck-dev <lmck.dev@gmail.com> - 1.3.3-1
+- 1.3.3: a channel can play to several outputs at once, and a mic can be heard
+  through several; "Plays through" is a list of ticks.
+
 * Fri Oct 16 2026 lmck-dev <lmck.dev@gmail.com> - 1.3.2-1
 - 1.3.2: noise suppression ignores NaN/Inf input and restarts its network if its
   state ever goes non-finite (it could get stuck putting out NaN from clean input).
