@@ -20,6 +20,7 @@ needed, no dependencies).
 | `pwgraph.py`  | read-only `pw-dump` model + live monitor                   |
 | `routing.py`  | rules, planning, and the actual move                       |
 | `config.py`   | atomic JSON persistence                                    |
+| `profiles.py` | saved profiles (whole desk) and saved effect chains, one JSON file each |
 | `engine.py`   | **policy**: reconcile config against reality; auto-router  |
 | `install.py`  | menu launcher (.desktop) and login service (systemd user unit) |
 | `remote.py`   | phone remote: HTTP + SSE API in the login service, pairing token |
@@ -246,6 +247,18 @@ which once looked exactly like a broken channel.
 Measure the RMS of the capture against a reference played straight into
 `ar_testdev`. That is how `-6 dB` gain and a 3-stage 1 kHz highpass were both
 confirmed to within 0.05 dB.
+
+## Profiles and chains (owner, 16 Oct 2026)
+
+`~/.config/audiorouter/profiles/<name>.json` holds `auto_route`, `channels` and
+`rules` only; **bypass and plugin_folders are this computer's and never switch**.
+`Config.profile` is just the label of the last profile saved or switched to;
+the window stars it when the desk differs (`Engine.profile_modified`). A
+profile naming an unplugged device still loads (owner choice): the channel's
+`target.object` falls back to the default output, `switch_profile` returns the
+missing names to report. Switching = replace config, apply, then route.
+`chains/<name>.json` = one channel's effects + fader + pan. Phone remote
+cannot switch profiles yet (owner: later).
 
 ## Remembering apps (owner ruling 2026-09-12)
 

@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.3.4
+Version:        1.4.0
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -105,6 +105,10 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
+* Fri Oct 16 2026 lmck-dev <lmck.dev@gmail.com> - 1.4.0-1
+- 1.4.0: profiles (save the whole setup under a name and switch between
+  them) and saved effect chains (load one channel's effects onto another).
+
 * Fri Oct 16 2026 lmck-dev <lmck.dev@gmail.com> - 1.3.4-1
 - 1.3.4: "Plays through" has a column of its own beside the channel settings,
   so its ticks no longer overlap the rows below.

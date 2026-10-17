@@ -46,6 +46,9 @@ class Config:
     #: folder, say), searched at any depth. Here, not in the window's settings,
     #: because the login service starts the channels that load them.
     plugin_folders: list[str] = field(default_factory=list)
+    #: The saved profile this desk was last switched to or saved as, or "".
+    #: Only a label: editing the desk afterwards does not touch the profile.
+    profile: str = ""
 
     def __post_init__(self) -> None:
         self.ensure_companions()
@@ -337,6 +340,7 @@ class Config:
             "channels": [c.to_dict() for c in self.channels],
             "rules": self.rules.to_list(),
             "plugin_folders": list(self.plugin_folders),
+            "profile": self.profile,
         }
 
     @classmethod
@@ -357,6 +361,7 @@ class Config:
             auto_route=bool(data.get("auto_route", True)),
             bypass=bool(data.get("bypass", False)),
             plugin_folders=[str(f) for f in (data.get("plugin_folders") or []) if f],
+            profile=str(data.get("profile") or ""),
         )
 
     # -- files ------------------------------------------------------------

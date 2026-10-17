@@ -41,7 +41,7 @@ from .channels import (
     runtime_dir,
     validate_slug,
 )
-from . import plugins, session
+from . import plugins, profiles, session
 from .config import Config, ConfigError, config_path, default_config
 from .effects import Effect, EffectError, clamp_mix, make_effect
 from .meter import sweep_stale
@@ -490,6 +490,95 @@ class Engine:
         channel.effects.insert(max(0, min(to, len(channel.effects))), effect)
         self.save()
         return effect
+
+    # -- profiles and chains ------------------------------------------------
+
+    @property
+    def profile_store(self) -> profiles.Store:
+        return profiles.profiles(self.path or config_path())
+
+    @property
+    def chain_store(self) -> profiles.Store:
+        return profiles.chains(self.path or config_path())
+
+    def save_profile(self, name: str) -> str:
+        """Save the whole desk under a name (replacing one of that name)."""
+        name = profiles.clean_name(name)
+        if not self.dry_run:
+            self.profile_store.write(name, profiles.profile_body(self.config))
+        self.config.profile = name
+        self.save()
+        return name
+
+    def switch_profile(self, name: str) -> list[str]:
+        """Make a saved profile the desk; the caller then applies and routes.
+
+        Returns the devices it names that are not plugged in. Their channels
+        still start and play to the default output until the device appears.
+        """
+        data = self.profile_store.read(name)
+        name = str(data.get("name") or name)
+        self.config = profiles.config_from_profile(data, self.config, name)
+        self.save()
+        return self.missing_devices()
+
+    def profile_modified(self) -> bool:
+        """Has the desk changed since its profile was saved or switched to?"""
+        if not self.config.profile:
+            return False
+        try:
+            data = self.profile_store.read(self.config.profile)
+        except profiles.ProfileError:
+            return True
+        return not profiles.matches_profile(self.config, data)
+
+    def delete_profile(self, name: str) -> None:
+        self.profile_store.delete(name)
+        if self.config.profile.casefold() == name.casefold():
+            self.config.profile = ""
+            self.save()
+
+    def rename_profile(self, old: str, new: str) -> str:
+        new = profiles.clean_name(new)
+        self.profile_store.rename(old, new)
+        if self.config.profile.casefold() == old.casefold():
+            self.config.profile = new
+            self.save()
+        return new
+
+    def missing_devices(self) -> list[str]:
+        """Real devices the channels name that are not in the graph now."""
+        graph = self.graph(refresh=True)
+        present = {n.name for n in [*graph.devices(), *graph.input_devices()]}
+        missing: list[str] = []
+        for channel in self.config.channels:
+            if not channel.enabled:
+                continue
+            named = [channel.device] if channel.is_input else channel.targets
+            for device in named:
+                if not device or device == NOWHERE or device.startswith(NODE_PREFIX):
+                    continue
+                if device not in present and device not in missing:
+                    missing.append(device)
+        return missing
+
+    def save_chain(self, slug: str, name: str) -> str:
+        """Save a channel's effects, fader and pan under a name."""
+        channel = self.config.channel(slug)
+        name = profiles.clean_name(name)
+        if not self.dry_run:
+            self.chain_store.write(name, profiles.chain_body(channel))
+        return name
+
+    def load_chain(self, slug: str, name: str) -> Channel:
+        """Replace a channel's effects, fader and pan with a saved chain's."""
+        channel = self.config.channel(slug)
+        data = self.chain_store.read(name)
+        channel.effects = profiles.chain_effects(data, name)
+        channel.fader_db = float(data.get("fader_db", channel.fader_db))
+        channel.pan = max(-1.0, min(1.0, float(data.get("pan", channel.pan))))
+        self.save()
+        return channel
 
     # -- rules -------------------------------------------------------------
 

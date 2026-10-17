@@ -34,6 +34,21 @@ Click it again (it reads **Bypassed** while on) and everything comes back: every
 
 Bypass stays on across logout and restart until you switch it off. It is the quickest way to answer "is Audio Router the cause of this sound problem?"
 
+### Profiles
+
+A **profile** is your whole setup saved under a name, such as "Gaming", "Recording" or "Calls": every channel with its effects, outputs, fader and pan, plus the remembered apps and the "Send new apps to their usual channel" switch. The **Profile** button at the far left of the top bar shows the one in use. A **\*** after its name means you have changed something since it was saved.
+
+| In the Profile menu | What it does |
+|---|---|
+| A profile's name | Switch to it. Its channels start, channels it does not have stop, and every playing app goes to its usual channel. If you have changes that are not saved, you are asked first. |
+| Save to *name* | Save the current setup over the profile in use. |
+| Save as a new profile... | Save the current setup under a new name. |
+| Rename / Delete | Rename or delete a saved profile. Deleting one never changes your current setup. |
+
+Bypass and plugin folders belong to this computer, not to a profile, so switching never changes them.
+
+If a profile uses a device that is not plugged in (Bluetooth headphones that are off, say), it still switches: the status line names the missing device, and those channels play to your default output until it is connected.
+
 ## The mixer at a glance
 
 The Mixer tab reads left to right in the order sound travels, in four sections:
@@ -172,6 +187,14 @@ Audio Router uses LV2 and LADSPA plugins: the ones installed in the usual places
 3. The new plugins appear in the list straight away, in their group, with their maker.
 
 A plugin that is in two folders is listed once. VST plugins cannot be used: the sound system cannot run them. If you remove a folder, any effect using a plugin from it is marked unavailable.
+
+### Saved chains
+
+To reuse a set of effects, for example a "Streaming voice" chain on more than one mic, use **Saved chains** beside **Add effect...** in the Channels view:
+
+- **Save these effects as a chain...** saves the channel's effects, with their settings and on/off switches, plus its fader and pan.
+- **Load onto this channel** replaces the channel's effects, fader and pan with a saved chain. You are asked first if the channel already has effects.
+- **Delete a saved chain** removes it from the list. Channels already using it keep their effects.
 
 ## The Channels view
 

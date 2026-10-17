@@ -31,9 +31,11 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSlider,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -539,12 +541,20 @@ class EffectsPanel(QGroupBox):
     tuned = pyqtSignal()
     #: The highlighted effect's position in the chain, or -1 for none.
     highlighted = pyqtSignal(int)
+    #: Save this channel's effects as a chain (the window asks for a name).
+    save_chain = pyqtSignal()
+    #: Replace this channel's effects with the named saved chain.
+    load_chain = pyqtSignal(str)
+    #: Delete the named saved chain.
+    delete_chain = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Effects", parent)
         self.channel: Channel | None = None
         #: Set by the window: opens the plugin folders, True if they changed.
         self.edit_plugin_folders: Callable[[QWidget], bool] | None = None
+        #: Set by the window: the saved chains' names.
+        self.chain_names: Callable[[], list[str]] = lambda: []
 
         self.list = QListWidget(self)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -561,6 +571,15 @@ class EffectsPanel(QGroupBox):
         self.down_button.clicked.connect(lambda: self._move(1))
         self.reset_button = QPushButton("Reset settings", self)
         self.reset_button.clicked.connect(self._reset)
+        # Saved chains: a whole effect stack reused on any channel (16 Oct 2026).
+        self.chains_button = QToolButton(self)
+        self.chains_button.setText("Saved chains")
+        self.chains_button.setToolTip("Save this channel's effects, fader and pan under a name, "
+                                      "or load a saved set onto this channel")
+        self.chains_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.chains_menu = QMenu(self.chains_button)
+        self.chains_menu.aboutToShow.connect(self._fill_chains_menu)
+        self.chains_button.setMenu(self.chains_menu)
 
         self.title = QLabel(self)
         font = self.title.font()
@@ -581,8 +600,12 @@ class EffectsPanel(QGroupBox):
         buttons.addWidget(self.down_button)
         buttons.addWidget(self.remove_button)
 
+        top_row = QHBoxLayout()
+        top_row.addWidget(self.add_button, 1)
+        top_row.addWidget(self.chains_button)
+
         chain = QVBoxLayout()
-        chain.addWidget(self.add_button)
+        chain.addLayout(top_row)
         chain.addWidget(self.list, 1)
         chain.addLayout(buttons)
 
@@ -659,6 +682,20 @@ class EffectsPanel(QGroupBox):
         if headline is None:
             return spec.label + mix
         return f"{spec.label} - {headline.label.lower()} {format_value(headline, values[headline.key])}{mix}"
+
+    def _fill_chains_menu(self) -> None:
+        menu = self.chains_menu
+        menu.clear()
+        save = menu.addAction("Save these effects as a chain...", self.save_chain.emit)
+        save.setEnabled(self.channel is not None)
+        names = self.chain_names()
+        load = menu.addMenu("Load onto this channel")
+        remove = menu.addMenu("Delete a saved chain")
+        for name in names:
+            load.addAction(name, lambda n=name: self.load_chain.emit(n))
+            remove.addAction(name, lambda n=name: self.delete_chain.emit(n))
+        load.setEnabled(bool(names) and self.channel is not None)
+        remove.setEnabled(bool(names))
 
     # -- editing -----------------------------------------------------------
 

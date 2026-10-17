@@ -313,6 +313,75 @@ def cmd_rule_mv(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_profile_list(engine: Engine, args: argparse.Namespace) -> int:
+    current = engine.config.profile
+    names = engine.profile_store.names()
+    if not names:
+        print("no profiles saved yet; save this setup with: audiorouter profile save NAME")
+        return 0
+    for name in names:
+        mark = "*" if name == current else " "
+        note = " (changed since)" if name == current and engine.profile_modified() else ""
+        print(f"{mark} {name}{note}")
+    return 0
+
+
+def cmd_profile_save(engine: Engine, args: argparse.Namespace) -> int:
+    name = engine.save_profile(args.name)
+    print(f"saved this setup as profile {name!r}")
+    return 0
+
+
+def cmd_profile_load(engine: Engine, args: argparse.Namespace) -> int:
+    missing = engine.switch_profile(args.name)
+    report = engine.apply()
+    for line in report.describe():
+        print(line)
+    if report.ok:
+        cmd_route(engine, args)  # apps on channels the profile removed, or rules it changed
+    for device in missing:
+        print(f"not plugged in: {device} (its channels play to the default output until it is)")
+    print(f"switched to profile {engine.config.profile!r}")
+    return 0 if report.ok else 1
+
+
+def cmd_profile_rm(engine: Engine, args: argparse.Namespace) -> int:
+    engine.delete_profile(args.name)
+    print(f"deleted profile {args.name!r} (the current setup is unchanged)")
+    return 0
+
+
+def cmd_profile_rename(engine: Engine, args: argparse.Namespace) -> int:
+    new = engine.rename_profile(args.name, args.new)
+    print(f"renamed profile {args.name!r} to {new!r}")
+    return 0
+
+
+def cmd_chain_list(engine: Engine, args: argparse.Namespace) -> int:
+    names = engine.chain_store.names()
+    print("\n".join(names) if names else "no effect chains saved yet")
+    return 0
+
+
+def cmd_chain_save(engine: Engine, args: argparse.Namespace) -> int:
+    name = engine.save_chain(args.slug, args.name)
+    print(f"saved {args.slug}'s effects as chain {name!r}")
+    return 0
+
+
+def cmd_chain_load(engine: Engine, args: argparse.Namespace) -> int:
+    channel = engine.load_chain(args.slug, args.name)
+    print(f"{channel.slug}: now has chain {args.name!r} ({len(channel.effects)} effects); "
+          "run `audiorouter apply` to hear it")
+    return 0
+
+
+def cmd_chain_rm(engine: Engine, args: argparse.Namespace) -> int:
+    engine.chain_store.delete(args.name)
+    print(f"deleted chain {args.name!r}")
+    return 0
+
+
 def cmd_apply(engine: Engine, args: argparse.Namespace) -> int:
     report = engine.apply()
     for line in report.describe():
@@ -580,6 +649,39 @@ def build_parser() -> argparse.ArgumentParser:
     rmv.add_argument("index", type=int)
     rmv.add_argument("to", type=int)
     rmv.set_defaults(func=cmd_rule_mv)
+
+    profile = sub.add_parser("profile", help="save and switch whole setups").add_subparsers(
+        dest="action", required=True)
+    plist = profile.add_parser("list", help="list saved profiles (* = current)")
+    plist.set_defaults(func=cmd_profile_list)
+    psave = profile.add_parser("save", help="save this setup as a profile")
+    psave.add_argument("name")
+    psave.set_defaults(func=cmd_profile_save)
+    pload = profile.add_parser("load", help="switch to a saved profile")
+    pload.add_argument("name")
+    pload.set_defaults(func=cmd_profile_load)
+    prm = profile.add_parser("rm", help="delete a saved profile")
+    prm.add_argument("name")
+    prm.set_defaults(func=cmd_profile_rm)
+    pren = profile.add_parser("rename", help="rename a saved profile")
+    pren.add_argument("name")
+    pren.add_argument("new")
+    pren.set_defaults(func=cmd_profile_rename)
+
+    chain = sub.add_parser("chain", help="save effect chains and load them onto channels").add_subparsers(
+        dest="action", required=True)
+    chain.add_parser("list", help="list saved chains").set_defaults(func=cmd_chain_list)
+    csave = chain.add_parser("save", help="save a channel's effects, fader and pan")
+    csave.add_argument("slug")
+    csave.add_argument("name")
+    csave.set_defaults(func=cmd_chain_save)
+    cload = chain.add_parser("load", help="replace a channel's effects with a saved chain")
+    cload.add_argument("slug")
+    cload.add_argument("name")
+    cload.set_defaults(func=cmd_chain_load)
+    crm = chain.add_parser("rm", help="delete a saved chain")
+    crm.add_argument("name")
+    crm.set_defaults(func=cmd_chain_rm)
 
     apply_cmd = sub.add_parser("apply", help="start, restart or stop channels to match the config")
     apply_cmd.add_argument("--route", action="store_true", help="also apply rules afterwards")

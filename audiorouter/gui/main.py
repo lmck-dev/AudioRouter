@@ -200,7 +200,19 @@ class MainWindow(QMainWindow):
         self.ec_banner.setHidden(True)
         self._ec_fix_started = 0.0
 
+        # Profiles: the whole desk saved under a name, switched in one go (16 Oct 2026).
+        self.profile_button = QToolButton(self)
+        self.profile_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._profile_tip = ("Save the whole setup (channels, effects, outputs, remembered apps) "
+                             "under a name, and switch between saved setups")
+        self.profile_button.setToolTip(self._profile_tip)
+        self.profile_menu = QMenu(self.profile_button)
+        self.profile_menu.aboutToShow.connect(self._fill_profile_menu)
+        self.profile_button.setMenu(self.profile_menu)
+        self._profile_label_key = None
+
         top = QHBoxLayout()
+        top.addWidget(self.profile_button)
         top.addWidget(self.bypass)
         top.addWidget(self.auto_route)
         top.addWidget(self.background)
@@ -352,6 +364,10 @@ class MainWindow(QMainWindow):
             lambda db: self.selected_channel and self._set_fader(self.selected_channel.slug, db))
         self.effects_panel.changed.connect(self._config_edited)
         self.effects_panel.tuned.connect(self._config_tuned)
+        self.effects_panel.chain_names = self.engine.chain_store.names
+        self.effects_panel.save_chain.connect(self._save_chain)
+        self.effects_panel.load_chain.connect(self._load_chain)
+        self.effects_panel.delete_chain.connect(self._delete_chain)
         self.effects_panel.highlighted.connect(
             lambda row: self.meters.show_effect(row, self.selected_channel)
         )
@@ -411,6 +427,7 @@ class MainWindow(QMainWindow):
 
     def refresh(self) -> None:
         """Redraw everything from one engine status reading."""
+        self._show_profile()
         if self.bridge.running:
             self.engine.use_graph(self.bridge.graph)
         try:
@@ -1096,6 +1113,178 @@ class MainWindow(QMainWindow):
 
     def _monitor_failed(self, message: str) -> None:
         self._set_status(f"Not watching for new apps: {message}", warn=True)
+
+    # -- profiles and chains ---------------------------------------------------
+
+    def _show_profile(self) -> None:
+        """The profile button's label: the current profile, starred if changed since."""
+        store = self.engine.profile_store.folder
+        try:
+            folder_stamp = store.stat().st_mtime_ns
+        except OSError:
+            folder_stamp = None
+        # refresh() runs on every graph event; only look at the files when they changed.
+        key = (self.engine._config_stamp(), folder_stamp, self.engine.config.profile)
+        if key == self._profile_label_key:
+            return
+        self._profile_label_key = key
+        name = self.engine.config.profile
+        self.profile_button.setToolTip(self._profile_tip)
+        if not name:
+            self.profile_button.setText("Profile: none")
+        else:
+            changed = self.engine.profile_modified()
+            self.profile_button.setText(f"Profile: {name}{' *' if changed else ''}")
+            if changed:
+                self.profile_button.setToolTip(
+                    f"Changed since {name} was saved. Use Save to {name} to keep the changes.")
+
+    def _fill_profile_menu(self) -> None:
+        menu = self.profile_menu
+        menu.clear()
+        current = self.engine.config.profile
+        names = self.engine.profile_store.names()
+        if names:
+            heading = menu.addAction("Switch to")
+            heading.setEnabled(False)
+            for name in names:
+                action = menu.addAction(name, lambda n=name: self._switch_profile(n))
+                action.setCheckable(True)
+                action.setChecked(name == current)
+            menu.addSeparator()
+        if current:
+            menu.addAction(f"Save to {current}", lambda: self._save_profile(current))
+        menu.addAction("Save as a new profile...", lambda: self._save_profile(None))
+        if names:
+            rename = menu.addMenu("Rename")
+            remove = menu.addMenu("Delete")
+            for name in names:
+                rename.addAction(name, lambda n=name: self._rename_profile(n))
+                remove.addAction(name, lambda n=name: self._delete_profile(n))
+
+    def _save_profile(self, name: str | None) -> None:
+        if name is None:
+            name, ok = QInputDialog.getText(
+                self, "Save profile", "A name for this setup (for example Gaming or Recording):")
+            if not ok or not name.strip():
+                return
+            if self.engine.profile_store.exists(name):
+                if QMessageBox.question(self, "Save profile",
+                                        f"{name.strip()} is already saved. Replace it with this setup?"
+                                        ) != QMessageBox.StandardButton.Yes:
+                    return
+        try:
+            saved = self.engine.save_profile(name)
+        except (*USER_ERRORS, OSError) as exc:
+            self._error("Could not save the profile", str(exc))
+            return
+        self._set_status(f"Saved this setup as {saved}.")
+        self._profile_label_key = None
+        self._show_profile()
+
+    def _switch_profile(self, name: str) -> None:
+        current = self.engine.config.profile
+        if name == current and not self.engine.profile_modified():
+            return
+        if self.engine.profile_modified() or not current:
+            what = f"the changes since {current} was saved" if current else "this setup (it is not saved as a profile)"
+            answer = QMessageBox.question(
+                self, "Switch profile",
+                f"Switching to {name} replaces {what}. Switch anyway?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            missing = self.engine.switch_profile(name)
+        except (*USER_ERRORS, OSError) as exc:
+            self._error("Could not switch profile", str(exc))
+            return
+        self.auto_route.blockSignals(True)
+        self.auto_route.setChecked(self.engine.config.auto_route)
+        self.auto_route.blockSignals(False)
+        self._profile_label_key = None
+        self._refresh_channel_list()
+        self._refresh_rules()
+        # Apps on channels this profile does not have go to their usual place
+        # once the new channels are up.
+        self._route_after_apply = True
+        self._structural_pending = True
+        self.apply_now()
+        if missing:
+            self._set_status(f"Switched to {name}. Not plugged in: {', '.join(missing)} - "
+                             "those channels play to the default output until it is.", warn=True)
+
+    def _rename_profile(self, name: str) -> None:
+        new, ok = QInputDialog.getText(self, "Rename profile", f"New name for {name}:", text=name)
+        if not ok or not new.strip() or new.strip() == name:
+            return
+        try:
+            self.engine.rename_profile(name, new)
+        except (*USER_ERRORS, OSError) as exc:
+            self._error("Could not rename the profile", str(exc))
+            return
+        self._profile_label_key = None
+        self._show_profile()
+
+    def _delete_profile(self, name: str) -> None:
+        if QMessageBox.question(self, "Delete profile",
+                                f"Delete the saved profile {name}? Your current setup stays as it is."
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.engine.delete_profile(name)
+        except (*USER_ERRORS, OSError) as exc:
+            self._error("Could not delete the profile", str(exc))
+            return
+        self._profile_label_key = None
+        self._show_profile()
+
+    def _save_chain(self) -> None:
+        channel = self.selected_channel
+        if channel is None:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Save effect chain",
+            f"A name for {channel.name}'s effects (for example Streaming voice):")
+        if not ok or not name.strip():
+            return
+        if self.engine.chain_store.exists(name) and QMessageBox.question(
+                self, "Save effect chain", f"{name.strip()} is already saved. Replace it?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            saved = self.engine.save_chain(channel.slug, name)
+        except (*USER_ERRORS, OSError) as exc:
+            self._error("Could not save the chain", str(exc))
+            return
+        self._set_status(f"Saved {channel.name}'s effects as {saved}.")
+
+    def _load_chain(self, name: str) -> None:
+        channel = self.selected_channel
+        if channel is None:
+            return
+        if channel.effects and QMessageBox.question(
+                self, "Load effect chain",
+                f"Replace {channel.name}'s {len(channel.effects)} effect(s), fader and pan with {name}?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.engine.load_chain(channel.slug, name)
+        except (*USER_ERRORS, OSError) as exc:
+            self._error("Could not load the chain", str(exc))
+            return
+        self.effects_panel.refresh()
+        self.channel_panel.show_fader()
+        self._config_edited()
+
+    def _delete_chain(self, name: str) -> None:
+        if QMessageBox.question(self, "Delete effect chain",
+                                f"Delete the saved chain {name}? Channels using it keep their effects."
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.engine.chain_store.delete(name)
+        except (*USER_ERRORS, OSError) as exc:
+            self._error("Could not delete the chain", str(exc))
 
     def _error(self, title: str, detail: str) -> None:
         QMessageBox.warning(self, title, detail)

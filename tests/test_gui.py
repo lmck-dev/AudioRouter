@@ -1442,3 +1442,55 @@ class PhoneRemoteWindowTest(unittest.TestCase):
             self.skipTest("python3-qrcode is not installed")
         self.assertEqual(len(matrix), len(matrix[0]))
         self.assertGreaterEqual(len(matrix), 21)
+
+
+class ProfileGuiTest(GuiTestCase):
+    """Profiles and saved chains from the window (16 Oct 2026)."""
+
+    def yes(self):
+        from PyQt6.QtWidgets import QMessageBox
+        return mock.patch("audiorouter.gui.main.QMessageBox.question",
+                          return_value=QMessageBox.StandardButton.Yes)
+
+    def test_save_switch_and_label(self):
+        w = self.window
+        with mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Gaming", True)):
+            w._save_profile(None)
+        w.refresh()
+        self.assertEqual(w.profile_button.text(), "Profile: Gaming")
+        self.engine.delete_channel("phones")
+        w._config_edited()
+        w.refresh()
+        self.assertEqual(w.profile_button.text(), "Profile: Gaming *")
+        with self.yes():
+            w._switch_profile("Gaming")
+        w.refresh()
+        self.assertEqual(self.engine.config.channel_slugs, ["speakers", "phones"])
+        self.assertEqual(w.channel_list.count(), 2)
+        self.assertEqual(w.profile_button.text(), "Profile: Gaming")
+        w._fill_profile_menu()
+        texts = [a.text() for a in w.profile_menu.actions()]
+        self.assertIn("Save to Gaming", texts)
+        self.assertIn("Gaming", texts)
+
+    def test_switch_cancelled_keeps_the_desk(self):
+        from PyQt6.QtWidgets import QMessageBox
+        self.engine.save_profile("Gaming")
+        self.engine.delete_channel("phones")
+        with mock.patch("audiorouter.gui.main.QMessageBox.question",
+                        return_value=QMessageBox.StandardButton.No):
+            self.window._switch_profile("Gaming")
+        self.assertEqual(self.engine.config.channel_slugs, ["speakers"])
+
+    def test_chain_from_one_channel_to_another(self):
+        w = self.window
+        w.select_channel("speakers")
+        with mock.patch("audiorouter.gui.main.QInputDialog.getText", return_value=("Clean", True)):
+            w._save_chain()
+        w.select_channel("phones")
+        w._load_chain("Clean")   # phones has no effects, so no question
+        self.assertEqual([e.kind for e in self.engine.config.channel("phones").effects], ["highpass"])
+        self.assertEqual(w.effects_panel.list.count(), 1)
+        w.effects_panel._fill_chains_menu()
+        load = [a for a in w.effects_panel.chains_menu.actions() if a.text() == "Load onto this channel"][0]
+        self.assertEqual([a.text() for a in load.menu().actions()], ["Clean"])
