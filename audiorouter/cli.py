@@ -243,7 +243,7 @@ def cmd_channel_duck(engine: Engine, args: argparse.Namespace) -> int:
     ducks = [] if args.channels == ["off"] else args.channels
     channel = engine.set_ducks(args.slug, ducks, args.db)
     if channel.ducks:
-        print(f"{channel.slug}: turns {', '.join(channel.ducks)} down {channel.duck_db:g} dB while it plays")
+        print(f"{channel.slug}: turns {', '.join(channel.ducks)} down (up to {channel.duck_db:g} dB) while it plays")
     else:
         print(f"{channel.slug}: turns nothing down")
     return 0
