@@ -814,7 +814,7 @@ def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[s
 
 
 def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.0,
-                 pan: float = 0.0, cut: bool = False) -> Chain:
+                 pan: float = 0.0, cut: bool = False, duck_db: float = 0.0) -> Chain:
     """Render effects into one series stereo graph.
 
     Every effect sits behind a bypass switch (see `_with_bypass`), so a
@@ -840,13 +840,16 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
     **The chain's last output cannot also feed a tap**: filter-graph refuses
     ("already used by link, use copy"), the graph fails to start and the
     channel passes silence. A `copy` per side therefore ends a tapped chain.
+
+    With `duck_db`, a duck stage follows the fader (see `_duck`), before the
+    output tap, so the mixer's meter shows the channel turned down.
     """
     active = _active(effects)
     if not active:
         nodes: list[dict[str, Any]] = []
         links: list[dict[str, str]] = []
         entry = _fader(nodes, links, None, fader_db, pan, cut)
-        outputs = ("fader_l:Out", "fader_r:Out")
+        outputs = _duck(nodes, links, ("fader_l:Out", "fader_r:Out"), duck_db)
         if taps:
             node, tap_links = _tap(output_slot(effects), outputs)
             nodes.append(node)
@@ -879,7 +882,7 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
             links.extend(tap_links)
     assert first_in is not None and previous_out is not None
     _fader(nodes, links, previous_out, fader_db, pan, cut)
-    previous_out = ("fader_l:Out", "fader_r:Out")
+    previous_out = _duck(nodes, links, ("fader_l:Out", "fader_r:Out"), duck_db)
     if taps:
         node, tap_links = _tap(output_slot(effects), previous_out)
         nodes.append(node)
@@ -900,6 +903,63 @@ def _fader(nodes: list[dict[str, Any]], links: list[dict[str, str]],
         for side, port in zip(SIDES, source):
             links.append({"output": port, "input": f"fader_{side}:In 1"})
     return ("fader_l:In 1", "fader_r:In 1")
+
+
+#: How fast a ducked channel goes down when the priority channel starts, and
+#: how slowly it comes back after it stops.
+DUCK_ATTACK_S = 0.08
+DUCK_RELEASE_S = 1.0
+#: The live controls of a duck stage: down (1) or up (0), the fade's length.
+DUCK_TARGET = "duck_target:Add"
+DUCK_TIME = "duck_time:Add"
+
+
+def duck_controls(down: bool) -> dict[str, float]:
+    """The one live change that turns a ducked channel down, or back up."""
+    return {DUCK_TARGET: 1.0 if down else 0.0, DUCK_TIME: DUCK_ATTACK_S if down else DUCK_RELEASE_S}
+
+
+def _duck(nodes: list[dict[str, Any]], links: list[dict[str, str]],
+          source: tuple[str, str], db: float) -> tuple[str, str]:
+    """Append a duck stage after `source` when `db` > 0; returns the chain's outputs.
+
+    The same in-graph ramp as an effect's switch (`_with_bypass`), fed through
+    `linear` nodes for the same reason: `duck_target` is 1 while the priority
+    channel plays and 0 otherwise, the ramp moves toward it from wherever it
+    is, and `duck_time` sets how long the move takes - short going down, long
+    coming back. The gain is `1 - fade * depth`, so fully down is exactly
+    `-db` and up is exactly unity. Turning down is one live change
+    (`duck_controls`), never a restart, and a host always starts up.
+    """
+    if db <= 0.0:
+        return source
+    depth = round(1.0 - db_to_linear(-db), 6)
+    nodes.extend([
+        {"type": "builtin", "name": "duck_target", "label": "linear",
+         "control": {"Mult": 0.0, "Add": 0.0}},
+        {"type": "builtin", "name": "duck_from", "label": "linear",
+         "control": {"Mult": -1.0, "Add": 1.0}},
+        {"type": "builtin", "name": "duck_time", "label": "linear",
+         "control": {"Mult": 0.0, "Add": DUCK_RELEASE_S}},
+        {"type": "builtin", "name": "duck_fade", "label": "ramp"},
+        {"type": "builtin", "name": "duck_gain", "label": "linear",
+         "control": {"Mult": -depth, "Add": 1.0}},
+    ])
+    links.extend([
+        {"output": "duck_target:Notify", "input": "duck_fade:Stop"},
+        {"output": "duck_target:Notify", "input": "duck_from:Control"},
+        {"output": "duck_from:Notify", "input": "duck_fade:Start"},
+        {"output": "duck_time:Notify", "input": "duck_fade:Duration (s)"},
+        {"output": "duck_fade:Out", "input": "duck_gain:In"},
+    ])
+    outputs = []
+    for side, port in zip(SIDES, source):
+        name = f"duck_{side}"
+        nodes.append({"type": "builtin", "name": name, "label": "mult"})
+        links.append({"output": port, "input": f"{name}:In 1"})
+        links.append({"output": "duck_gain:Out", "input": f"{name}:In 2"})
+        outputs.append(f"{name}:Out")
+    return outputs[0], outputs[1]
 
 
 def _tail(nodes: list[dict[str, Any]], links: list[dict[str, str]],

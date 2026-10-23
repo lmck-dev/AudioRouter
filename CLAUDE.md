@@ -24,6 +24,7 @@ needed, no dependencies).
 | `engine.py`   | **policy**: reconcile config against reality; auto-router  |
 | `install.py`  | menu launcher (.desktop) and login service (systemd user unit) |
 | `remote.py`   | phone remote: HTTP + SSE API in the login service, pairing token |
+| `ducking.py`  | turning channels down while a priority channel plays (login service) |
 | `remote_meters.py` | phone meters: taps run only while a phone watches; 15 fps frames |
 | `cli.py`      | argument parsing and printing only - no logic              |
 
@@ -259,6 +260,20 @@ profile naming an unplugged device still loads (owner choice): the channel's
 missing names to report. Switching = replace config, apply, then route.
 `chains/<name>.json` = one channel's effects + fader + pan. Phone remote
 cannot switch profiles yet (owner: later).
+
+## Turning down (ducking, owner 23 Oct 2026)
+
+An output's `ducks` lists channels it turns down by `duck_db` while it plays
+(the wake word's TTS Voice over Game). `Config.update_ducking` (run from
+`update_solo`, so every caller gets it) sets `ducked_db` on each target, which
+renders a duck stage after the fader (`effects._duck`): the same in-graph ramp
+as an effect switch, so down/up is ONE live set-param and never a restart.
+Never a channel the priority channel plays THROUGH; a member of a ducked group
+is skipped (goes down once). `ducking.Ducker` runs in `watch` only: it polls
+the priority channel's FIRST tap file every 30 ms (threshold -50 dBFS, hold
+1.2 s) and never rewrites the conf, so knob diffs never reset it. Lab, 23 Oct:
+0.00 -> -15.00 dB within ~150 ms of the voice, back to 0.00 over 1 s after the
+hold; the service idles at ~0.8% of a core. Needs the RPM rebuilt to be live.
 
 ## Remembering apps (owner ruling 2026-09-12)
 

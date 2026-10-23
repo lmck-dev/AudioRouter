@@ -132,6 +132,42 @@ class Config:
             if mic is not None:
                 # Never cut by an output's solo: that would silence a call's mic.
                 companion.solo_cut = mic.solo_cut
+        self.update_ducking()   # worked out from the whole desk too, so every caller gets both
+
+    def update_ducking(self) -> None:
+        """Work out how far each channel is turned down while a priority channel plays.
+
+        A channel the priority channel plays THROUGH is never turned down (the
+        voice would go down with it), and one that plays into a channel that
+        is already turned down is left alone, so a game playing into the
+        speakers channel goes down once, not twice. Several priority channels
+        turning one down: the deepest wins.
+        """
+        depth: dict[str, float] = {}
+        for priority in self.priority_channels():
+            for slug in self.ducked_by(priority):
+                depth[slug] = max(depth.get(slug, 0.0), priority.duck_db)
+        for channel in self.channels:
+            channel.ducked_db = depth.get(channel.slug, 0.0)
+
+    def ducked_by(self, priority: Channel) -> list[str]:
+        """The channels a priority channel actually turns down (see `update_ducking`)."""
+        through = {g.slug for g in self.groups_below(priority)}
+        listed: list[Channel] = []
+        for slug in priority.ducks:
+            try:
+                target = self.channel(slug)
+            except ConfigError:
+                continue
+            if target.slug not in through and not target.is_input and not target.companion_of:
+                listed.append(target)
+        slugs = {c.slug for c in listed}
+        return [c.slug for c in listed
+                if not slugs & {g.slug for g in self.groups_below(c)}]
+
+    def priority_channels(self) -> list[Channel]:
+        """Enabled output channels that turn others down while they play."""
+        return [c for c in self.channels if c.ducks and c.enabled and not c.is_input]
 
     # -- groups -------------------------------------------------------------
     #

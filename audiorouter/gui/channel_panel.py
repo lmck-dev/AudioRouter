@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QToolButton,
     QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QFormLayout,
     QGroupBox,
@@ -33,7 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..channels import NOWHERE, Channel
+from ..channels import MAX_DUCK_DB, MIN_DUCK_DB, NOWHERE, Channel
 from .mixer import FADER_TRAVEL, LISTEN_ECHO_HELP, db_to_fader, fader_text, fader_to_db
 from .theme import Theme
 
@@ -241,6 +242,32 @@ class ChannelPanel(QGroupBox):
         )
         self.echo_cancel.toggled.connect(self._echo_cancel_toggled)
         self._listen_cancelled = False  # from the engine: the mic plays on its canceller's speakers
+        # Priority (owner, 23 Oct 2026): while this channel plays, the ticked
+        # channels go down, and come back once it has been quiet a moment.
+        duck_help = ("While this channel plays, the channels ticked here go down by this much, "
+                     "and come back a second after it stops - a voice assistant over a game "
+                     "or music. Needs the login service running.")
+        self.ducks = QToolButton(self)
+        self.ducks.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.ducks.setToolTip(duck_help)
+        self.ducks_menu = QMenu(self.ducks)
+        self.ducks.setMenu(self.ducks_menu)
+        self.duck_db = QDoubleSpinBox(self)
+        self.duck_db.setRange(MIN_DUCK_DB, MAX_DUCK_DB)
+        self.duck_db.setDecimals(0)
+        self.duck_db.setSingleStep(1.0)
+        self.duck_db.setPrefix("by ")
+        self.duck_db.setSuffix(" dB")
+        self.duck_db.setToolTip(duck_help)
+        self.duck_db.valueChanged.connect(self._duck_db_changed)
+        self._duck_choices: list[tuple[str, str, str]] = []
+        duck_row = QHBoxLayout()
+        duck_row.addWidget(self.ducks)
+        duck_row.addWidget(self.duck_db)
+        duck_row.addStretch(1)
+        self.duck_row = QWidget(self)
+        self.duck_row.setLayout(duck_row)
+        duck_row.setContentsMargins(0, 0, 0, 0)
         self.hint = QLabel(self)
         self.hint.setWordWrap(True)
         self.enabled = QCheckBox("Switched on", self)
@@ -306,6 +333,7 @@ class ChannelPanel(QGroupBox):
         self.form.addRow("Fader", fader_row)
         self.form.addRow(self._section("OUT"))
         self.form.addRow("", self.recordable)
+        self.form.addRow("Turns down", self.duck_row)
         self.form.addRow("", self.hint)
         self.form.addRow("", self.enabled)
         self.form.addRow("", self.status)
@@ -325,12 +353,52 @@ class ChannelPanel(QGroupBox):
         self.form.setRowVisible(self.source, is_input)
         self.form.setRowVisible(self.source_text, not is_input)
         self.form.setRowVisible(self.echo_cancel, is_input)
+        self.form.setRowVisible(self.duck_row, channel is not None and not is_input)
 
     def set_kind_label(self, text: str) -> None:
         """The mixer's caption for this channel: From a mic, From apps, Cable, Group."""
         theme = Theme(self)
         self.kind.setText(text)
         self.kind.setStyleSheet(theme.css(theme.dim))
+
+    def set_duck_choices(self, choices: list[tuple[str, str, str]]) -> None:
+        """The channels this one could turn down: (slug, name, why not, or "")."""
+        self._duck_choices = choices
+        self._fill_ducks()
+
+    def _fill_ducks(self) -> None:
+        channel = self.channel
+        ducks = channel.ducks if channel is not None else []
+        self.ducks_menu.clear()
+        for slug, name, why_not in self._duck_choices:
+            action = self.ducks_menu.addAction(f"{name} ({why_not})" if why_not else name)
+            action.setCheckable(True)
+            action.setChecked(slug in ducks)
+            action.setEnabled(not why_not or slug in ducks)
+            action.toggled.connect(lambda on, slug=slug: self._duck_ticked(slug, on))
+        names = dict((slug, name) for slug, name, _ in self._duck_choices)
+        chosen = [names.get(slug, slug) for slug in ducks]
+        self.ducks.setText(", ".join(chosen) if chosen else "Nothing")
+        self.ducks.setEnabled(bool(self._duck_choices))
+        self.duck_db.blockSignals(True)
+        self.duck_db.setValue(channel.duck_db if channel is not None else MIN_DUCK_DB)
+        self.duck_db.setEnabled(bool(ducks))
+        self.duck_db.blockSignals(False)
+
+    def _duck_ticked(self, slug: str, on: bool) -> None:
+        if self._loading or self.channel is None or self.channel.is_input:
+            return
+        ducks = [s for s in self.channel.ducks if s != slug] + ([slug] if on else [])
+        if ducks != self.channel.ducks:
+            self.channel.ducks = ducks
+            self._fill_ducks()
+            self.changed.emit()
+
+    def _duck_db_changed(self, db: float) -> None:
+        if self._loading or self.channel is None or db == self.channel.duck_db:
+            return
+        self.channel.duck_db = db
+        self.changed.emit()
 
     def set_outputs(self, outputs: list[tuple[str, str]]) -> None:
         """The output channels a mic channel can play through: (slug, name)."""
@@ -471,6 +539,7 @@ class ChannelPanel(QGroupBox):
         self.echo_cancel.setChecked(channel is not None and channel.is_input and channel.echo_cancel)
         self.echo_cancel.blockSignals(False)
 
+        self._fill_ducks()
         self._show_hint()
 
     def _show_hint(self) -> None:

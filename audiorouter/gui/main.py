@@ -452,6 +452,7 @@ class MainWindow(QMainWindow):
         # A restart replaces the nodes a meter reads; this reopens its taps.
         self.meters.follow(self.selected_channel, self.engine.graph())
         self.channel_panel.set_outputs(self._output_choices())
+        self.channel_panel.set_duck_choices(self._duck_choices(self.selected_channel))
         self.channel_panel.set_devices(
             self._device_choices(status, self.selected_channel)
             + self._group_choices(self.selected_channel),
@@ -597,6 +598,15 @@ class MainWindow(QMainWindow):
             f"color: {(theme.warn if warn else theme.dim).name()};"
         )
 
+    def _duck_choices(self, channel) -> list[tuple[str, str, str]]:
+        """The channels an output could turn down while it plays, and why not."""
+        if channel is None or channel.is_input:
+            return []
+        through = self.engine.config.groups_below(channel)
+        return [(c.slug, c.name, "it plays through this" if c in through else "")
+                for c in self.engine.config.channels
+                if not c.is_input and not c.companion_of and c is not channel]
+
     def _output_choices(self) -> list[tuple[str, str]]:
         return [(c.slug, c.name) for c in self.engine.config.channels
                 if not c.is_input and not c.companion_of]
@@ -618,6 +628,7 @@ class MainWindow(QMainWindow):
         status = getattr(self, "_status", {})
         devices = self._device_choices(status, channel) + self._group_choices(channel)
         self.channel_panel.set_outputs(self._output_choices())
+        self.channel_panel.set_duck_choices(self._duck_choices(channel))
         entry = next(
             (c for c in status.get("channels", [])
              if channel is not None and c["slug"] == channel.slug),

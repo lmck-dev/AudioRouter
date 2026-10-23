@@ -18,7 +18,7 @@ from typing import Any
 from .channels import INPUT, NOWHERE, OUTPUT, ChannelError
 from .config import ConfigError, config_path
 from .effects import EffectError, all_specs, plugin_spec, plugin_specs
-from . import install, native, remote, session
+from . import ducking, install, native, remote, session
 from .engine import AutoRouter, DaemonRecord, Engine, EngineError, MoveResult, daemon_pid
 from .pwgraph import PwError
 from .routing import MATCH_FIELDS, RoutingError
@@ -236,6 +236,16 @@ def cmd_channel_set(engine: Engine, args: argparse.Namespace) -> int:
     print(f"{channel.slug}: {channel.name} -> {channel.device or '(default sink)'}"
           f" {'enabled' if channel.enabled else 'disabled'}"
           f"{', echo cancelled' if channel.echo_cancel else ''}")
+    return 0
+
+
+def cmd_channel_duck(engine: Engine, args: argparse.Namespace) -> int:
+    ducks = [] if args.channels == ["off"] else args.channels
+    channel = engine.set_ducks(args.slug, ducks, args.db)
+    if channel.ducks:
+        print(f"{channel.slug}: turns {', '.join(channel.ducks)} down {channel.duck_db:g} dB while it plays")
+    else:
+        print(f"{channel.slug}: turns nothing down")
     return 0
 
 
@@ -459,14 +469,16 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     code = 0
     notifier = session.EchoCancelNotifier()
     phone = remote.Remote(engine)
+    ducker = ducking.Ducker(engine, log=lambda line: print(line, flush=True))
 
     def _graph(graph) -> None:
         notifier.check(engine.config.channels, graph)
         phone.notify(graph)
+        ducker.use_graph(graph)
 
     switch = remote.RemoteSwitch(phone, log=lambda line: print(line, flush=True))
     with DaemonRecord(), AutoRouter(engine, on_move=_report, follow_config=True,
-                                    on_graph=_graph) as auto:
+                                    on_graph=_graph) as auto, ducker:
         phone.on_sent = auto.remember
         print("watching for new streams; Ctrl-C to stop", flush=True)
         switch.check()
@@ -596,6 +608,11 @@ def build_parser() -> argparse.ArgumentParser:
     change.add_argument("--echo-cancel", choices=("on", "off"), default=None,
                         help="input: remove what the speakers play from the mic")
     change.set_defaults(func=cmd_channel_set)
+    duck = channel.add_parser("duck", help="turn other channels down while this one plays")
+    duck.add_argument("slug")
+    duck.add_argument("channels", nargs="+", help="output channels to turn down, or 'off'")
+    duck.add_argument("--db", type=float, help="how far down (default 15)")
+    duck.set_defaults(func=cmd_channel_duck)
     volume = channel.add_parser("volume", help="set a running channel's volume")
     volume.add_argument("slug")
     volume.add_argument("level", help="percentage, e.g. 80 or 80%% (up to 150)")

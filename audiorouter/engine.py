@@ -312,6 +312,30 @@ class Engine:
         self.save()
         return channel
 
+    def set_ducks(self, slug: str, ducks: list[str], db: float | None = None) -> Channel:
+        """Make an output channel turn others down while it plays ([] stops it).
+
+        Which channels carry a duck stage is a shape change (they restart on
+        the next apply); the amount alone is a live change.
+        """
+        channel = self.config.channel(slug)
+        if channel.is_input or channel.companion_of:
+            raise EngineError(f"channel {slug!r} is not an output; only outputs turn others down")
+        for other in ducks:
+            target = self.config.channel(other)
+            if target.is_input or target.companion_of:
+                raise EngineError(f"channel {other!r} is not an output, so it cannot be turned down")
+            if target in self.config.groups_below(channel):
+                raise EngineError(f"{channel.name} plays through {target.name}; "
+                                  "turning it down would turn the voice down too")
+        channel.ducks = list(ducks)
+        if db is not None:
+            channel.duck_db = db
+        channel.__post_init__()   # the same cleaning a loaded channel gets
+        self.config.update_ducking()
+        self.save()
+        return channel
+
     def set_echo_cancel(self, slug: str, on: bool) -> Channel:
         """Subtract what the speakers play from an input channel's mic. A shape
         change: the channel restarts on the next apply."""

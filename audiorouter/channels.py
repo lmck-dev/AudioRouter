@@ -48,6 +48,10 @@ KINDS = (OUTPUT, INPUT)
 #: An output channel's device when it should play nowhere - a virtual cable
 #: that only recording apps hear.
 NOWHERE = "@nowhere"
+#: How far a priority channel turns the others down (`Channel.duck_db`).
+DEFAULT_DUCK_DB = 15.0
+MIN_DUCK_DB = 3.0
+MAX_DUCK_DB = 40.0
 
 #: WebRTC echo cancellation, from pipewire-libs (every PipeWire install has it).
 AEC_LIBRARY = "aec/libspa-aec-webrtc"
@@ -293,6 +297,14 @@ class Channel:
     #: into it, apps can play into it too, and it offers the sum to recording
     #: apps under the name they always used for the mic (`ar_<input slug>`).
     companion_of: str = ""
+    #: Outputs only: the output channels this one turns down while it plays
+    #: (owner, 23 Oct 2026 - the wake word's voice over a game), and by how
+    #: much. Watched by `ducking.Ducker` in the login service.
+    ducks: list[str] = field(default_factory=list)
+    duck_db: float = DEFAULT_DUCK_DB
+    #: How far this channel is turned down while a priority channel plays; 0
+    #: renders no duck stage. Worked out by `Config.update_ducking`, never saved.
+    ducked_db: float = field(default=0.0, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         validate_slug(self.slug)
@@ -320,6 +332,10 @@ class Channel:
             if self.device == NOWHERE:
                 # Playing nowhere only makes sense as a virtual cable.
                 self.recordable = True
+        self.duck_db = max(MIN_DUCK_DB, min(MAX_DUCK_DB, float(self.duck_db)))
+        self.ducks = [str(slug) for slug in dict.fromkeys(self.ducks) if slug and slug != self.slug]
+        if self.kind == INPUT or self.companion_of:
+            self.ducks = []
 
     @property
     def is_input(self) -> bool:
@@ -427,6 +443,9 @@ class Channel:
             data["echo_cancel"] = self.echo_cancel
         else:
             data["recordable"] = self.recordable
+            if self.ducks:
+                data["ducks"] = list(self.ducks)
+                data["duck_db"] = self.duck_db
             if self.companion_of:
                 data["companion_of"] = self.companion_of
         return data
@@ -448,13 +467,15 @@ class Channel:
             pan=max(-1.0, min(1.0, float(data.get("pan", 0.0)))),
             solo=bool(data.get("solo", False)),
             companion_of=str(data.get("companion_of", "")),
+            ducks=[str(slug) for slug in (data.get("ducks") or [])],
+            duck_db=float(data.get("duck_db", DEFAULT_DUCK_DB)),
         )
 
     # -- rendering --------------------------------------------------------
 
     def _chain(self):
         return render_chain(self.effects, taps=taps_available(), fader_db=self.fader_db,
-                            pan=self.pan, cut=self.solo_cut)
+                            pan=self.pan, cut=self.solo_cut, duck_db=self.ducked_db)
 
     def render_config(self) -> dict[str, Any]:
         """The complete conf structure for this channel's host process."""
