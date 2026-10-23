@@ -263,7 +263,7 @@ cannot switch profiles yet (owner: later).
 
 ## Turning down (ducking, owner 23 Oct 2026)
 
-An output's `ducks` lists channels it turns down by `duck_db` while it plays
+An output's `ducks` lists channels it turns down (at most `duck_db`) while it plays
 (the wake word's TTS Voice over Game). `Config.update_ducking` (run from
 `update_solo`, so every caller gets it) sets `ducked_db` on each target, which
 renders a duck stage after the fader (`effects._duck`): the same in-graph ramp
@@ -274,6 +274,13 @@ the priority channel's FIRST tap file every 30 ms (threshold -50 dBFS, hold
 1.2 s) and never rewrites the conf, so knob diffs never reset it. Lab, 23 Oct:
 0.00 -> -15.00 dB within ~150 ms of the voice, back to 0.00 over 1 s after the
 hold; the service idles at ~0.8% of a core. Needs the RPM rebuilt to be live.
+**Only as far as needed (owner, same day):** the depth is decided at voice
+onset = target's mean square over the last 3 s (last tap, + groups' faders)
+minus (voice level - 10 dB), capped at `duck_db`, skipped under 1 dB. The
+voice level is a running average of its loud blocks. Depth is the live
+`duck_gain:Mult`, changed only while the stage is fully up (it would jump
+mid-fade). Lab: a -9 dB game went down 16.0 dB under a -15 dB voice; a -43 dB
+channel was left alone.
 
 ## Remembering apps (owner ruling 2026-09-12)
 

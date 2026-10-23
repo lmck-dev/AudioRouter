@@ -1,5 +1,6 @@
 """Turning channels down while a priority channel plays (owner, 23 Oct 2026)."""
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from unittest import mock
 from audiorouter import ducking
 from audiorouter.channels import INPUT, Channel
 from audiorouter.config import Config
-from audiorouter.effects import DUCK_TARGET, DUCK_TIME, db_to_linear, duck_controls, render_chain
+from audiorouter.effects import DUCK_DEPTH, DUCK_TARGET, DUCK_TIME, db_to_linear, duck_controls, render_chain
 from audiorouter.engine import EngineError
 from audiorouter.meter import TAP_FILE_SIZE, TAP_MAGIC, TAP_RING, _TAP_ENTRY, _TAP_HEADER
 
@@ -98,74 +99,146 @@ class EngineTest(EngineTestCase):
         self.assertEqual(self.engine.config.channel("phones").ducked_db, 0.0)
 
 
-def tap_file(path, peaks):
-    """A level tap's file holding these peaks as its readings."""
+def tap_file(path, readings):
+    """A level tap's file holding these (peak, mean square) readings."""
     data = bytearray(TAP_FILE_SIZE)
-    _TAP_HEADER.pack_into(data, 0, TAP_MAGIC, len(peaks))
-    for k, peak in enumerate(peaks):
+    _TAP_HEADER.pack_into(data, 0, TAP_MAGIC, len(readings))
+    for k, (peak, ms) in enumerate(readings):
         _TAP_ENTRY.pack_into(data, _TAP_HEADER.size + (k % TAP_RING) * _TAP_ENTRY.size,
-                             peak, peak, 0.0, 0.0)
+                             peak, peak, ms, ms)
     Path(path).write_bytes(bytes(data))
+
+
+def at(db):
+    """A reading of a steady sound at this level (dBFS)."""
+    return (db_to_linear(db) * 1.41, db_to_linear(db) ** 2)
+
+
+class Inline:
+    """An executor that runs each job at once, so a test sees what was sent."""
+
+    def submit(self, job, *args):
+        from concurrent.futures import Future
+        future = Future()
+        future.set_result(job(*args))
+        return future
+
+    def shutdown(self, wait=True):
+        pass
 
 
 class DuckerTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        self.file = str(Path(self.dir.name) / "tap")
-        tap_file(self.file, [])
-        self.config = desk(ducks=["phones"])
+        self.files = {}
+        self.readings = {}
+        for name in ("trigger", "voice", "phones", "game"):
+            self.files[name] = str(Path(self.dir.name) / name)
+            self.readings[name] = []
+            tap_file(self.files[name], [])
+        self.config = desk(ducks=["phones", "speakers"], duck_db=24.0)
+        self.config.channel("speakers").fader_db = 0.0
         self.engine = mock.Mock(config=self.config)
         self.sent = []
         self.ducker = ducking.Ducker(self.engine)
-        def apply(wanted, wait=False):
-            if wanted:
-                self.sent.append(dict(wanted))
-                self.ducker._sent.update({s: (1, d) for s, d in wanted.items()})
-        self.ducker._apply = apply
-        patches = [mock.patch.object(ducking, "trigger_file", return_value=self.file),
-                   mock.patch.object(Channel, "pid", return_value=1)]
+
+        def send(channel, values, state):
+            self.sent.append((channel.slug, dict(values)))
+        self.ducker._send = send
+        self.ducker._pool.shutdown()
+        self.ducker._pool = Inline()
+        level = {"voice": "voice", "phones": "phones", "speakers": "game"}
+        patches = [
+            mock.patch.object(ducking, "trigger_file", return_value=self.files["trigger"]),
+            mock.patch.object(ducking, "level_file", side_effect=lambda c: self.files[level[c.slug]]),
+            mock.patch.object(Channel, "pid", return_value=1),
+        ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
 
-    def play(self, *peaks):
-        self.readings = getattr(self, "readings", []) + list(peaks)
-        tap_file(self.file, self.readings)
+    def add(self, name, *readings):
+        self.readings[name].extend(readings)
+        tap_file(self.files[name], self.readings[name])
 
-    def test_down_while_it_plays_and_up_after_the_hold(self):
-        self.ducker.tick(0.0)                # finds the file; its readings are history
-        self.assertEqual(self.sent, [])
-        self.play(0.0, 0.5)
-        self.ducker.tick(0.03)
-        self.assertEqual(self.sent, [{"phones": True}])
-        self.play(0.0)                       # quiet, but within the hold
-        self.ducker.tick(0.03 + ducking.HOLD_S - 0.1)
-        self.assertEqual(len(self.sent), 1)
-        self.ducker.tick(0.03 + ducking.HOLD_S + 0.01)
-        self.assertEqual(self.sent[-1], {"phones": False})
+    def depth(self, slug):
+        """How far the last 'down' sent to this channel goes, in dB (None: none sent)."""
+        for sent, values in reversed(self.sent):
+            if sent == slug and values[DUCK_TARGET] == 1.0:
+                return round(-20 * math.log10(1 + values[DUCK_DEPTH]), 1)
+        return None
 
-    def test_a_file_that_appears_later_counts_from_its_first_reading(self):
-        Path(self.file).unlink()
+    def speak(self, now, voice_db=-20.0):
+        self.add("trigger", at(voice_db))
+        self.add("voice", at(voice_db))
+        self.ducker.tick(now)
+
+    def test_a_loud_channel_goes_down_just_enough_and_a_quiet_one_not_at_all(self):
+        self.ducker.tick(0.0)                       # finds the files
+        self.add("game", *[at(-12.0)] * 20)         # loud: 8 dB over the voice
+        self.add("phones", *[at(-40.0)] * 20)       # already 20 dB under it
+        self.ducker.tick(1.0)
+        self.speak(1.03)
+        # Down to 10 dB under a -20 dB voice: -12 -> -30 is 18 dB.
+        self.assertEqual(self.depth("speakers"), 18.0)
+        self.assertIsNone(self.depth("phones"))
+
+    def test_never_more_than_the_channel_allows(self):
+        self.config.channel("voice").duck_db = 6.0
         self.ducker.tick(0.0)
-        self.play(0.5)
-        self.ducker.tick(0.03)
-        self.assertEqual(self.sent, [{"phones": True}])
+        self.add("game", *[at(-6.0)] * 20)
+        self.ducker.tick(1.0)
+        self.speak(1.03)
+        self.assertEqual(self.depth("speakers"), 6.0)
 
-    def test_quiet_noise_does_not_count(self):
+    def test_the_groups_fader_counts_toward_how_loud_it_is(self):
+        self.config.channel("speakers").fader_db = 0.0
+        self.config.channel("game").ducks = []
+        config = Config(channels=[
+            Channel("speakers", "Speakers", "alsa_output.speakers", fader_db=-10.0),
+            Channel("phones", "Headphones", "ar_speakers"),
+            Channel("voice", "TTS Voice", "", ducks=["phones"]),
+        ])
+        self.engine.config = config
         self.ducker.tick(0.0)
-        self.play(ducking.THRESHOLD / 2)
-        self.ducker.tick(0.03)
-        self.assertEqual(self.sent, [])
+        self.add("phones", *[at(-12.0)] * 20)       # -22 after the speakers' fader
+        self.ducker.tick(1.0)
+        self.speak(1.03)
+        self.assertEqual(self.depth("phones"), 8.0)
+
+    def test_up_after_the_hold(self):
+        self.ducker.tick(0.0)
+        self.add("game", *[at(-12.0)] * 20)
+        self.ducker.tick(1.0)
+        self.speak(1.03)
+        self.add("trigger", at(-200.0))
+        self.ducker.tick(1.03 + ducking.HOLD_S - 0.1)
+        self.assertEqual(self.sent[-1][1][DUCK_TARGET], 1.0)
+        self.ducker.tick(1.03 + ducking.HOLD_S + 0.01)
+        self.assertEqual(self.sent[-1], ("speakers", duck_controls(False)))
+
+    def test_the_voice_level_is_learned(self):
+        self.ducker.tick(0.0)
+        self.add("game", *[at(-12.0)] * 20)
+        self.ducker.tick(1.0)
+        for k in range(60):                          # a quiet voice, -30 dB
+            self.speak(1.03 + k * 0.03, voice_db=-30.0)
+        self.ducker.tick(5.0)                        # quiet, back up
+        self.ducker.tick(5.0 + ducking.DUCK_RELEASE_S + 0.01)
+        self.add("game", *[at(-12.0)] * 20)
+        self.ducker.tick(8.0)
+        self.speak(8.03, voice_db=-30.0)
+        self.assertAlmostEqual(self.depth("speakers"), 24.0, delta=0.1)   # 28 needed, capped
 
     def test_bypass_brings_everything_back(self):
         self.ducker.tick(0.0)
-        self.play(0.5)
-        self.ducker.tick(0.03)
+        self.add("game", *[at(-12.0)] * 20)
+        self.ducker.tick(1.0)
+        self.speak(1.03)
         self.config.bypass = True
-        self.ducker.tick(0.06)
-        self.assertEqual(self.sent[-1], {"phones": False})
-
+        self.ducker.tick(1.06)
+        self.assertEqual(self.sent[-1], ("speakers", duck_controls(False)))
 
 try:
     from .test_gui import QApplication, GuiTestCase

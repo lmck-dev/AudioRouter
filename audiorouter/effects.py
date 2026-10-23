@@ -912,11 +912,19 @@ DUCK_RELEASE_S = 1.0
 #: The live controls of a duck stage: down (1) or up (0), the fade's length.
 DUCK_TARGET = "duck_target:Add"
 DUCK_TIME = "duck_time:Add"
+DUCK_DEPTH = "duck_gain:Mult"
 
 
-def duck_controls(down: bool) -> dict[str, float]:
-    """The one live change that turns a ducked channel down, or back up."""
-    return {DUCK_TARGET: 1.0 if down else 0.0, DUCK_TIME: DUCK_ATTACK_S if down else DUCK_RELEASE_S}
+def duck_controls(down: bool, db: float | None = None) -> dict[str, float]:
+    """The one live change that turns a ducked channel down (by `db`), or back up.
+
+    Change the depth only while the stage is fully up: the gain is
+    `1 - fade * depth`, so a new depth mid-fade would jump.
+    """
+    values = {DUCK_TARGET: 1.0 if down else 0.0, DUCK_TIME: DUCK_ATTACK_S if down else DUCK_RELEASE_S}
+    if down and db is not None:
+        values[DUCK_DEPTH] = -round(1.0 - db_to_linear(-db), 6)
+    return values
 
 
 def _duck(nodes: list[dict[str, Any]], links: list[dict[str, str]],

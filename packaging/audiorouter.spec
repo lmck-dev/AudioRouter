@@ -107,7 +107,8 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %changelog
 * Fri Oct 23 2026 lmck-dev <lmck.dev@gmail.com> - 1.5.0-1
 - 1.5.0: Turns down - an output channel can turn other channels down while
-  it plays (a voice assistant over a game), and back up when it stops.
+  it plays (a voice assistant over a game), only as far as each needs to sit
+  under it, and back up when it stops.
 
 * Fri Oct 16 2026 lmck-dev <lmck.dev@gmail.com> - 1.4.0-1
 - 1.4.0: profiles (save the whole setup under a name and switch between

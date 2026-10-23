@@ -244,8 +244,9 @@ class ChannelPanel(QGroupBox):
         self._listen_cancelled = False  # from the engine: the mic plays on its canceller's speakers
         # Priority (owner, 23 Oct 2026): while this channel plays, the ticked
         # channels go down, and come back once it has been quiet a moment.
-        duck_help = ("While this channel plays, the channels ticked here go down by this much, "
-                     "and come back a second after it stops - a voice assistant over a game "
+        duck_help = ("While this channel plays, the channels ticked here go down just enough to sit "
+                     "under it - a loud game a lot, a quiet one not at all - never more than this, "
+                     "and come back a second after it stops. For a voice assistant over a game "
                      "or music. Needs the login service running.")
         self.ducks = QToolButton(self)
         self.ducks.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -256,7 +257,7 @@ class ChannelPanel(QGroupBox):
         self.duck_db.setRange(MIN_DUCK_DB, MAX_DUCK_DB)
         self.duck_db.setDecimals(0)
         self.duck_db.setSingleStep(1.0)
-        self.duck_db.setPrefix("by ")
+        self.duck_db.setPrefix("up to ")
         self.duck_db.setSuffix(" dB")
         self.duck_db.setToolTip(duck_help)
         self.duck_db.valueChanged.connect(self._duck_db_changed)

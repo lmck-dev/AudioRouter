@@ -48,8 +48,9 @@ KINDS = (OUTPUT, INPUT)
 #: An output channel's device when it should play nowhere - a virtual cable
 #: that only recording apps hear.
 NOWHERE = "@nowhere"
-#: How far a priority channel turns the others down (`Channel.duck_db`).
-DEFAULT_DUCK_DB = 15.0
+#: The most a priority channel turns the others down (`Channel.duck_db`); how
+#: far it actually goes depends on how loud they are (see `ducking`).
+DEFAULT_DUCK_DB = 24.0
 MIN_DUCK_DB = 3.0
 MAX_DUCK_DB = 40.0
 
@@ -298,8 +299,8 @@ class Channel:
     #: apps under the name they always used for the mic (`ar_<input slug>`).
     companion_of: str = ""
     #: Outputs only: the output channels this one turns down while it plays
-    #: (owner, 23 Oct 2026 - the wake word's voice over a game), and by how
-    #: much. Watched by `ducking.Ducker` in the login service.
+    #: (owner, 23 Oct 2026 - the wake word's voice over a game), and the most
+    #: it may turn them down. Watched by `ducking.Ducker` in the login service.
     ducks: list[str] = field(default_factory=list)
     duck_db: float = DEFAULT_DUCK_DB
     #: How far this channel is turned down while a priority channel plays; 0
