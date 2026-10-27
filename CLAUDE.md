@@ -25,6 +25,7 @@ needed, no dependencies).
 | `install.py`  | menu launcher (.desktop) and login service (systemd user unit) |
 | `remote.py`   | phone remote: HTTP + SSE API in the login service, pairing token |
 | `ducking.py`  | turning channels down while a priority channel plays (login service) |
+| `levelling.py` | auto level: evening each channel out before its fader (login service) |
 | `remote_meters.py` | phone meters: taps run only while a phone watches; 15 fps frames |
 | `cli.py`      | argument parsing and printing only - no logic              |
 
@@ -281,6 +282,31 @@ voice level is a running average of its loud blocks. Depth is the live
 `duck_gain:Mult`, changed only while the stage is fully up (it would jump
 mid-fade). Lab: a -9 dB game went down 16.0 dB under a -15 dB voice; a -43 dB
 channel was left alone.
+
+## Auto level (owner, planned 23 Oct, built 27 Oct 2026)
+
+`Channel.auto_level` renders an auto stage (`effects._auto`) between the
+effects and the fader: the duck stage's ramp, but the gain is
+`fade * Mult + Add` and the ramp only runs 0 <-> 1. Each move flips it to the
+other end with Mult/Add chosen so the end it leaves is the old gain and the
+end it reaches the new one (`effects.auto_controls`), so no jump whichever
+value lands first. **A move must have arrived before the next** (`fade_s`).
+`levelling.Leveller` runs in `watch` beside the Ducker: reads the tap just
+before the stage (slot output-1; an empty chain gains `pre_*` copies + tap 0),
+mean square over 5 s of sound (blocks under -50 dBFS are pauses), target
+-20 dBFS, at most one move per second (down 4 dB, up 1.5 dB, start at 3 dB
+off, settle within 0.5), boost <= +10, cut <= -20, peak <= -1 dBFS, frozen
+while `Ducker.is_down`. **Fast cut:** more than 6 dB over the target on the
+last 0.4 s -> straight to the wanted gain over 0.1 s (measured without it: a
++8 dB boost let a loud start out at -0.6 dBFS for a second; with it ~0.15 s).
+The gain lives in `$XDG_RUNTIME_DIR/audiorouter/auto-levels.json`
+(`channels.write/read_auto_levels`): a host renders its start gain from it,
+so a restart does not jump (lab: -19.99 dBFS straight through a restart).
+**`control_changes` never sends `auto_*` keys** - the window's apply would
+undo the service's moves. A new host is detected by pid; the leveller then
+reads the start gain from the running conf. Lab, 27 Oct (null sink): -28 dBFS
+tone -> -20.00 within ~7 s in 1.5 dB steps; held through 4 s of silence; a
+-8 dBFS tone after it cut to -19.8 at once. Needs the RPM rebuilt to be live.
 
 ## Remembering apps (owner ruling 2026-09-12)
 

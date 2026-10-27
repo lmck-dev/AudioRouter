@@ -336,6 +336,19 @@ class Engine:
         self.save()
         return channel
 
+    def set_auto_level(self, slug: str, on: bool) -> Channel:
+        """Even out a channel's loud and quiet sound (`levelling.Leveller`).
+
+        Adding or removing the stage is a shape change: the channel restarts on
+        the next apply. The login service moves the stage from then on.
+        """
+        channel = self.config.channel(slug)
+        if channel.companion_of:
+            raise EngineError(f"channel {slug!r} is a mic's companion; level the mic channel instead")
+        channel.auto_level = bool(on)
+        self.save()
+        return channel
+
     def set_echo_cancel(self, slug: str, on: bool) -> Channel:
         """Subtract what the speakers play from an input channel's mic. A shape
         change: the channel restarts on the next apply."""

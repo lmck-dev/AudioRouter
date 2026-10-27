@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QInputDialog,
@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..channels import MAX_DUCK_DB, MIN_DUCK_DB, NOWHERE, Channel
+from ..channels import MAX_DUCK_DB, MIN_DUCK_DB, NOWHERE, Channel, read_auto_levels
 from .mixer import FADER_TRAVEL, LISTEN_ECHO_HELP, db_to_fader, fader_text, fader_to_db
 from .theme import Theme
 
@@ -308,6 +308,25 @@ class ChannelPanel(QGroupBox):
         # Room where the volume row has Mute, so the two sliders line up.
         fader_row.addSpacing(self.mute.sizeHint().width() + volume_row.spacing())
 
+        # Auto level (owner, 23 Oct 2026): the login service evens the channel
+        # out before the fader; the readout shows where it has it now.
+        self.auto_level = QCheckBox("Even out loud and quiet sound", self)
+        self.auto_level.setToolTip(
+            "AUTO LEVEL: slowly brings this channel to a steady loudness before its fader, "
+            "so a quiet video and a loud game sit together. The fader then sets how loud "
+            "the channel is compared with the others. Pauses are ignored; a sudden loud "
+            "start is cut at once.")
+        self.auto_level.toggled.connect(self._auto_level_toggled)
+        self.auto_now = QLabel("", self)
+        auto_row = QHBoxLayout()
+        auto_row.addWidget(self.auto_level)
+        auto_row.addStretch(1)
+        auto_row.addWidget(self.auto_now)
+        auto_row.addSpacing(self.mute.sizeHint().width() + volume_row.spacing())
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setInterval(1000)
+        self._auto_timer.timeout.connect(self.show_auto_level)
+
         self.volume.setToolTip("TRIM: the channel's volume before its effects - the same "
                                "volume the desktop's sound settings show.")
 
@@ -332,6 +351,7 @@ class ChannelPanel(QGroupBox):
         self.form.addRow(self._section("LEVEL"))
         self.form.addRow("Trim", volume_row)
         self.form.addRow("Fader", fader_row)
+        self.form.addRow("Auto level", auto_row)
         self.form.addRow(self._section("OUT"))
         self.form.addRow("", self.recordable)
         self.form.addRow("Turns down", self.duck_row)
@@ -540,6 +560,11 @@ class ChannelPanel(QGroupBox):
         self.echo_cancel.setChecked(channel is not None and channel.is_input and channel.echo_cancel)
         self.echo_cancel.blockSignals(False)
 
+        self.auto_level.blockSignals(True)
+        self.auto_level.setChecked(channel is not None and channel.auto_level)
+        self.auto_level.blockSignals(False)
+        self.show_auto_level()
+
         self._fill_ducks()
         self._show_hint()
 
@@ -650,6 +675,24 @@ class ChannelPanel(QGroupBox):
             self.channel.echo_cancel = on
             self._sync_options()
             self.changed.emit()
+
+    def _auto_level_toggled(self, on: bool) -> None:
+        if self._loading or self.channel is None:
+            return
+        if on != self.channel.auto_level:
+            self.channel.auto_level = on
+            self.show_auto_level()
+            self.changed.emit()
+
+    def show_auto_level(self) -> None:
+        """Where the login service has the channel's auto level now, while it is on."""
+        on = self.channel is not None and self.channel.auto_level
+        now = read_auto_levels().get(self.channel.slug) if on else None
+        self.auto_now.setText("" if not on else "now 0.0 dB" if now is None else f"now {now:+.1f} dB")
+        if on and not self._auto_timer.isActive():
+            self._auto_timer.start()
+        elif not on:
+            self._auto_timer.stop()
 
     def _volume_moved(self, percent: int) -> None:
         self.volume_label.setText(f"{percent}%")

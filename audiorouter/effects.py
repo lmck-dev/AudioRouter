@@ -814,7 +814,8 @@ def _tap(slot: int, ports: tuple[str, str]) -> tuple[dict[str, Any], list[dict[s
 
 
 def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.0,
-                 pan: float = 0.0, cut: bool = False, duck_db: float = 0.0) -> Chain:
+                 pan: float = 0.0, cut: bool = False, duck_db: float = 0.0,
+                 auto_level: bool = False, auto_db: float = 0.0) -> Chain:
     """Render effects into one series stereo graph.
 
     Every effect sits behind a bypass switch (see `_with_bypass`), so a
@@ -843,12 +844,27 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
 
     With `duck_db`, a duck stage follows the fader (see `_duck`), before the
     output tap, so the mixer's meter shows the channel turned down.
+
+    With `auto_level`, an auto-level stage (see `_auto`) sits between the
+    effects and the fader, starting at `auto_db`. It is measured by the tap
+    just before it, so an empty chain gains an entry tap (slot 0) for it.
     """
     active = _active(effects)
     if not active:
         nodes: list[dict[str, Any]] = []
         links: list[dict[str, str]] = []
-        entry = _fader(nodes, links, None, fader_db, pan, cut)
+        if auto_level:
+            entry = ("pre_l:In", "pre_r:In")
+            source: tuple[str, str] = ("pre_l:Out", "pre_r:Out")
+            for side in SIDES:
+                nodes.append({"type": "builtin", "name": f"pre_{side}", "label": "copy"})
+            if taps:
+                node, tap_links = _tap(0, source)
+                nodes.append(node)
+                links.extend(tap_links)
+            _fader(nodes, links, _auto(nodes, links, source, auto_db), fader_db, pan, cut)
+        else:
+            entry = _fader(nodes, links, None, fader_db, pan, cut)
         outputs = _duck(nodes, links, ("fader_l:Out", "fader_r:Out"), duck_db)
         if taps:
             node, tap_links = _tap(output_slot(effects), outputs)
@@ -881,6 +897,8 @@ def render_chain(effects: list[Effect], taps: bool = False, fader_db: float = 0.
             nodes.append(node)
             links.extend(tap_links)
     assert first_in is not None and previous_out is not None
+    if auto_level:
+        previous_out = _auto(nodes, links, previous_out, auto_db)
     _fader(nodes, links, previous_out, fader_db, pan, cut)
     previous_out = _duck(nodes, links, ("fader_l:Out", "fader_r:Out"), duck_db)
     if taps:
@@ -966,6 +984,73 @@ def _duck(nodes: list[dict[str, Any]], links: list[dict[str, str]],
         nodes.append({"type": "builtin", "name": name, "label": "mult"})
         links.append({"output": port, "input": f"{name}:In 1"})
         links.append({"output": "duck_gain:Out", "input": f"{name}:In 2"})
+        outputs.append(f"{name}:Out")
+    return outputs[0], outputs[1]
+
+
+#: Every control of the auto-level stage starts with this. They belong to the
+#: login service's `levelling.Leveller`: a window's apply never sends them.
+AUTO_PREFIX = "auto_"
+AUTO_TARGET = "auto_target:Add"
+AUTO_TIME = "auto_time:Add"
+AUTO_MULT = "auto_gain:Mult"
+AUTO_ADD = "auto_gain:Add"
+#: How long one auto-level move fades over.
+AUTO_FADE_S = 0.5
+
+
+def auto_controls(fade_at: int, old_db: float, new_db: float,
+                  fade_s: float = AUTO_FADE_S) -> dict[str, float]:
+    """The one live change that moves an auto-level stage from `old_db` to `new_db`.
+
+    The ramp only ever runs between 0 and 1, and the gain is
+    `fade * Mult + Add`. Sitting at `fade_at` (0 or 1) with the gain at
+    `old_db`, the ramp is sent to the other end, with Mult and Add chosen so
+    the end it leaves gives `old_db` and the end it reaches gives `new_db`:
+    no jump, whichever value lands first. The ramp must have arrived before
+    the next move (`fade_s`).
+    """
+    old, new = db_to_linear(old_db), db_to_linear(new_db)
+    if fade_at:
+        mult, add, target = old - new, new, 0.0
+    else:
+        mult, add, target = new - old, old, 1.0
+    return {AUTO_MULT: round(mult, 6), AUTO_ADD: round(add, 6), AUTO_TARGET: target,
+            AUTO_TIME: fade_s}
+
+
+def _auto(nodes: list[dict[str, Any]], links: list[dict[str, str]],
+          source: tuple[str, str], db: float) -> tuple[str, str]:
+    """Append the auto-level stage after `source`, at `db`; returns its outputs.
+
+    The duck stage's ramp (`_duck`) with a free gain line instead of a fixed
+    depth: see `auto_controls`. A host starts with the ramp at 0 and the gain
+    at `db`, the level the service last chose, so a restart does not jump.
+    """
+    nodes.extend([
+        {"type": "builtin", "name": "auto_target", "label": "linear",
+         "control": {"Mult": 0.0, "Add": 0.0}},
+        {"type": "builtin", "name": "auto_from", "label": "linear",
+         "control": {"Mult": -1.0, "Add": 1.0}},
+        {"type": "builtin", "name": "auto_time", "label": "linear",
+         "control": {"Mult": 0.0, "Add": AUTO_FADE_S}},
+        {"type": "builtin", "name": "auto_fade", "label": "ramp"},
+        {"type": "builtin", "name": "auto_gain", "label": "linear",
+         "control": {"Mult": 0.0, "Add": round(db_to_linear(db), 6)}},
+    ])
+    links.extend([
+        {"output": "auto_target:Notify", "input": "auto_fade:Stop"},
+        {"output": "auto_target:Notify", "input": "auto_from:Control"},
+        {"output": "auto_from:Notify", "input": "auto_fade:Start"},
+        {"output": "auto_time:Notify", "input": "auto_fade:Duration (s)"},
+        {"output": "auto_fade:Out", "input": "auto_gain:In"},
+    ])
+    outputs = []
+    for side, port in zip(SIDES, source):
+        name = f"auto_{side}"
+        nodes.append({"type": "builtin", "name": name, "label": "mult"})
+        links.append({"output": port, "input": f"{name}:In 1"})
+        links.append({"output": "auto_gain:Out", "input": f"{name}:In 2"})
         outputs.append(f"{name}:Out")
     return outputs[0], outputs[1]
 

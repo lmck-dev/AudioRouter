@@ -170,6 +170,11 @@ class Ducker:
         self._apply({slug: None for slug, state in self._ducked.items() if state.down}, wait=True)
         self._pool.shutdown(wait=True)
 
+    def is_down(self, slug: str) -> bool:
+        """Is this channel turned down (or on its way back up) right now?"""
+        state = self._ducked.get(slug)
+        return state is not None and (state.down or time.monotonic() - state.up_at < DUCK_RELEASE_S)
+
     def _run(self) -> None:
         while not self._stopping.wait(POLL_S):
             try:

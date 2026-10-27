@@ -61,7 +61,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..channels import NOWHERE, Channel
+from ..channels import NOWHERE, Channel, read_auto_levels
 from ..config import Config, desk_order, kind_label  # noqa: F401 - re-exported for the window
 from ..effects import FADER_MAX_DB, FADER_OFF_DB, EffectError
 from ..meter import Driver, FileLevelReader, LevelReader, Levels, Tap, output_tap
@@ -388,6 +388,9 @@ class ChannelStrip(QFrame):
 
         self.volume_label = caption("")
         self.volume_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Two lines on every strip (fader, and auto level when it is on), so
+        # the faders still line up across the desk.
+        self.volume_label.setMinimumHeight(2 * self.volume_label.fontMetrics().lineSpacing())
         self.level_label = caption("")
         self.level_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -604,7 +607,16 @@ class ChannelStrip(QFrame):
             self.fader.blockSignals(True)
             self.fader.setValue(db_to_fader(self.channel.fader_db))
             self.fader.blockSignals(False)
-        self.volume_label.setText(f"fader {fader_text(self.channel.fader_db)}")
+        self._show_fader_text(self.channel.fader_db)
+
+    def _show_fader_text(self, db: float) -> None:
+        """The fader's dB, and where auto level has the channel while it is on."""
+        text = f"fader {fader_text(db)}"
+        if self.channel.auto_level:
+            text += f"\nauto {read_auto_levels().get(self.channel.slug, 0.0):+.1f} dB"
+        self.volume_label.setText(text)
+        self.volume_label.setToolTip("Auto level is evening this channel out before its fader."
+                                     if self.channel.auto_level else "")
 
     def show_solo(self) -> None:
         """Light S while soloed; say so while another solo cuts this one."""
@@ -673,7 +685,7 @@ class ChannelStrip(QFrame):
 
     def _fader_moved(self, value: int) -> None:
         db = round(fader_to_db(value), 1)
-        self.volume_label.setText(f"fader {fader_text(db)}")
+        self._show_fader_text(db)
         self.fader_changed.emit(self.slug, db)
 
     def _pan_moved(self, value: int) -> None:

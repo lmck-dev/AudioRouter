@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.5.1
+Version:        1.6.0
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -105,6 +105,10 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
+* Tue Oct 27 2026 lmck-dev <lmck.dev@gmail.com> - 1.6.0-1
+- 1.6.0: auto level - a channel can even out its loud and quiet sound
+  before its fader, moved slowly by the login service.
+
 * Fri Oct 23 2026 lmck-dev <lmck.dev@gmail.com> - 1.5.1-1
 - 1.5.1: the measured turn-down (only as far as each channel needs), which
   missed the first 1.5.0 build.

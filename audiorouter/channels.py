@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import lv2
-from .effects import Effect, render_chain, taps_available, unsatisfied_requirements
+from .effects import AUTO_PREFIX, Effect, render_chain, taps_available, unsatisfied_requirements
 from .pwgraph import OWNER_KEY, Graph, Node, PwError, require_tools
 
 #: Prefix on every node we create, so our nodes are recognisable in the graph
@@ -104,6 +104,27 @@ def runtime_dir() -> Path:
     path = Path(base) / "audiorouter"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def auto_levels_path() -> Path:
+    """Where the login service keeps each auto-levelled channel's current gain."""
+    return runtime_dir() / "auto-levels.json"
+
+
+def read_auto_levels() -> dict[str, float]:
+    """Channel slug -> the auto-level gain (dB) the service last chose."""
+    try:
+        data = json.loads(auto_levels_path().read_text())
+        return {str(slug): float(db) for slug, db in data.items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def write_auto_levels(levels: Mapping[str, float]) -> None:
+    path = auto_levels_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({slug: round(db, 2) for slug, db in levels.items()}))
+    os.replace(tmp, path)
 
 
 def running_hosts() -> dict[str, int]:
@@ -306,6 +327,10 @@ class Channel:
     #: How far this channel is turned down while a priority channel plays; 0
     #: renders no duck stage. Worked out by `Config.update_ducking`, never saved.
     ducked_db: float = field(default=0.0, repr=False, compare=False)
+    #: Even out loud and quiet sound (owner, 23 Oct 2026): a hidden gain
+    #: between the effects and the fader, moved slowly by `levelling.Leveller`
+    #: in the login service, so the fader sets the level relative to the rest.
+    auto_level: bool = False
 
     def __post_init__(self) -> None:
         validate_slug(self.slug)
@@ -437,6 +462,8 @@ class Channel:
             "pan": self.pan,
             "solo": self.solo,
         }
+        if self.auto_level:
+            data["auto_level"] = True
         if self.also:
             data["also"] = list(self.also)
         if self.is_input:
@@ -470,13 +497,16 @@ class Channel:
             companion_of=str(data.get("companion_of", "")),
             ducks=[str(slug) for slug in (data.get("ducks") or [])],
             duck_db=float(data.get("duck_db", DEFAULT_DUCK_DB)),
+            auto_level=bool(data.get("auto_level", False)),
         )
 
     # -- rendering --------------------------------------------------------
 
     def _chain(self):
         return render_chain(self.effects, taps=taps_available(), fader_db=self.fader_db,
-                            pan=self.pan, cut=self.solo_cut, duck_db=self.ducked_db)
+                            pan=self.pan, cut=self.solo_cut, duck_db=self.ducked_db,
+                            auto_level=self.auto_level,
+                            auto_db=read_auto_levels().get(self.slug, 0.0) if self.auto_level else 0.0)
 
     def render_config(self) -> dict[str, Any]:
         """The complete conf structure for this channel's host process."""
@@ -681,7 +711,10 @@ class Channel:
             return None
         before = _graph_controls(running)
         after = _graph_controls(wanted)
-        return {key: value for key, value in after.items() if before.get(key) != value}
+        # The auto-level stage belongs to the login service, which moves it
+        # live without rewriting the conf: sending the conf's value would undo it.
+        return {key: value for key, value in after.items()
+                if before.get(key) != value and not key.startswith(AUTO_PREFIX)}
 
     def set_controls(self, values: Mapping[str, float], graph: Graph | None = None) -> None:
         """Change knobs on the running host without restarting it.
