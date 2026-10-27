@@ -454,6 +454,33 @@ class Engine:
             finally:
                 self._graph = None
 
+    def _stream_id(self, stream_id: int) -> int:
+        graph = self._live_graph() or self.graph(refresh=True)
+        if not any(n.id == stream_id for n in [*graph.app_streams(), *graph.app_recorders()]):
+            raise EngineError("that app is no longer playing or recording")
+        return stream_id
+
+    def set_stream_volume(self, stream_id: int, volume: float) -> float:
+        """One app's own volume (1.0 = 100%), before any channel (owner, 26 Oct 2026).
+
+        The same per-app volume the desktop's sound settings show; WirePlumber
+        remembers it for the app, which is how an app can sit at 5% for good.
+        """
+        volume = max(0.0, min(MAX_VOLUME, float(volume)))
+        if not self.dry_run:
+            try:
+                _wpctl("set-volume", str(self._stream_id(stream_id)), f"{volume:.4f}")
+            finally:
+                self._graph = None
+        return volume
+
+    def set_stream_muted(self, stream_id: int, muted: bool) -> None:
+        if not self.dry_run:
+            try:
+                _wpctl("set-mute", str(self._stream_id(stream_id)), "1" if muted else "0")
+            finally:
+                self._graph = None
+
     def adopt_devices(self) -> list[Channel]:
         """Seed an empty configuration with one pass-through channel per device."""
         if self.config.channels:
@@ -1075,6 +1102,9 @@ class Engine:
                     "sink": current.label if current else None,
                     "channel": slug,
                     "rule_channel": self.config.rules.resolve(stream),
+                    # The app's own volume (1.0 = 100%), apart from any channel's.
+                    "volume": stream.volume,
+                    "muted": stream.muted,
                 }
             )
         return {

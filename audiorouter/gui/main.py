@@ -128,6 +128,12 @@ class MainWindow(QMainWindow):
         self._device_volume_timer.setSingleShot(True)
         self._device_volume_timer.setInterval(TUNE_DELAY_MS)
         self._device_volume_timer.timeout.connect(self._write_device_volume)
+        # An app's own volume, written at the same pace as a device's.
+        self._pending_stream_volume: tuple[int, float] | None = None
+        self._stream_volume_timer = QTimer(self)
+        self._stream_volume_timer.setSingleShot(True)
+        self._stream_volume_timer.setInterval(TUNE_DELAY_MS)
+        self._stream_volume_timer.timeout.connect(self._write_stream_volume)
 
         # Settings saved by another process - the phone remote in the login
         # service, or the command line - are adopted here. Every edit made in
@@ -380,6 +386,8 @@ class MainWindow(QMainWindow):
         self.effects_panel.edit_plugin_folders = self._edit_plugin_folders
         self.streams_panel.send_requested.connect(self._send_stream)
         self.streams_panel.remember_requested.connect(self._remember_stream)
+        self.streams_panel.volume_requested.connect(self._set_stream_volume)
+        self.streams_panel.mute_requested.connect(self._set_stream_muted)
         self.forget_button.clicked.connect(self._forget_rule)
 
     # -- state -------------------------------------------------------------
@@ -744,6 +752,29 @@ class MainWindow(QMainWindow):
         self._pending_device_volume = None
         try:
             self.engine.set_device_volume(name, volume)
+        except USER_ERRORS as exc:
+            self._set_status(str(exc), warn=True)
+
+    def _set_stream_volume(self, stream_id: int, volume: float) -> None:
+        if self._pending_stream_volume is not None and self._pending_stream_volume[0] != stream_id:
+            self._write_stream_volume()
+        self._pending_stream_volume = (stream_id, volume)
+        if not self._stream_volume_timer.isActive():
+            self._stream_volume_timer.start()
+
+    def _write_stream_volume(self) -> None:
+        if self._pending_stream_volume is None:
+            return
+        stream_id, volume = self._pending_stream_volume
+        self._pending_stream_volume = None
+        try:
+            self.engine.set_stream_volume(stream_id, volume)
+        except USER_ERRORS as exc:
+            self._set_status(str(exc), warn=True)
+
+    def _set_stream_muted(self, stream_id: int, muted: bool) -> None:
+        try:
+            self.engine.set_stream_muted(stream_id, muted)
         except USER_ERRORS as exc:
             self._set_status(str(exc), warn=True)
 

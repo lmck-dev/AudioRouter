@@ -308,6 +308,18 @@ reads the start gain from the running conf. Lab, 27 Oct (null sink): -28 dBFS
 tone -> -20.00 within ~7 s in 1.5 dB steps; held through 4 s of silence; a
 -8 dBFS tone after it cut to -19.8 at once. Needs the RPM rebuilt to be live.
 
+## App volume (owner, asked 26 Oct, built 27 Oct 2026)
+
+Playing now's **App volume** column (`streams_panel.VolumeCell`) is the
+stream node's own volume/mute (`Node.volume`, cube root like every slider),
+set with `wpctl` on the stream id (`Engine.set_stream_volume/_muted`, which
+refuse anything not an app stream or recorder). WirePlumber's restore-stream
+keeps it per app - Chrome sat at 5% (-78 dB) for days and read as "no levels"
+in the mixer; under 25% or muted is shown in `theme.warn`. A refresh keeps a
+row's cell when it is the same stream id and ignores the graph for
+`VOLUME_SETTLE_S` after a local move, so a slider in use is never yanked.
+Lab, 27 Oct: 50% = -18.06 dB, mute silent, back to 100% exact.
+
 ## Remembering apps (owner ruling 2026-09-12)
 
 **The first "Send to" for an app that no rule covers remembers it** on that

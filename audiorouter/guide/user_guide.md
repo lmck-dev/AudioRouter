@@ -110,6 +110,8 @@ The **Playing now** panel at the bottom lists every app making sound and the cha
 
 A mic channel appears in Send to as **"Name (into the mic)"**. Sending an app there mixes it into that microphone, so a call hears it.
 
+**App volume** is the app's own volume, before any channel: the same per-app volume the desktop's sound settings show. **M** mutes just that app. The desktop remembers it for the app, so an app turned down once stays quiet everywhere you send it. A volume under 25% or a muted app shows in the warning colour, which is the first thing to check when an app plays but a channel's meter barely moves.
+
 | Button or list | What it does |
 | --- | --- |
 | **Always send this app here** | Makes the selected app's current channel its remembered channel, replacing an older choice. |

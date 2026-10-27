@@ -5,9 +5,16 @@ with a menu to send it somewhere else, and every application recording (Audacity
 OBS, a call), with a menu to choose which channel it hears. Moving something here takes effect
 immediately, because a routing change the user cannot hear straight away is
 indistinguishable from one that did not work.
+
+Each row also shows the app's OWN volume (owner, 26 Oct 2026): the per-app
+volume the desktop keeps, before any channel. WirePlumber remembers it per
+app, so an app left at 5% stays quiet for good and looked like "no levels"
+in the mixer; a low or muted app is marked so that cannot hide again.
 """
 
 from __future__ import annotations
+
+import time
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -18,6 +25,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QSlider,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -26,11 +34,82 @@ from PyQt6.QtWidgets import (
 )
 
 from ..engine import Engine
+from .mixer import VOLUME_SETTLE_S
 from .theme import Theme
 
 UNROUTED = "-"
 #: On a row's name item: True for an app recording rather than playing.
 RECORDING_ROLE = Qt.ItemDataRole.UserRole + 1
+#: Below this an app's own volume is marked as low (25% is -36 dB).
+LOW_VOLUME = 0.25
+SEND_COLUMN = 2
+VOLUME_COLUMN = 3
+
+
+class VolumeCell(QWidget):
+    """One app's own volume: a slider, the percentage, and a mute button."""
+
+    volume_changed = pyqtSignal(int, float)
+    mute_toggled = pyqtSignal(int, bool)
+
+    def __init__(self, stream_id: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.stream_id = stream_id
+        self._last_local_edit = 0.0
+        self.slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.slider.setRange(0, 100)
+        self.slider.setPageStep(10)
+        self.slider.setFixedWidth(110)
+        self.slider.valueChanged.connect(self._moved)
+        self.label = QLabel("", self)
+        self.label.setMinimumWidth(self.label.fontMetrics().horizontalAdvance("muted 100%") + 4)
+        self.mute = QToolButton(self)
+        self.mute.setText("M")
+        self.mute.setCheckable(True)
+        self.mute.setToolTip("Mute this app")
+        self.mute.toggled.connect(self._mute_toggled)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.addWidget(self.slider)
+        layout.addWidget(self.label)
+        layout.addWidget(self.mute)
+
+    def show_volume(self, volume: float | None, muted: bool | None) -> None:
+        """Show the graph's value, unless the user is moving it right now."""
+        self.setEnabled(volume is not None)
+        if volume is None:
+            self.label.setText("")
+            return
+        if self.slider.isSliderDown() or time.monotonic() - self._last_local_edit < VOLUME_SETTLE_S:
+            return
+        percent = round(volume * 100)
+        self.slider.blockSignals(True)
+        self.slider.setMaximum(150 if percent > 100 else 100)
+        self.slider.setValue(percent)
+        self.slider.blockSignals(False)
+        self.mute.blockSignals(True)
+        self.mute.setChecked(bool(muted))
+        self.mute.blockSignals(False)
+        self._show_label(percent, bool(muted))
+
+    def _show_label(self, percent: int, muted: bool) -> None:
+        low = muted or percent < LOW_VOLUME * 100
+        self.label.setText(f"muted {percent}%" if muted else f"{percent}%")
+        self.label.setStyleSheet(Theme(self).css(Theme(self).warn) if low else "")
+        self.setToolTip(
+            "This app's own volume is turned down, before any channel - it plays quietly "
+            "wherever you send it. The desktop remembers it for the app." if low else
+            "This app's own volume, before any channel. The desktop remembers it for the app.")
+
+    def _moved(self, percent: int) -> None:
+        self._last_local_edit = time.monotonic()
+        self._show_label(percent, self.mute.isChecked())
+        self.volume_changed.emit(self.stream_id, percent / 100.0)
+
+    def _mute_toggled(self, muted: bool) -> None:
+        self._last_local_edit = time.monotonic()
+        self._show_label(self.slider.value(), muted)
+        self.mute_toggled.emit(self.stream_id, muted)
 
 
 class StreamsPanel(QWidget):
@@ -42,6 +121,9 @@ class StreamsPanel(QWidget):
 
     send_requested = pyqtSignal(int, str)
     remember_requested = pyqtSignal(int, str)
+    #: An app's own volume (1.0 = 100%), and its mute.
+    volume_requested = pyqtSignal(int, float)
+    mute_requested = pyqtSignal(int, bool)
     expanded_changed = pyqtSignal(bool)
 
     def __init__(self, engine: Engine, parent: QWidget | None = None) -> None:
@@ -58,8 +140,8 @@ class StreamsPanel(QWidget):
         self.toggle.toggled.connect(self._toggled)
         self.body = QFrame(self)
 
-        self.table = QTableWidget(0, 3, self.body)
-        self.table.setHorizontalHeaderLabels(["Application", "Doing", "Send to / record from"])
+        self.table = QTableWidget(0, 4, self.body)
+        self.table.setHorizontalHeaderLabels(["Application", "Doing", "Send to / record from", "App volume"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -67,6 +149,7 @@ class StreamsPanel(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
 
         self.empty = QLabel("Nothing is playing or recording.", self.body)
         self.remember = QPushButton("Always send this app here", self.body)
@@ -123,7 +206,7 @@ class StreamsPanel(QWidget):
         so nothing is rebuilt while one is showing its popup.
         """
         for row in range(self.table.rowCount()):
-            widget = self.table.cellWidget(row, 2)
+            widget = self.table.cellWidget(row, SEND_COLUMN)
             if isinstance(widget, QComboBox) and widget.view().isVisible():
                 return
 
@@ -142,11 +225,12 @@ class StreamsPanel(QWidget):
             self.table.setItem(row, 0, name)
             doing = "Recording" if stream.get("recording") else (stream["title"] or "")
             self.table.setItem(row, 1, QTableWidgetItem(doing))
+            self._volume_cell(row, stream)
             combo = self._record_combo(stream, status) if stream.get("recording") else None
             if combo is not None:
                 combo.setProperty("stream_id", stream["id"])
                 combo.activated.connect(self._combo_activated)
-                self.table.setCellWidget(row, 2, combo)
+                self.table.setCellWidget(row, SEND_COLUMN, combo)
                 continue
 
             combo = QComboBox(self)
@@ -166,7 +250,7 @@ class StreamsPanel(QWidget):
             combo.setCurrentIndex(max(0, current))
             combo.setProperty("stream_id", stream["id"])
             combo.activated.connect(self._combo_activated)
-            self.table.setCellWidget(row, 2, combo)
+            self.table.setCellWidget(row, SEND_COLUMN, combo)
         self._rebuilding = False
 
         self.table.setVisible(bool(streams))
@@ -174,6 +258,16 @@ class StreamsPanel(QWidget):
         if selected is not None:
             self._select_stream(selected)
         self._selection_changed()
+
+    def _volume_cell(self, row: int, stream: dict) -> None:
+        """Keep the row's volume cell when it is the same app's, so a slider in use survives."""
+        cell = self.table.cellWidget(row, VOLUME_COLUMN)
+        if not isinstance(cell, VolumeCell) or cell.stream_id != stream["id"]:
+            cell = VolumeCell(stream["id"], self)
+            cell.volume_changed.connect(self.volume_requested)
+            cell.mute_toggled.connect(self.mute_requested)
+            self.table.setCellWidget(row, VOLUME_COLUMN, cell)
+        cell.show_volume(stream.get("volume"), stream.get("muted"))
 
     def _record_combo(self, stream: dict, status: dict) -> QComboBox:
         """Which channel a recording app hears: every mic and recordable channel.
@@ -220,7 +314,7 @@ class StreamsPanel(QWidget):
 
     def _selection_changed(self) -> None:
         row = self.table.currentRow()
-        combo = self.table.cellWidget(row, 2) if row >= 0 else None
+        combo = self.table.cellWidget(row, SEND_COLUMN) if row >= 0 else None
         name = self.table.item(row, 0) if row >= 0 else None
         recording = name is not None and bool(name.data(RECORDING_ROLE))
         self.remember.setText("Always record from here" if recording else "Always send this app here")
@@ -230,7 +324,7 @@ class StreamsPanel(QWidget):
     def _remember(self) -> None:
         stream_id = self._selected_stream_id()
         row = self.table.currentRow()
-        combo = self.table.cellWidget(row, 2) if row >= 0 else None
+        combo = self.table.cellWidget(row, SEND_COLUMN) if row >= 0 else None
         if stream_id is None or not isinstance(combo, QComboBox):
             return
         slug = combo.currentData()
