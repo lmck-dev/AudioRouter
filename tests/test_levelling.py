@@ -246,5 +246,8 @@ if GuiTestCase is not None:
             strip = self.window.mixer.strips["speakers"]
             strip.show_fader()
             self.assertIn("auto -4.0 dB", strip.volume_label.text())
+            self.assertTrue(strip.meter_l.auto and strip.meter_r.auto)
             panel.auto_level.setChecked(False)
             self.assertFalse(self.engine.config.channel("speakers").auto_level)
+            strip.show_fader()
+            self.assertFalse(strip.meter_l.auto)

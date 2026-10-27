@@ -130,12 +130,13 @@ RED_FROM_DB = -6.0
 SEGMENT_PX = 4.0
 
 
-def zone_colour(theme: Theme, db: float) -> QColor:
+def zone_colour(theme: Theme, db: float, auto: bool = False) -> QColor:
+    """The zone's colour; `auto` shows the low zone light blue (auto level on)."""
     if db >= RED_FROM_DB:
         return theme.meter_red
     if db >= AMBER_FROM_DB:
         return theme.meter_amber
-    return theme.meter_green
+    return theme.meter_auto if auto else theme.meter_green
 
 
 #: dB marks printed under the meters.
@@ -162,6 +163,8 @@ class LevelBar(QWidget):
         super().__init__(parent)
         self.state = Ballistics()
         self.vertical = vertical
+        #: The channel is auto-levelled: its low zone is light blue, not green.
+        self.auto = False
         if vertical:
             self.setFixedWidth(7)
             self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -193,7 +196,7 @@ class LevelBar(QWidget):
         pitch = bar.width() / count
         for index in range(count):
             middle = (index + 0.5) / count
-            colour = QColor(zone_colour(theme, FLOOR_DB * (1 - middle)))
+            colour = QColor(zone_colour(theme, FLOOR_DB * (1 - middle), self.auto))
             if middle > peak:
                 colour.setAlpha(38)
             elif middle > average:

@@ -28,6 +28,9 @@ class Theme:
         # Level meter zones, as on studio meters. Like warn/good, the palette
         # has no roles for these, so each has a light and a dark value.
         self.meter_green = QColor("#4cc26a") if self.dark else QColor("#2e9e4a")
+        # The low zone of a channel that auto level is evening out (owner,
+        # 27 Oct 2026): light blue instead of green, so it shows at a glance.
+        self.meter_auto = QColor("#4cc9e6") if self.dark else QColor("#1a93b8")
         self.meter_amber = QColor("#f0b429") if self.dark else QColor("#d99a00")
         self.meter_red = QColor("#f0524a") if self.dark else QColor("#d7322b")
 

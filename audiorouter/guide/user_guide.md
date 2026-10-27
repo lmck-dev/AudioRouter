@@ -84,7 +84,7 @@ Every channel is one upright strip, read top to bottom in the order the sound pa
 | **S** | Solo: hear only this channel. Every other channel of the same kind is cut and says **cut by a solo**. A soloed channel's group, and a soloed group's members, keep playing. |
 | **Edit** | Open this channel in the Channels tab. |
 | **Fader** | The level after the effects, from off at the bottom to +10 dB at the top; 0 dB is unchanged. With auto level on, a second line under it shows where auto level has the channel now, such as **auto +3.5 dB**. |
-| **Meter** | The channel's output level, left and right: green to -18 dB, amber to -6 dB, red above. **CLIP** means it hit the top. |
+| **Meter** | The channel's output level, left and right: green to -18 dB, amber to -6 dB, red above. **CLIP** means it hit the top. On a channel with auto level on, the green part is light blue instead. |
 
 TRIM and the fader do different jobs. TRIM sets how hard the effects are driven; the fader sets the final level without changing how an effect such as a compressor behaves.
 

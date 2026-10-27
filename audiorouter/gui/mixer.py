@@ -617,6 +617,10 @@ class ChannelStrip(QFrame):
         self.volume_label.setText(text)
         self.volume_label.setToolTip("Auto level is evening this channel out before its fader."
                                      if self.channel.auto_level else "")
+        for bar in (self.meter_l, self.meter_r):
+            if bar.auto != self.channel.auto_level:
+                bar.auto = self.channel.auto_level
+                bar.update()
 
     def show_solo(self) -> None:
         """Light S while soloed; say so while another solo cuts this one."""
