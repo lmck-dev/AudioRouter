@@ -198,6 +198,18 @@ class Router:
             return
         self._set_metadata(stream.id, target.serial)
 
+    def unlink(self, link_id: int) -> None:
+        """Remove one link between two nodes."""
+        if self.dry_run:
+            return
+        subprocess.run(
+            ["pw-cli", "destroy", str(int(link_id))],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
     def clear(self, stream: Node) -> None:
         """Forget a pinned target so the stream follows the default sink again."""
         if self.dry_run:

@@ -911,7 +911,7 @@ class MainWindow(QMainWindow):
         if self._route_after_apply and not self.engine.config.bypass and not self.applier.busy:
             self._route_after_apply = False
             try:
-                self.engine.route()
+                self.engine.back_from_bypass()
             except USER_ERRORS as exc:
                 self._set_status(f"Could not route after bypass: {exc}", warn=True)
         if report.failures:

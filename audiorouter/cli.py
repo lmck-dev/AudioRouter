@@ -423,6 +423,7 @@ def cmd_bypass(engine: Engine, args: argparse.Namespace) -> int:
         print(line)
     if args.state == "off" and report.ok:
         cmd_route(engine, args)  # what played through bypass is on the default output
+        engine.restore_bypass_places()  # and what was on a channel before goes back
     print("bypass is on: every channel stopped, nothing routed" if engine.config.bypass
           else "bypass is off: channels and routing are back")
     return 0 if report.ok else 1

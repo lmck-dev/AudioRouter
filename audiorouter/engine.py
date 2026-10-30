@@ -19,6 +19,7 @@ Two rules shape the whole file:
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import subprocess
 import threading
@@ -978,8 +979,88 @@ class Engine:
         that played through bypass sit on the default output, and the auto
         router has already seen them.
         """
+        if on and not self.config.bypass:
+            self._save_bypass_places()
         self.config.bypass = bool(on)
         self.save()
+
+    # Bypass is a pause, not a reset: what sat on which channel is noted as it
+    # starts and put back as it ends. Playing streams would mostly find their
+    # way back by the rules, but not ones placed by hand, and a recorder that
+    # named its own source (`pw-record --target`, the wake word) is moved to
+    # the raw mic when its channel goes and never moved back (30 Oct 2026).
+
+    def _bypass_places_path(self) -> Path:
+        return (self.path or config_path()).parent / "bypass-places.json"
+
+    def _save_bypass_places(self) -> None:
+        if self.dry_run:
+            return
+        try:
+            graph = self.graph(refresh=True)
+        except PwError:
+            return  # no graph, nothing to remember
+        sinks = {node.id: slug for slug, node in self.sink_map(graph).items()}
+        sources = {node.id: slug for slug, node in self.source_map(graph).items()}
+        places = []
+        for stream in graph.nodes:
+            if stream.is_ours or stream.is_meter:
+                continue
+            if stream.is_output_stream:
+                current, by_id = graph.sink_of_stream(stream.id), sinks
+            elif stream.is_input_stream:
+                current, by_id = graph.source_of_stream(stream.id), sources
+            else:
+                continue
+            if current is not None and current.id in by_id:
+                places.append({"id": stream.id, "name": stream.name, "channel": by_id[current.id],
+                               "record": stream.is_input_stream})
+        path = self._bypass_places_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(places, indent=1))
+
+    def back_from_bypass(self) -> list[MoveResult]:
+        """After bypass is switched off and applied: route what played
+        meanwhile by the rules, then put every stream that was on a channel
+        when bypass started back on it."""
+        results = self.route()
+        self.restore_bypass_places()
+        return results
+
+    def restore_bypass_places(self) -> list[Action]:
+        path = self._bypass_places_path()
+        try:
+            places = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return []
+        path.unlink(missing_ok=True)
+        graph = self.graph(refresh=True)
+        sinks, sources = self.sink_map(graph), self.source_map(graph)
+        done: list[Action] = []
+        for place in places:
+            stream = graph.node(int(place.get("id", -1)))
+            if stream is None or stream.name != place.get("name") or stream.is_ours:
+                continue  # gone, or the id now belongs to something else
+            slug = str(place.get("channel"))
+            if place.get("record"):
+                target, current = sources.get(slug), graph.source_of_stream(stream.id)
+            else:
+                target, current = sinks.get(slug), graph.sink_of_stream(stream.id)
+            if target is None or (current is not None and current.id == target.id):
+                continue
+            try:
+                self.router.move(stream, target)
+                if place.get("record") and current is not None and not stream.is_app_recorder:
+                    # A recorder that named its own source keeps the links it
+                    # had when moved, so it would hear both: drop the old ones.
+                    for link in graph.links():
+                        if link.input_node == stream.id and link.output_node == current.id:
+                            self.router.unlink(link.id)
+                done.append(Action("restore", slug, stream.app_name))
+            except Exception:  # noqa: BLE001 - a stream that went away is fine
+                continue
+        self._graph = None
+        return done
 
     def stop_all(self) -> ApplyReport:
         """Tear down every channel process we know about, configured or not."""

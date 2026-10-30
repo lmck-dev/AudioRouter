@@ -358,7 +358,7 @@ class Remote:
         self.engine.apply()
         if route_after and not self.engine.config.bypass:
             # Back from bypass: what played meanwhile sits on the default output.
-            self.engine.route()
+            self.engine.back_from_bypass()
 
     def _channel(self, body: dict[str, Any]):
         self.engine.reload_if_changed()

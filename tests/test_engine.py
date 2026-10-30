@@ -720,3 +720,53 @@ class ListenCancelledTest(EngineTestCase):
         entries = {c["slug"]: c for c in self.engine.status(refresh=False)["channels"]}
         self.assertTrue(entries["mic"]["listen_cancelled"])
         self.assertFalse(entries["speakers"]["listen_cancelled"])
+
+
+class BypassPlacesTest(EngineTestCase):
+    """Bypass is a pause: what was on a channel goes back to it afterwards."""
+
+    def graph(self, on_channels: bool) -> Graph:
+        # Firefox placed on the speakers channel by hand; the wake word's
+        # recorder, which named its own source, on the Teams recording.
+        firefox_to, wake_from = (51, 53) if on_channels else (50, 52)
+        return Graph([
+            fakes.sink(50, "alsa_output.a", serial=500),
+            fakes.sink(51, "ar_speakers", serial=510, hardware=False, **{"audiorouter.channel": "speakers"}),
+            fakes.node(52, "alsa_input.a", "Audio/Source", serial=520),
+            fakes.node(53, "ar_teams_rec", "Audio/Source", serial=530, **{"audiorouter.channel": "teams"}),
+            fakes.stream(60, "firefox", serial=600),
+            fakes.node(72, "wakeword-mic", "Stream/Input/Audio", serial=720,
+                       **{"application.name": "pw-record", "target.object": "ar_teams_rec"}),
+            fakes.port(80, 60, "out"),
+            fakes.port(81, firefox_to, "in"),
+            fakes.link(90, 80, 81),
+            fakes.port(82, wake_from, "out"),
+            fakes.port(83, 72, "in"),
+            fakes.link(91, 82, 83),
+        ])
+
+    def setUp(self):
+        super().setUp()
+        self.engine.config.add_channel(Channel("teams", "Teams", "alsa_output.a", recordable=True))
+
+    def test_streams_go_back_to_their_channels_after_bypass(self):
+        with mock.patch.object(Graph, "snapshot", staticmethod(lambda: self.graph(True))):
+            self.engine.set_bypass(True)
+        with mock.patch.object(Graph, "snapshot", staticmethod(lambda: self.graph(False))), \
+             mock.patch.object(self.engine.router, "move") as move, \
+             mock.patch.object(self.engine.router, "unlink") as unlink:
+            self.engine.set_bypass(False)
+            done = self.engine.restore_bypass_places()
+        moved = {(c.args[0].name, c.args[1].name) for c in move.call_args_list}
+        self.assertEqual(moved, {("firefox", "ar_speakers"), ("wakeword-mic", "ar_teams_rec")})
+        unlink.assert_called_once_with(91)  # the pinned recorder's link to the raw mic
+        self.assertEqual(len(done), 2)
+        self.assertEqual(self.engine.restore_bypass_places(), [])  # used once
+
+    def test_nothing_moves_when_everything_is_already_back(self):
+        with mock.patch.object(Graph, "snapshot", staticmethod(lambda: self.graph(True))):
+            self.engine.set_bypass(True)
+            self.engine.set_bypass(False)
+            with mock.patch.object(self.engine.router, "move") as move:
+                self.engine.restore_bypass_places()
+        move.assert_not_called()
