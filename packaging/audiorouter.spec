@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.7.0
+Version:        1.7.1
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -105,6 +105,11 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
+* Fri Oct 30 2026 lmck-dev <lmck.dev@gmail.com> - 1.7.1-1
+- 1.7.1: Bypass is a pause: every app and recorder that was on a channel
+  goes back to it when Bypass is switched off, including ones placed by
+  hand and recorders that picked their own source.
+
 * Tue Oct 27 2026 lmck-dev <lmck.dev@gmail.com> - 1.7.0-1
 - 1.7.0: each app's own volume and mute in Playing now, with a quiet or
   muted app marked.
