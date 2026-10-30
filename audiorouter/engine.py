@@ -1027,6 +1027,22 @@ class Engine:
         self.restore_bypass_places()
         return results
 
+    def _relink(self, graph: Graph, stream: Node, source: Node, old: Node | None) -> bool:
+        """Connect a recorder that named its own source straight to `source`,
+        then cut its links to `old`. A move does nothing for such a stream
+        (measured 30 Oct 2026: the wake word was left with no links at all)."""
+        outs, ins = graph.ports(source.id, "out"), graph.ports(stream.id, "in")
+        if not outs or not ins:
+            return False
+        for channel, in_port in ins.items():
+            out_port = outs.get(channel) or outs.get("MONO") or next(iter(outs.values()))
+            self.router.link(out_port, in_port)
+        if old is not None:
+            for link in graph.links():
+                if link.input_node == stream.id and link.output_node == old.id:
+                    self.router.unlink(link.id)
+        return True
+
     def restore_bypass_places(self) -> list[Action]:
         path = self._bypass_places_path()
         try:
@@ -1049,13 +1065,11 @@ class Engine:
             if target is None or (current is not None and current.id == target.id):
                 continue
             try:
-                self.router.move(stream, target)
-                if place.get("record") and current is not None and not stream.is_app_recorder:
-                    # A recorder that named its own source keeps the links it
-                    # had when moved, so it would hear both: drop the old ones.
-                    for link in graph.links():
-                        if link.input_node == stream.id and link.output_node == current.id:
-                            self.router.unlink(link.id)
+                if place.get("record") and not stream.is_app_recorder:
+                    if not self._relink(graph, stream, target, current):
+                        continue
+                else:
+                    self.router.move(stream, target)
                 done.append(Action("restore", slug, stream.app_name))
             except Exception:  # noqa: BLE001 - a stream that went away is fine
                 continue

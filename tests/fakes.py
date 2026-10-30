@@ -44,12 +44,11 @@ def stream(node_id: int, name: str, **kwargs: Any) -> dict[str, Any]:
     return node(node_id, name, "Stream/Output/Audio", **kwargs)
 
 
-def port(port_id: int, node_id: int, direction: str = "out") -> dict[str, Any]:
-    return {
-        "id": port_id,
-        "type": PORT,
-        "info": {"props": {"node.id": node_id, "port.direction": direction}},
-    }
+def port(port_id: int, node_id: int, direction: str = "out", channel: str | None = None) -> dict[str, Any]:
+    props: dict[str, Any] = {"node.id": node_id, "port.direction": direction}
+    if channel is not None:
+        props["audio.channel"] = channel
+    return {"id": port_id, "type": PORT, "info": {"props": props}}
 
 
 def link(link_id: int, output_port: int, input_port: int) -> dict[str, Any]:

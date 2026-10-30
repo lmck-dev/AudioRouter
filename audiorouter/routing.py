@@ -198,6 +198,18 @@ class Router:
             return
         self._set_metadata(stream.id, target.serial)
 
+    def link(self, output_port: int, input_port: int) -> None:
+        """Connect two ports directly, as pw-link does."""
+        if self.dry_run:
+            return
+        subprocess.run(
+            ["pw-link", str(int(output_port)), str(int(input_port))],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
     def unlink(self, link_id: int) -> None:
         """Remove one link between two nodes."""
         if self.dry_run:

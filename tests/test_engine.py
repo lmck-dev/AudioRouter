@@ -743,6 +743,7 @@ class BypassPlacesTest(EngineTestCase):
             fakes.port(82, wake_from, "out"),
             fakes.port(83, 72, "in"),
             fakes.link(91, 82, 83),
+            fakes.port(84, 53, "out"),
         ])
 
     def setUp(self):
@@ -754,12 +755,16 @@ class BypassPlacesTest(EngineTestCase):
             self.engine.set_bypass(True)
         with mock.patch.object(Graph, "snapshot", staticmethod(lambda: self.graph(False))), \
              mock.patch.object(self.engine.router, "move") as move, \
+             mock.patch.object(self.engine.router, "link") as link, \
              mock.patch.object(self.engine.router, "unlink") as unlink:
             self.engine.set_bypass(False)
             done = self.engine.restore_bypass_places()
         moved = {(c.args[0].name, c.args[1].name) for c in move.call_args_list}
-        self.assertEqual(moved, {("firefox", "ar_speakers"), ("wakeword-mic", "ar_teams_rec")})
-        unlink.assert_called_once_with(91)  # the pinned recorder's link to the raw mic
+        self.assertEqual(moved, {("firefox", "ar_speakers")})
+        # The recorder that named its own source ignores a move: it is linked
+        # straight to the channel, then cut from the raw mic.
+        link.assert_called_once_with(84, 83)
+        unlink.assert_called_once_with(91)
         self.assertEqual(len(done), 2)
         self.assertEqual(self.engine.restore_bypass_places(), [])  # used once
 

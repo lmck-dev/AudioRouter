@@ -386,6 +386,17 @@ class Graph:
                 owners[int(obj["id"])] = int(node_id)
         return owners
 
+    def ports(self, node_id: int, direction: str) -> dict[str, int]:
+        """A node's ports in one direction ("in" or "out"), as channel -> port
+        id (FL, FR, MONO). Monitor ports are left out."""
+        found: dict[str, int] = {}
+        for obj in self._of_type(_PORT):
+            props = (obj.get("info") or {}).get("props") or {}
+            if (props.get("node.id") == int(node_id) and props.get("port.direction") == direction
+                    and not _truthy(props.get("port.monitor"))):
+                found[str(props.get("audio.channel") or "MONO")] = int(obj["id"])
+        return found
+
     def links(self) -> list[Link]:
         owners = self._port_owners()
         result = []
