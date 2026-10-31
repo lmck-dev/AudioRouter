@@ -345,3 +345,10 @@ A change is not finished until all of these hold. Report any you could not do:
 - GUI changes were rendered and looked at
 - If the owner is to try it: the RPM was rebuilt and reinstalled, because the
   login service runs the package
+
+- **PipeWire open-file warning** (31 Oct 2026): the daemon hit its 1024 soft
+  limit when OBS started ~18 h into uptime and went silent until a reboot.
+  `session.HandleNotifier` (login service only) counts `/proc/<daemon>/fd`
+  once a minute and, at 80% of the soft limit, logs the count by kind
+  (memory/wakeup/socket/other) and shows the "Restart the sound system"
+  notification, once per daemon pid. Fresh-boot baseline: ~284 files.

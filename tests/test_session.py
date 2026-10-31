@@ -105,3 +105,49 @@ class FixTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandleWarningTest(unittest.TestCase):
+    """PipeWire nearing its open-file limit (it went silent at 1024 on 31 Oct 2026)."""
+
+    def notifier(self, files, limit=1000):
+        clock = [0.0]
+        lines = []
+        notifier = session.HandleNotifier(log=lines.append, clock=lambda: clock[0])
+        notifier.use_graph(graph())
+        patches = [mock.patch.object(session, "open_files", return_value=files),
+                   mock.patch.object(session, "open_file_limit", return_value=limit),
+                   mock.patch.object(session.shutil, "which", return_value=None)]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return notifier, lines, clock
+
+    def test_well_under_the_limit_says_nothing(self):
+        notifier, lines, _ = self.notifier(["socket:[1]"] * 500)
+        notifier.check()
+        self.assertEqual(lines, [])
+
+    def test_near_the_limit_warns_once_with_the_kinds(self):
+        files = ["/memfd:pipewire-memfd (deleted)"] * 500 + ["anon_inode:[eventfd]"] * 250 + ["socket:[7]"] * 60
+        notifier, lines, clock = self.notifier(files)
+        notifier.check()
+        self.assertEqual(lines, ["PipeWire holds 810 of 1000 open files (memory 500, wakeup 250, socket 60, other 0)"])
+        clock[0] += session.HANDLES_CHECK_S * 2
+        notifier.check()
+        self.assertEqual(len(lines), 1)
+
+    def test_counts_at_most_once_a_minute(self):
+        notifier, _, clock = self.notifier([])
+        notifier.check()
+        with mock.patch.object(session, "open_files") as count:
+            clock[0] += 1.0
+            notifier.check()
+            count.assert_not_called()
+            clock[0] += session.HANDLES_CHECK_S
+            notifier.check()
+            count.assert_called_once_with(PIPEWIRE)
+
+    def test_reads_this_process_for_real(self):
+        self.assertIsNotNone(session.open_files(os.getpid()))
+        self.assertGreater(session.open_file_limit(os.getpid()), 0)

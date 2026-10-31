@@ -112,13 +112,115 @@ class EchoCancelNotifier:
 
     @staticmethod
     def _notify() -> None:
+        notify_with_fix("Echo cancellation stopped working", MESSAGE)
+
+
+def notify_with_fix(title: str, message: str) -> None:
+    """A critical desktop notification whose button restarts the sound system.
+
+    Blocks until the notification closes, so call it from its own thread.
+    """
+    try:
+        chosen = subprocess.run(
+            ["notify-send", "--app-name=Audio Router", "--icon=audio-card", "--urgency=critical",
+             "--action=fix=Restart the sound system", title, message],
+            capture_output=True, text=True,
+        ).stdout.strip()
+    except OSError:
+        return
+    if chosen == "fix":
+        restart_sound_system()
+
+
+# PipeWire running out of open files (31 Oct 2026): the daemon hit its 1024
+# soft limit 2 s after OBS started, ~18 h into uptime, and from then on could
+# not set up links ("Too many open files", "can't import mem"). It kept
+# running, silent, until a reboot. So the login service watches the count and
+# warns well before the limit, with the same Fix button.
+
+#: Warn when the daemon holds this share of its open-file limit.
+HANDLES_WARN_SHARE = 0.8
+
+#: How often the login service counts the daemon's open files.
+HANDLES_CHECK_S = 60.0
+
+
+def open_files(pid: int) -> list[str] | None:
+    """What each of a process's open files points at (None if we cannot look)."""
+    fd_dir = Path(f"/proc/{pid}/fd")
+    try:
+        names = os.listdir(fd_dir)
+    except OSError:
+        return None
+    targets = []
+    for name in names:
         try:
-            chosen = subprocess.run(
-                ["notify-send", "--app-name=Audio Router", "--icon=audio-card", "--urgency=critical",
-                 "--action=fix=Restart the sound system", "Echo cancellation stopped working", MESSAGE],
-                capture_output=True, text=True,
-            ).stdout.strip()
+            targets.append(os.readlink(fd_dir / name))
         except OSError:
+            continue  # closed while we looked
+    return targets
+
+
+def open_file_limit(pid: int) -> int | None:
+    """A process's soft limit on open files (None if unknown or unlimited)."""
+    try:
+        limits = Path(f"/proc/{pid}/limits").read_text()
+    except OSError:
+        return None
+    for line in limits.splitlines():
+        if line.startswith("Max open files"):
+            soft = line[len("Max open files"):].split()[0]
+            return int(soft) if soft.isdigit() else None
+    return None
+
+
+def handle_kinds(targets: Iterable[str]) -> dict[str, int]:
+    """Open files counted by kind, so a log line shows which kind is growing."""
+    kinds = {"memory": 0, "wakeup": 0, "socket": 0, "other": 0}
+    for target in targets:
+        if target.startswith("/memfd:") or target.endswith("(deleted)"):
+            kinds["memory"] += 1
+        elif target in ("anon_inode:[eventfd]", "anon_inode:[timerfd]"):
+            kinds["wakeup"] += 1
+        elif target.startswith("socket:"):
+            kinds["socket"] += 1
+        else:
+            kinds["other"] += 1
+    return kinds
+
+
+class HandleNotifier:
+    """For the login service: one warning per PipeWire daemon nearing its file limit.
+
+    Call `check` every second; it counts at most every `HANDLES_CHECK_S`.
+    """
+
+    def __init__(self, log=print, clock=time.monotonic) -> None:
+        self._log, self._clock = log, clock
+        self._pid: int | None = None
+        self._next = 0.0
+        self._told: set[int] = set()
+
+    def use_graph(self, graph: Graph) -> None:
+        self._pid = graph.daemon_pid()
+
+    def check(self) -> None:
+        now = self._clock()
+        if self._pid is None or now < self._next:
             return
-        if chosen == "fix":
-            restart_sound_system()
+        self._next = now + HANDLES_CHECK_S
+        pid = self._pid
+        targets, limit = open_files(pid), open_file_limit(pid)
+        if targets is None or limit is None or pid in self._told:
+            return
+        if len(targets) < limit * HANDLES_WARN_SHARE:
+            return
+        self._told.add(pid)
+        kinds = ", ".join(f"{k} {n}" for k, n in handle_kinds(targets).items())
+        self._log(f"PipeWire holds {len(targets)} of {limit} open files ({kinds})")
+        if shutil.which("notify-send"):
+            message = (f"PipeWire has {len(targets)} of its {limit} open files in use. At the limit "
+                       "every sound stops until it restarts. Restarting the sound system now "
+                       "stops every sound for a few seconds.")
+            threading.Thread(target=notify_with_fix, args=("Sound system nearly out of files", message),
+                             name="handles-notice", daemon=True).start()
