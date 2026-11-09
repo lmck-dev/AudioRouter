@@ -127,7 +127,7 @@ audiorouter remote off
 ```
 
 The API is described at the top of `audiorouter/remote.py`. The Android app,
-**Audio Router Remote**, is in closed testing on Google Play (October 2026).
+**Audio Router Remote**, is [on Google Play](https://play.google.com/store/apps/details?id=dev.lmck.audiorouterremote).
 
 ## How routing behaves
 

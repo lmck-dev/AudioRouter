@@ -33,6 +33,7 @@ from .theme import Theme
 #: Light margin round the code, in modules: scanners need a quiet zone.
 QUIET_ZONE = 4
 CHECK_INTERVAL_MS = 1000
+PLAY_URL = "https://play.google.com/store/apps/details?id=dev.lmck.audiorouterremote"
 
 
 def qr_matrix(text: str) -> list[list[bool]] | None:
@@ -112,10 +113,12 @@ class PhoneRemoteWindow(QDialog):
         self._good = theme.good.name()
 
         intro = QLabel(
-            "Control the mixer from your phone with the Audio Router Remote app. "
+            "Control the mixer from your phone with the "
+            f"<a href='{PLAY_URL}'>Audio Router Remote</a> app. "
             "Unless you allow other networks below, the phone must be on the same "
             "network as this computer.", self)
         intro.setWordWrap(True)
+        intro.setOpenExternalLinks(True)
         self.enabled = QCheckBox("Let the phone app control this desk", self)
         self.enabled.setChecked(self.settings.enabled)
         self.enabled.toggled.connect(self._toggled)

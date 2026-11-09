@@ -224,7 +224,7 @@ Below the settings, **Levels** shows what goes into and comes out of the channel
 
 ## Phone remote
 
-The **Phone remote** button at the top lets the Audio Router Remote app on an Android phone work the mixer: faders, pan, mute, solo, switching effects on and off and setting their mix, sending apps to channels, and Bypass.
+The **Phone remote** button at the top lets the [Audio Router Remote](https://play.google.com/store/apps/details?id=dev.lmck.audiorouterremote) app on an Android phone work the mixer: faders, pan, mute, solo, switching effects on and off and setting their mix, sending apps to channels, and Bypass.
 
 1. Click **Phone remote** and tick **Let the phone app control this desk**.
 2. In the app, tap **Pair** and scan the code shown.
