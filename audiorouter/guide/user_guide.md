@@ -249,6 +249,7 @@ The phone talks to the background service, so **Keep routing with this window cl
 | A banner naming **EasyEffects** | EasyEffects is running. It moves every app onto its own output, so apps cannot stay on your channels. | Quit EasyEffects, including its background service. |
 | **No output devices - is anything plugged in?** | No speakers or headphones are connected. | Plug a device in or check the desktop's sound settings. |
 | **(not connected)** after a device name | The channel's chosen device is unplugged. The channel keeps that choice rather than switching silently. | Plug it back in, or choose another device. |
+| A mic or channel that went silent after logging out and back in, or after a device came and went | The channel lost its connection to the device. | Nothing: the login service checks every channel's connections every 30 seconds and restarts one that has come undone, without a gap. Without the login service, move any knob on that channel or switch it off and on. |
 | **not running** on a strip | The channel should be on but is not. | Usually clears within a second or two. If it stays, switch the channel off and on in the Channels tab. |
 | **The phone talks to the background service, which is not running** (Phone remote) | The phone remote is on, but nothing is there to answer the phone. | Tick **Keep routing with this window closed**. |
 | **Bypassed** banner across the window | Bypass is on: every channel is stopped and nothing is routed. | Click **Bypassed** to bring everything back. |

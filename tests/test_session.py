@@ -151,3 +151,85 @@ class HandleWarningTest(unittest.TestCase):
     def test_reads_this_process_for_real(self):
         self.assertIsNotNone(session.open_files(os.getpid()))
         self.assertGreater(session.open_file_limit(os.getpid()), 0)
+
+
+# -- self-check (11 Nov 2026) ---------------------------------------------------
+
+HOST = 4242
+STAMP = {"audiorouter.channel": "listener"}
+
+
+def wired_graph(mic_linked=True, old_host_copy=False):
+    """The Listener's echo-canceller mic capture, linked to the mic or not."""
+    objects = [
+        fakes.client(50, HOST), fakes.client(51, 777),
+        fakes.node(1, "alsa_input.mic", "Audio/Source", **{"device.id": 9}),
+        fakes.node(10, "ar_listener_ec_mic", "Stream/Input/Audio", client_id=50, **STAMP),
+        fakes.node(11, "ar_listener_out", "Stream/Output/Audio", client_id=50, **STAMP),
+        fakes.node(12, "ar_listener_mix", "Audio/Sink", client_id=50, **STAMP),
+        fakes.node(13, "tap", "Stream/Input/Audio", client_id=50, **STAMP, **{"audiorouter.meter": "true"}),
+        fakes.port(100, 1, "out"), fakes.port(110, 10, "in"),
+        fakes.port(111, 11, "out"), fakes.port(112, 12, "in"),
+        fakes.link(901, 111, 112),
+    ]
+    if mic_linked:
+        objects.append(fakes.link(900, 100, 110))
+    if old_host_copy:  # the old host during a restart: not ours to judge
+        objects.append(fakes.node(20, "ar_listener_ec_mic", "Stream/Input/Audio", client_id=51, **STAMP))
+    return Graph(objects)
+
+
+class UnwiredTest(unittest.TestCase):
+    def test_a_linked_channel_is_fine_and_meters_never_count(self):
+        self.assertEqual(session.unwired_streams("listener", HOST, wired_graph()), [])
+
+    def test_a_capture_with_no_mic_is_named(self):
+        self.assertEqual(session.unwired_streams("listener", HOST, wired_graph(mic_linked=False)),
+                         ["ar_listener_ec_mic"])
+
+    def test_another_hosts_copy_is_ignored(self):
+        self.assertEqual(session.unwired_streams("listener", HOST, wired_graph(old_host_copy=True)), [])
+
+
+class SelfCheckTest(unittest.TestCase):
+    def make(self, graph, paused=False, enabled=True):
+        self.now = 0.0
+        self.restarted, self.lines = [], []
+        listener = Channel("listener", "Listener", "", kind=INPUT, enabled=enabled)
+        check = session.SelfCheck(lambda: [listener], self.restarted.append, is_paused=lambda: paused,
+                                  log=self.lines.append, clock=lambda: self.now, pid_of=lambda c: HOST)
+        check.use_graph(graph)
+        return check
+
+    def tick(self, check, times=1):
+        for _ in range(times):
+            self.now += session.SELF_CHECK_S
+            check.check()
+
+    def test_broken_on_two_looks_in_a_row_restarts_once_then_waits(self):
+        check = self.make(wired_graph(mic_linked=False))
+        self.tick(check)
+        self.assertEqual(self.restarted, [], "one look could be a link mid-change")
+        self.tick(check)
+        self.assertEqual(self.restarted, ["listener"])
+        self.assertIn("ar_listener_ec_mic not connected", self.lines[0])
+        self.tick(check, 5)
+        self.assertEqual(self.restarted, ["listener"], "no loop when a restart did not help")
+        self.now += session.SELF_CHECK_COOLDOWN_S
+        self.tick(check, 2)
+        self.assertEqual(self.restarted, ["listener", "listener"])
+
+    def test_healthy_paused_or_disabled_is_left_alone(self):
+        for kwargs, graph in (({}, wired_graph()), ({"paused": True}, wired_graph(mic_linked=False)),
+                              ({"enabled": False}, wired_graph(mic_linked=False))):
+            check = self.make(graph, **kwargs)
+            self.tick(check, 3)
+            self.assertEqual(self.restarted, [], kwargs)
+
+    def test_a_failed_restart_is_logged_not_raised(self):
+        check = self.make(wired_graph(mic_linked=False))
+        def boom(slug):
+            raise RuntimeError("no")
+        check._restart = boom
+        self.tick(check, 2)
+        self.assertIn("failed", self.lines[-1])

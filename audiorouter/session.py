@@ -224,3 +224,100 @@ class HandleNotifier:
                        "stops every sound for a few seconds.")
             threading.Thread(target=notify_with_fix, args=("Sound system nearly out of files", message),
                              name="handles-notice", daemon=True).start()
+
+
+# -- self-check: every channel still wired (owner, 11 Nov 2026) ---------------
+#
+# The owner logged out and back in at 10:30 on 11 Nov with the sound system
+# left running. WirePlumber re-created the sound card's nodes for the new
+# login, and the Listener channel's echo canceller (its mic capture is
+# dont-fallback) was left with nothing on its mic end: the wake word heard flat
+# silence until a fader move restarted the channel at 17:19. A channel restart
+# is make-before-break and measured gapless, so this one IS done automatically
+# (unlike the whole-sound-system restart above, which stops every sound).
+
+#: How often the login service looks, and how long a channel must stay broken
+#: (two looks in a row) before it is restarted.
+SELF_CHECK_S = 30.0
+#: At most one repair per channel in this long, so something a restart cannot
+#: fix (no default output for an echo canceller's reference) never loops.
+SELF_CHECK_COOLDOWN_S = 600.0
+
+
+def unwired_streams(slug: str, pid: int | None, graph: Graph) -> list[str]:
+    """A channel's own streams that have nothing on their other end.
+
+    Every stream a channel host creates (its capture from the mic, its
+    playback into a device or another channel, an echo canceller's mic and
+    reference) is linked while the channel works; one with no link at all
+    passes no sound. Only the running host's nodes count: during a restart the
+    old host's copies are on their way out.
+    """
+    linked: set[int] = set()
+    for link in graph.links():
+        linked.add(link.output_node)
+        linked.add(link.input_node)
+    found = []
+    for node in graph.nodes:
+        if node.owned_channel != slug or node.is_meter:
+            continue
+        if not (node.is_input_stream or node.is_output_stream):
+            continue
+        if pid is not None and graph.client_pid(node.client_id) != pid:
+            continue
+        if node.id not in linked:
+            found.append(node.name)
+    return sorted(found)
+
+
+class SelfCheck:
+    """For the login service: restart a channel whose own wiring has come undone.
+
+    Call `use_graph` with every graph update and `check` every second; it looks
+    every `SELF_CHECK_S`. `restart(slug)` does the restart (under whatever lock
+    the caller's other config changes use).
+    """
+
+    def __init__(self, channels, restart, is_paused=lambda: False, log=print,
+                 clock=time.monotonic, pid_of=None) -> None:
+        self._channels = channels          # callable: the current channel list
+        self._restart, self._paused, self._log, self._clock = restart, is_paused, log, clock
+        self._pid_of = pid_of or (lambda channel: channel.pid())
+        self._graph: Graph | None = None
+        self._next = clock() + SELF_CHECK_S
+        self._suspect: dict[str, list[str]] = {}
+        self._repaired: dict[str, float] = {}
+
+    def use_graph(self, graph: Graph) -> None:
+        self._graph = graph
+
+    def check(self) -> None:
+        now = self._clock()
+        if self._graph is None or now < self._next:
+            return
+        self._next = now + SELF_CHECK_S
+        if self._paused():
+            self._suspect.clear()
+            return
+        graph, suspect = self._graph, {}
+        for channel in self._channels():
+            if not channel.enabled:
+                continue
+            pid = self._pid_of(channel)
+            if pid is None:
+                continue
+            loose = unwired_streams(channel.slug, pid, graph)
+            if not loose:
+                continue
+            suspect[channel.slug] = loose
+            if self._suspect.get(channel.slug) != loose:
+                continue  # first sighting: links may be mid-change, look again next time
+            if now - self._repaired.get(channel.slug, -1e12) < SELF_CHECK_COOLDOWN_S:
+                continue
+            self._repaired[channel.slug] = now
+            self._log(f"self-check: {channel.name}: {', '.join(loose)} not connected; restarting it")
+            try:
+                self._restart(channel.slug)
+            except Exception as exc:  # noqa: BLE001 - the service must keep running
+                self._log(f"self-check: restarting {channel.name} failed: {exc}")
+        self._suspect = suspect

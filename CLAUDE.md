@@ -229,6 +229,15 @@ These rules come from those files, and they apply even when you haven't opened t
   mics open. The signal follows the STARTING THREAD, so start meters from a
   thread that lives as long as they should.
 
+- **Self-check** (`session.SelfCheck`, login service, 11 Nov 2026, 1.7.3): every
+  30 s, each running channel's own streams (owner stamp, current host pid,
+  meters excluded) must have a link. Unlinked on two looks in a row -> that
+  channel is restarted (make-before-break), at most once per 10 min per
+  channel. Why: a logout/login with the sound system left running re-created
+  the card's nodes and left Listener's `_ec_mic` capture (dont-fallback)
+  unlinked for 7 h; nothing relinks it. Reproduce safely with `pw-link -d` on
+  that capture's two links (measured: stays unlinked; a restart cures it).
+
 ## Testing audio without hardware
 
 The analog codec on this machine sometimes fails to initialise at boot

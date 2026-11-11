@@ -484,9 +484,18 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     ducker = ducking.Ducker(engine, log=lambda line: print(line, flush=True))
     leveller = levelling.Leveller(engine, is_down=ducker.is_down, log=lambda line: print(line, flush=True))
 
+    def _repair(slug: str) -> None:
+        with phone.lock:  # the phone remote's edits apply under the same lock
+            engine.start_channel(slug)
+
+    selfcheck = session.SelfCheck(lambda: engine.config.channels, _repair,
+                                  is_paused=lambda: engine.config.bypass,
+                                  log=lambda line: print(line, flush=True))
+
     def _graph(graph) -> None:
         notifier.check(engine.config.channels, graph)
         handles.use_graph(graph)
+        selfcheck.use_graph(graph)
         phone.notify(graph)
         ducker.use_graph(graph)
         leveller.use_graph(graph)
@@ -500,6 +509,7 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
         while not stop.wait(1.0):
             switch.check()
             handles.check()
+            selfcheck.check()
             if auto.ended:
                 # Exit non-zero so a service manager starts us again, which
                 # re-applies the channels PipeWire just lost.
