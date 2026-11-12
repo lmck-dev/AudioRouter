@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.7.3
+Version:        1.7.4
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -105,6 +105,11 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
+* Thu Nov 12 2026 lmck-dev <lmck.dev@gmail.com> - 1.7.4-1
+- 1.7.4: the self-check also restarts a channel whose own nodes are gone
+  (at boot the Speakers output loopback was torn down: apps played, nothing
+  came out, and no unlinked stream was left to notice).
+
 * Wed Nov 11 2026 lmck-dev <lmck.dev@gmail.com> - 1.7.3-1
 - 1.7.3: the login service checks every 30 s that each channel's own
   streams are connected and restarts a channel whose wiring came undone

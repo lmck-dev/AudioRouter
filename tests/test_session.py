@@ -1,5 +1,6 @@
 """Noticing a lone WirePlumber restart, which breaks echo cancellation."""
 
+import json
 import os
 import unittest
 from unittest import mock
@@ -179,6 +180,49 @@ def wired_graph(mic_linked=True, old_host_copy=False):
     return Graph(objects)
 
 
+def listening_conf(*extra):
+    """A conf naming the nodes `wired_graph` has, plus any `extra` ones."""
+    modules = [
+        {"name": "libpipewire-module-echo-cancel",
+         "args": {"capture.props": {"node.name": "ar_listener_ec_mic"}}},
+        {"name": "libpipewire-module-filter-chain",
+         "args": {"capture.props": {"node.name": "ar_listener_mix"},
+                  "playback.props": {"node.name": "ar_listener_out"},
+                  "filter.graph": {"nodes": []}}},
+    ]
+    for name in extra:
+        modules.append({"name": "libpipewire-module-loopback",
+                        "args": {"capture.props": {"node.name": f"{name}_in"},
+                                 "playback.props": {"node.name": name}}})
+    return json.dumps({"context.modules": modules})
+
+
+class MissingTest(unittest.TestCase):
+    def test_reads_every_props_name_from_the_conf(self):
+        self.assertEqual(session.expected_nodes(listening_conf("ar_listener_out2")),
+                         {"ar_listener_ec_mic", "ar_listener_mix", "ar_listener_out",
+                          "ar_listener_out2_in", "ar_listener_out2"})
+
+    def test_no_conf_expects_nothing(self):
+        self.assertEqual(session.expected_nodes(""), set())
+
+    def test_a_vanished_loopback_is_named(self):
+        expected = session.expected_nodes(listening_conf("ar_listener_out2"))
+        self.assertEqual(session.missing_nodes(expected, HOST, wired_graph()),
+                         ["ar_listener_out2", "ar_listener_out2_in"])
+
+    def test_another_hosts_nodes_do_not_count_as_present(self):
+        self.assertEqual(session.missing_nodes({"ar_listener_out"}, 777, wired_graph()),
+                         ["ar_listener_out"])
+
+    def test_the_real_speakers_conf_shape(self):
+        from audiorouter.channels import Channel as Ch
+        speakers = Ch("speakers", "Speakers", "alsa_output.x", also=["somewhere"])
+        names = session.expected_nodes(speakers.render_config_text())
+        self.assertIn("ar_speakers", names)
+        self.assertIn("ar_speakers_play2_in", names)
+
+
 class UnwiredTest(unittest.TestCase):
     def test_a_linked_channel_is_fine_and_meters_never_count(self):
         self.assertEqual(session.unwired_streams("listener", HOST, wired_graph()), [])
@@ -192,12 +236,14 @@ class UnwiredTest(unittest.TestCase):
 
 
 class SelfCheckTest(unittest.TestCase):
-    def make(self, graph, paused=False, enabled=True):
+    def make(self, graph, paused=False, enabled=True, conf=None):
         self.now = 0.0
         self.restarted, self.lines = [], []
         listener = Channel("listener", "Listener", "", kind=INPUT, enabled=enabled)
+        conf = listening_conf() if conf is None else conf
         check = session.SelfCheck(lambda: [listener], self.restarted.append, is_paused=lambda: paused,
-                                  log=self.lines.append, clock=lambda: self.now, pid_of=lambda c: HOST)
+                                  log=self.lines.append, clock=lambda: self.now, pid_of=lambda c: HOST,
+                                  conf_of=lambda c: conf)
         check.use_graph(graph)
         return check
 
@@ -218,6 +264,12 @@ class SelfCheckTest(unittest.TestCase):
         self.now += session.SELF_CHECK_COOLDOWN_S
         self.tick(check, 2)
         self.assertEqual(self.restarted, ["listener", "listener"])
+
+    def test_a_vanished_output_restarts_the_channel(self):
+        check = self.make(wired_graph(), conf=listening_conf("ar_listener_out2"))
+        self.tick(check, 2)
+        self.assertEqual(self.restarted, ["listener"])
+        self.assertIn("ar_listener_out2 (missing)", self.lines[0])
 
     def test_healthy_paused_or_disabled_is_left_alone(self):
         for kwargs, graph in (({}, wired_graph()), ({"paused": True}, wired_graph(mic_linked=False)),

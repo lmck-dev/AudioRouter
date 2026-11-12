@@ -237,6 +237,13 @@ These rules come from those files, and they apply even when you haven't opened t
   the card's nodes and left Listener's `_ec_mic` capture (dont-fallback)
   unlinked for 7 h; nothing relinks it. Reproduce safely with `pw-link -d` on
   that capture's two links (measured: stays unlinked; a restart cures it).
+  1.7.4 (12 Nov 2026): also restarts a channel when a node its running conf
+  names (`*.props` `node.name` in `$XDG_RUNTIME_DIR/audiorouter/<slug>.conf`)
+  is missing from the host's pid. Why: at boot the login service starts in the
+  same second as WirePlumber; WirePlumber saw the Speakers output loopback's
+  capture (dont-fallback, targets the channel's own `_rec`/split source) before
+  that source registered, and the loopback was destroyed. Journal sign:
+  `No input node for loopback-<pid>-9 found`. Seen on every boot of 11-12 Nov.
 
 ## Testing audio without hardware
 

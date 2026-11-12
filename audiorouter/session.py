@@ -17,6 +17,7 @@ never an automatic restart, which could cut a call without warning).
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -270,6 +271,46 @@ def unwired_streams(slug: str, pid: int | None, graph: Graph) -> list[str]:
     return sorted(found)
 
 
+def expected_nodes(conf_text: str) -> set[str]:
+    """Every node a channel host's conf asks for, by name.
+
+    The `*.props` blocks of each module (filter-chain, loopbacks, echo
+    canceller) name the nodes the process creates. Meter taps are made
+    separately and are not in the conf.
+    """
+    try:
+        conf = json.loads(conf_text)
+    except ValueError:
+        return set()
+    names: set[str] = set()
+    for module in conf.get("context.modules", []):
+        for key, props in (module.get("args") or {}).items():
+            if key.endswith(".props") and isinstance(props, dict) and props.get("node.name"):
+                names.add(str(props["node.name"]))
+    return names
+
+
+def missing_nodes(expected: set[str], pid: int | None, graph: Graph) -> list[str]:
+    """Nodes the running host should have but does not.
+
+    Measured 12 Nov 2026 at boot: WirePlumber, still starting, looked at the
+    Speakers channel's output loopback before the channel's own source was
+    registered. The loopback's capture is dont-fallback, so it was torn down
+    and the channel ran on with no way out: apps went in, nothing came out,
+    and no stream was left to show up as unlinked.
+    """
+    present = {node.name for node in graph.nodes
+               if pid is None or graph.client_pid(node.client_id) == pid}
+    return sorted(expected - present)
+
+
+def _read_conf(channel) -> str:
+    try:
+        return channel.config_path.read_text()
+    except OSError:
+        return ""
+
+
 class SelfCheck:
     """For the login service: restart a channel whose own wiring has come undone.
 
@@ -279,10 +320,11 @@ class SelfCheck:
     """
 
     def __init__(self, channels, restart, is_paused=lambda: False, log=print,
-                 clock=time.monotonic, pid_of=None) -> None:
+                 clock=time.monotonic, pid_of=None, conf_of=None) -> None:
         self._channels = channels          # callable: the current channel list
         self._restart, self._paused, self._log, self._clock = restart, is_paused, log, clock
         self._pid_of = pid_of or (lambda channel: channel.pid())
+        self._conf_of = conf_of or _read_conf
         self._graph: Graph | None = None
         self._next = clock() + SELF_CHECK_S
         self._suspect: dict[str, list[str]] = {}
@@ -307,6 +349,8 @@ class SelfCheck:
             if pid is None:
                 continue
             loose = unwired_streams(channel.slug, pid, graph)
+            loose += [f"{name} (missing)"
+                      for name in missing_nodes(expected_nodes(self._conf_of(channel)), pid, graph)]
             if not loose:
                 continue
             suspect[channel.slug] = loose
