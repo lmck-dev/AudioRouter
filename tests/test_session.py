@@ -285,3 +285,73 @@ class SelfCheckTest(unittest.TestCase):
         check._restart = boom
         self.tick(check, 2)
         self.assertIn("failed", self.lines[-1])
+
+
+# -- startup wait (12 Nov 2026) ------------------------------------------------
+
+def session_graph(manager=True, card=True, extra=()):
+    objects = []
+    if manager:
+        objects.append({"id": 30, "type": "PipeWire:Interface:Client",
+                        "info": {"props": {"wireplumber.daemon": True, "application.process.id": 99}}})
+    if card:
+        objects.append(fakes.node(1, "alsa_output.card", "Audio/Sink"))
+    for n, name in enumerate(extra, start=50):
+        objects.append(fakes.node(n, name, "Audio/Sink"))
+    return Graph(objects)
+
+
+class StartupWaitTest(unittest.TestCase):
+    def run_wait(self, graphs):
+        self.now, self.lines = 0.0, []
+        seq = list(graphs)
+
+        def snapshot():
+            graph = seq.pop(0) if len(seq) > 1 else seq[0]
+            if isinstance(graph, Exception):
+                raise graph
+            return graph
+
+        def sleep(s):
+            self.now += s
+
+        speakers = Channel("speakers", "Speakers", "alsa_output.card")
+        own = Channel("tv", "TV", "ar_speakers")      # into another channel: not waited for
+        off = Channel("usb", "USB", "alsa_output.usb", enabled=False)
+        return session.wait_for_session([speakers, own, off], snapshot=snapshot,
+                                        clock=lambda: self.now, sleep=sleep, log=self.lines.append)
+
+    def test_only_real_devices_of_enabled_channels_are_waited_for(self):
+        self.assertEqual(session.startup_devices([
+            Channel("a", "A", "alsa_output.card"), Channel("b", "B", "ar_a"),
+            Channel("c", "C", "alsa_output.usb", enabled=False), Channel("d", "D", "")]),
+            {"alsa_output.card"})
+
+    def test_ready_once_manager_and_card_are_there_and_quiet(self):
+        self.assertTrue(self.run_wait([session_graph()]))
+        self.assertLessEqual(self.now, session.STARTUP_SETTLE_S + 1)
+        self.assertIn("ready", self.lines[-1])
+
+    def test_waits_for_wireplumber_and_the_card(self):
+        graphs = [RuntimeError("no daemon"), session_graph(manager=False, card=False),
+                  session_graph(card=False)] + [session_graph()] * 3
+        self.assertTrue(self.run_wait(graphs))
+        self.assertGreaterEqual(self.now, 3 * session.STARTUP_POLL_S + session.STARTUP_SETTLE_S)
+
+    def test_a_graph_still_changing_is_not_settled(self):
+        changing = [session_graph(extra=[f"n{i}"]) for i in range(6)] + [session_graph()]
+        self.assertTrue(self.run_wait(changing))
+        self.assertGreaterEqual(self.now, 6 * session.STARTUP_POLL_S + session.STARTUP_SETTLE_S)
+
+    def test_a_device_that_never_comes_costs_only_the_grace(self):
+        self.assertTrue(self.run_wait([session_graph(card=False)]))
+        self.assertLess(self.now, session.STARTUP_MISSING_GRACE_S + 1)
+        self.assertIn("without alsa_output.card", self.lines[-1])
+
+    def test_bluetooth_is_never_waited_for(self):
+        self.assertEqual(session.startup_devices([Channel("h", "H", "bluez_output.AA.1")]), set())
+
+    def test_gives_up_and_says_why(self):
+        self.assertFalse(self.run_wait([session_graph(manager=False)]))
+        self.assertGreaterEqual(self.now, session.STARTUP_WAIT_S)
+        self.assertIn("WirePlumber not connected", self.lines[-1])

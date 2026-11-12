@@ -227,6 +227,78 @@ class HandleNotifier:
                              name="handles-notice", daemon=True).start()
 
 
+# -- startup wait: let WirePlumber settle first (owner, 12 Nov 2026) ----------
+#
+# The login service starts in the same second as WirePlumber. On 12 Nov the
+# Speakers output loopback was built while WirePlumber was still busy starting;
+# it looked at the loopback before the channel's own source existed and tore
+# it down. So before the first apply, wait until WirePlumber is connected, the
+# real devices the channels play into or record from are there, and the graph
+# has stopped changing for a moment. Never wait forever: an unplugged device
+# must not keep every other channel silent.
+
+#: Longest wait before starting the channels anyway.
+STARTUP_WAIT_S = 30.0
+#: How long the list of nodes must stay unchanged to count as settled.
+STARTUP_SETTLE_S = 2.0
+#: Settled this long with a device still missing: it is not coming (unplugged).
+STARTUP_MISSING_GRACE_S = 5.0
+STARTUP_POLL_S = 0.5
+
+
+def startup_devices(channels) -> set[str]:
+    """The real devices (not our own channels) the enabled channels use.
+
+    Bluetooth is left out: a headset connects whenever it is switched on, and
+    the owner's often is not at login.
+    """
+    from .channels import NODE_PREFIX, NOWHERE
+    return {ch.device for ch in channels
+            if ch.enabled and ch.device and ch.device != NOWHERE
+            and not ch.device.startswith((NODE_PREFIX, "bluez_"))}
+
+
+def wait_for_session(channels, snapshot=Graph.snapshot, clock=time.monotonic,
+                     sleep=time.sleep, log=print) -> bool:
+    """Block until the sound system looks settled, or `STARTUP_WAIT_S` passes.
+
+    True when it settled, False when it gave up (the reason is logged).
+    """
+    wanted = startup_devices(channels)
+    start = clock()
+    last, stable_since, missing, manager = None, start, wanted, None
+    while True:
+        now = clock()
+        try:
+            graph = snapshot()
+        except Exception as exc:  # noqa: BLE001 - PipeWire may not answer yet
+            graph, manager, missing = None, None, wanted
+            log(f"startup: sound system not answering yet ({exc})")
+        if graph is not None:
+            manager = graph.session_manager_pid()
+            missing = wanted - {node.name for node in graph.nodes}
+            ids = frozenset((node.id, node.name) for node in graph.nodes)
+            if ids != last:
+                last, stable_since = ids, now
+            quiet = now - stable_since
+            if manager is not None and not missing and quiet >= STARTUP_SETTLE_S:
+                log(f"startup: sound system ready after {now - start:.1f} s")
+                return True
+            if manager is not None and quiet >= STARTUP_MISSING_GRACE_S:
+                log(f"startup: sound system ready after {now - start:.1f} s, "
+                    f"without {', '.join(sorted(missing))}")
+                return True
+        if now - start >= STARTUP_WAIT_S:
+            why = []
+            if manager is None:
+                why.append("WirePlumber not connected")
+            if missing:
+                why.append("no " + ", ".join(sorted(missing)))
+            log(f"startup: starting anyway after {STARTUP_WAIT_S:.0f} s ({'; '.join(why) or 'still changing'})")
+            return False
+        sleep(STARTUP_POLL_S)
+
+
 # -- self-check: every channel still wired (owner, 11 Nov 2026) ---------------
 #
 # The owner logged out and back in at 10:30 on 11 Nov with the sound system

@@ -463,6 +463,8 @@ def cmd_send(engine: Engine, args: argparse.Namespace) -> int:
 def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     """Start the channels and keep routing new streams until interrupted."""
     native.ensure_all()  # before apply: a channel may use them
+    if not args.no_wait:
+        session.wait_for_session(engine.config.channels, log=lambda line: print(line, flush=True))
     report = engine.apply()
     for line in report.describe():
         print(line)
@@ -758,6 +760,10 @@ def build_parser() -> argparse.ArgumentParser:
     watch = sub.add_parser("watch", help="run as a daemon: apply, then route new streams")
     watch.add_argument(
         "--stop-channels", action="store_true", help="also stop channels when interrupted"
+    )
+    watch.add_argument(
+        "--no-wait", action="store_true",
+        help="start the channels at once instead of waiting for WirePlumber to settle",
     )
     watch.set_defaults(func=cmd_watch)
 

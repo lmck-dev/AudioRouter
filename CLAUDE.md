@@ -244,6 +244,13 @@ These rules come from those files, and they apply even when you haven't opened t
   capture (dont-fallback, targets the channel's own `_rec`/split source) before
   that source registered, and the loopback was destroyed. Journal sign:
   `No input node for loopback-<pid>-9 found`. Seen on every boot of 11-12 Nov.
+- **Startup wait** (`session.wait_for_session`, 1.7.5, 12 Nov 2026): `watch`
+  waits before its first `apply` until WirePlumber is connected
+  (`session_manager_pid`), the real devices of enabled channels exist, and the
+  node list (id + name) has not changed for 2 s. A device still missing after
+  5 s of quiet is given up on (unplugged); Bluetooth (`bluez_`) is never waited
+  for (the owner's headset is often off at login); hard cap 30 s. `--no-wait`
+  skips it. The 1.7.4 self-check stays as the safety net.
 
 ## Testing audio without hardware
 

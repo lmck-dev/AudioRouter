@@ -1,7 +1,7 @@
 # Build with packaging/build-rpm.sh, which runs this in a clean Fedora container.
 
 Name:           audiorouter
-Version:        1.7.4
+Version:        1.7.5
 Release:        1%{?dist}
 Summary:        Send each app's sound to its own channel, with its own effects
 License:        GPL-3.0-or-later
@@ -105,6 +105,11 @@ QT_QPA_PLATFORM=offscreen HOME="$PWD/.check-home" %{python3} -m unittest discove
 %{_datadir}/icons/hicolor/scalable/apps/audiorouter.svg
 
 %changelog
+* Thu Nov 12 2026 lmck-dev <lmck.dev@gmail.com> - 1.7.5-1
+- 1.7.5: at login, wait for WirePlumber to connect, the sound card to appear
+  and the graph to go quiet (at most 30 s) before starting the channels, so
+  the first build is not torn down. `watch --no-wait` skips it.
+
 * Thu Nov 12 2026 lmck-dev <lmck.dev@gmail.com> - 1.7.4-1
 - 1.7.4: the self-check also restarts a channel whose own nodes are gone
   (at boot the Speakers output loopback was torn down: apps played, nothing
